@@ -362,7 +362,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
             session_state.register_session(
                 device_id,
-                lambda text: _speak(websocket, text, persona, config, session_id),
+                speak=lambda text: _speak(websocket, text, persona, config, session_id),
+                send_json=lambda payload: websocket.send_text(json.dumps(payload)),
             )
 
             vad_model = config.get("vad", {}).get("silero", {}).get(

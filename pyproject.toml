@@ -30,6 +30,7 @@ dependencies = [
     "torch>=2.2",
     "torchaudio>=2.2",
     "python-dotenv>=1.0",
+    "pyserial>=3.5",
 ]
 
 [project.optional-dependencies]

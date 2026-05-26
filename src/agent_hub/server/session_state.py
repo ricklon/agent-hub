@@ -32,12 +32,19 @@ class DeviceState:
 
 _state: dict[str, DeviceState] = {}
 
-# Active WebSocket sessions: device_id → pre-bound speak coroutine
-_sessions: dict[str, Callable[[str], Awaitable[None]]] = {}
+# Active WebSocket sessions: device_id → (speak_fn, send_json_fn)
+_sessions: dict[str, tuple[
+    Callable[[str], Awaitable[None]],
+    Callable[[dict], Awaitable[None]],
+]] = {}
 
 
-def register_session(device_id: str, speak: Callable[[str], Awaitable[None]]) -> None:
-    _sessions[device_id] = speak
+def register_session(
+    device_id: str,
+    speak: Callable[[str], Awaitable[None]],
+    send_json: Callable[[dict], Awaitable[None]],
+) -> None:
+    _sessions[device_id] = (speak, send_json)
 
 
 def unregister_session(device_id: str) -> None:
@@ -45,7 +52,13 @@ def unregister_session(device_id: str) -> None:
 
 
 def get_speak(device_id: str) -> Callable[[str], Awaitable[None]] | None:
-    return _sessions.get(device_id)
+    entry = _sessions.get(device_id)
+    return entry[0] if entry else None
+
+
+def get_send_json(device_id: str) -> Callable[[dict], Awaitable[None]] | None:
+    entry = _sessions.get(device_id)
+    return entry[1] if entry else None
 
 
 def is_connected(device_id: str) -> bool:

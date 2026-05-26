@@ -177,8 +177,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         else:
             lat_html = '<p style="color:#6e7681">No turns recorded this session.</p>'
 
-        # Send message form
+        # Reboot + send message
         speak_form = f"""\
+<form hx-post="/dashboard/agents/{device_id}/reboot"
+      hx-target="#reboot-result" hx-swap="innerHTML" style="display:inline">
+  <button type="submit" style="background:#6e3a1e">↺ Reboot device</button>
+</form>
+<span id="reboot-result" style="margin-left:0.75rem"></span>
 <h3>Send message to device</h3>
 <form hx-post="/dashboard/agents/{device_id}/speak"
       hx-target="#speak-result" hx-swap="innerHTML">
@@ -216,6 +221,34 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 {lat_html}
 {speak_form}"""
         return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+
+    @router.post("/dashboard/agents/{device_id}/reboot", response_class=HTMLResponse)
+    async def agent_reboot(device_id: str) -> HTMLResponse:
+        # Try WebSocket reboot first
+        send_json = session_state.get_send_json(device_id)
+        if send_json:
+            try:
+                await send_json({"type": "reboot"})
+                return HTMLResponse('<p class="msg">↺ Reboot sent via WebSocket.</p>')
+            except Exception as exc:
+                logger.warning(f"WS reboot failed for {device_id}: {exc}")
+
+        # Fall back to USB serial !reboot
+        import glob
+        import asyncio as _asyncio
+        ports = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
+        if not ports:
+            return HTMLResponse('<p style="color:#f85149">No serial port found and device not connected.</p>')
+        try:
+            import serial as _serial
+            port = ports[0]
+            def _send_serial() -> None:
+                with _serial.Serial(port, 115200, timeout=1) as ser:
+                    ser.write(b"!reboot\r\n")
+            await _asyncio.to_thread(_send_serial)
+            return HTMLResponse(f'<p class="msg">↺ Reboot sent via {port}.</p>')
+        except Exception as exc:
+            return HTMLResponse(f'<p style="color:#f85149">Serial reboot failed: {exc}</p>')
 
     @router.post("/dashboard/agents/{device_id}/clear_history", response_class=HTMLResponse)
     async def agent_clear_history(device_id: str) -> HTMLResponse:
