@@ -51,6 +51,13 @@ class MCPClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._id_lock = asyncio.Lock()
 
+    def cancel_pending(self) -> None:
+        """Cancel all pending tool call futures (call on disconnect)."""
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.cancel()
+        self._pending.clear()
+
     # ── outbound helpers ─────────────────────────────────────────────────────
 
     async def _send(self, payload: dict[str, Any]) -> None:

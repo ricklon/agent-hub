@@ -431,6 +431,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         except Exception as exc:
             logger.bind(tag=_TAG).error(f"WS session error for {device_id!r}: {exc}")
         finally:
+            if mcp_client is not None:
+                mcp_client.cancel_pending()
             session_state.unregister_session(device_id)
             await store.set_agent_status(device_id, AgentStatus.IDLE)
 
