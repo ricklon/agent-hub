@@ -95,6 +95,23 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
     # ── Agent detail ─────────────────────────────────────────────────────────
 
+    @router.get("/dashboard/agents/{device_id}/history", response_class=HTMLResponse)
+    async def agent_history_partial(device_id: str) -> HTMLResponse:
+        turns = await store.load_history(device_id, limit=60)
+        if not turns:
+            return HTMLResponse('<p style="color:#6e7681">No history yet.</p>')
+        rows = "".join(
+            f'<tr><td style="color:{"#79c0ff" if t["role"]=="user" else "#3fb950"};'
+            f'white-space:nowrap">{t["role"]}</td>'
+            f'<td style="white-space:pre-wrap;max-width:640px">{t["content"]}</td></tr>'
+            for t in turns
+        )
+        return HTMLResponse(
+            f'<table style="width:100%"><thead><tr><th>role</th><th>content</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table>'
+            f'<p style="color:#8b949e;font-size:0.8rem">{len(turns)} messages</p>'
+        )
+
     @router.get("/dashboard/agents/{device_id}", response_class=HTMLResponse)
     async def agent_detail(device_id: str, request: Request) -> HTMLResponse:
         agent = await store.get_agent(device_id)
@@ -170,12 +187,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 </form>
 <div id="speak-result"></div>
 <h3>Conversation history</h3>
+<div hx-get="/dashboard/agents/{device_id}/history"
+     hx-trigger="load, every 5s"
+     hx-swap="innerHTML"
+     id="history-view">Loading…</div>
 <form hx-post="/dashboard/agents/{device_id}/clear_history"
-      hx-target="#history-result" hx-swap="innerHTML"
-      hx-confirm="Clear all conversation history for this device?">
+      hx-target="#history-view" hx-swap="innerHTML"
+      hx-confirm="Clear all conversation history for this device?"
+      style="margin-top:0.5rem">
   <button type="submit" style="background:#b62324">Clear history</button>
-</form>
-<div id="history-result"></div>"""
+</form>"""
 
         body = f"""\
 <p><a href="/dashboard/" style="color:#58a6ff">← agents</a></p>
@@ -199,7 +220,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.post("/dashboard/agents/{device_id}/clear_history", response_class=HTMLResponse)
     async def agent_clear_history(device_id: str) -> HTMLResponse:
         await store.clear_history(device_id)
-        return HTMLResponse('<p class="msg">✓ History cleared.</p>')
+        return HTMLResponse('<p style="color:#6e7681">History cleared.</p>')
 
     @router.post("/dashboard/agents/{device_id}/speak", response_class=HTMLResponse)
     async def agent_speak(device_id: str, text: str = Form(...)) -> HTMLResponse:
