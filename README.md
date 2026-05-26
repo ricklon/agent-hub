@@ -71,10 +71,75 @@ The path `/xiaozhi/ota/` is preserved as a permanent alias for firmware
 compatibility — once a device is flashed, its OTA URL is sticky and cannot
 be changed remotely. New endpoints and documentation use `/checkin/`.
 
+## Getting started
+
+### Prerequisites
+
+- Python 3.12+, [`uv`](https://github.com/astral-sh/uv) installed
+- An OpenAI-compatible API key (OpenRouter works; key goes in `.env`)
+
+### First-time setup
+
+```sh
+uv sync --all-extras        # install dependencies
+just download-models        # download SenseVoiceSmall + Silero VAD (one-time, ~1 GB)
+cp .env.example .env        # then edit .env and set AGENT_HUB_LLM_OPENAI_API_KEY
+```
+
+The server also reads an optional `data/.config.yaml` for YAML-based config.
+If the file is absent, defaults and `.env` variables are used.
+
+### Run (local dev)
+
+```sh
+just run        # starts WS :8000 + dashboard :8001 + check-in :8003
+```
+
+Open `http://localhost:8001/dashboard/` to see connected devices.
+
+### Run (Docker)
+
+```sh
+just docker-build
+just docker-up
+```
+
+The compose file mounts `./data` and reads `.env`. Same three ports are
+exposed on the host.
+
+### Configuration
+
+Environment variable override pattern: `AGENT_HUB_<SECTION>_<KEY>`.
+Key variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_HUB_LLM_OPENAI_API_KEY` | — | **Required.** LLM provider API key |
+| `AGENT_HUB_LLM_OPENAI_BASE_URL` | OpenAI | Override for OpenRouter or local LLM |
+| `AGENT_HUB_LLM_OPENAI_MODEL` | `gpt-4o-mini` | Model name |
+| `AGENT_HUB_SERVER_HOST` | `0.0.0.0` | Bind address |
+| `AGENT_HUB_SERVER_WS_PORT` | `8000` | WebSocket session port |
+| `AGENT_HUB_SERVER_WEBSOCKET` | — | Public WS URL sent to devices on check-in |
+
+See `.env.example` for the full list.
+
+### Available `just` targets
+
+| Target | What it does |
+|---|---|
+| `just run` | Start server (all three ports, single process) |
+| `just dashboard` | Dashboard UI only |
+| `just docker-build` | Build Docker image |
+| `just docker-up` | Run via Docker Compose |
+| `just install` | `uv sync --all-extras` |
+| `just download-models` | Fetch SenseVoice + Silero models |
+| `just test` | Run pytest suite |
+| `just lint` | Ruff check + format check |
+
 ## Status
 
-Pre-alpha. Repo scaffolded, no code written yet. See `AGENTS.md` for the
-intended structure and conventions before contributing.
+Active development (Phase 1 — xiaozhi server parity). Core pipeline is
+working end-to-end. See `AGENTS.md` for contribution conventions.
 
 ## Architecture (target)
 
