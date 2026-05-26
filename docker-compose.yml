@@ -1,0 +1,15 @@
+services:
+  agent-hub:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # WS session
+      - "8001:8001"   # Dashboard
+      - "8003:8003"   # Check-in (HTTP)
+    volumes:
+      - ./data:/app/data
+    environment:
+      - AGENT_HUB_SERVER_HOST=0.0.0.0
+    env_file:
+      - path: .env
+        required: false

@@ -1,0 +1,7 @@
+# Class-night override — binds to the laptop's LAN IP and disables Tailscale.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.fubar.yml up
+services:
+  agent-hub:
+    environment:
+      - AGENT_HUB_SERVER_WEBSOCKET=
+    network_mode: host

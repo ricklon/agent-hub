@@ -1,0 +1,418 @@
+"""Dashboard: agent list + OpenRouter model picker.
+
+Server-rendered with HTMX — no SPA build step.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse
+from loguru import logger
+
+from agent_hub.registry.store import RegistryStore
+from agent_hub.server import session_state
+
+_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+_CSS = """\
+body{font-family:monospace;padding:2rem;background:#0d1117;color:#c9d1d9;margin:0}
+h1{color:#58a6ff;margin-bottom:0.25rem}
+nav{margin-bottom:2rem}
+nav a{color:#58a6ff;margin-right:1.5rem;text-decoration:none}
+nav a:hover{text-decoration:underline}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #30363d;padding:0.5rem 0.75rem;text-align:left;vertical-align:top}
+th{background:#161b22;white-space:nowrap}
+tr:hover td{background:#161b22}
+.badge{font-size:0.68rem;padding:0.1rem 0.35rem;border-radius:3px;margin:0.1rem 0.1rem 0 0;display:inline-block}
+.badge-multi{background:#1f4a2e;color:#3fb950}
+.badge-free{background:#2d1f6e;color:#a5a0ff}
+.badge-tool{background:#1a2a3a;color:#79c0ff}
+.badge-skill{background:#2a1a3a;color:#d2a8ff}
+.status-active{color:#3fb950}
+.status-idle{color:#d29922}
+.status-offline{color:#6e7681}
+.status-discovered{color:#58a6ff}
+.lat{font-size:0.75rem;color:#8b949e}
+.lat span{color:#c9d1d9}
+.model{font-size:0.75rem;color:#8b949e;display:block;margin-top:0.15rem}
+input,select{background:#161b22;color:#c9d1d9;border:1px solid #30363d;padding:0.4rem 0.6rem;border-radius:4px;margin-right:0.5rem}
+button{background:#238636;color:#fff;border:none;padding:0.4rem 0.9rem;border-radius:4px;cursor:pointer}
+button:hover{background:#2ea043}
+button.selected{background:#1f4a2e;color:#3fb950;border:1px solid #3fb950}
+.msg{color:#3fb950;margin-top:0.5rem}
+.controls{display:flex;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem}
+"""
+
+_PAGE = """\
+<!doctype html><html><head>
+<meta charset="utf-8"><title>agent-hub</title>
+<style>{css}</style>
+<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head><body>
+<h1>agent-hub</h1>
+<nav>
+  <a href="/dashboard/">Agents</a>
+  <a href="/dashboard/models">Models</a>
+</nav>
+{body}
+</body></html>
+"""
+
+
+def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
+    router = APIRouter()
+    api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
+
+    # ── Agents ───────────────────────────────────────────────────────────────
+
+    @router.get("/dashboard/", response_class=HTMLResponse)
+    async def dashboard_index(request: Request) -> HTMLResponse:
+        rows = await _render_agent_rows(store)
+        body = _agent_table(rows)
+        return HTMLResponse(_PAGE.format(css=_CSS, body=body))
+
+    @router.get("/dashboard/agents", response_class=HTMLResponse)
+    async def dashboard_agents_partial(request: Request) -> HTMLResponse:
+        rows = await _render_agent_rows(store)
+        return HTMLResponse(_agent_table(rows))
+
+    # ── Agent detail ─────────────────────────────────────────────────────────
+
+    @router.get("/dashboard/agents/{device_id}", response_class=HTMLResponse)
+    async def agent_detail(device_id: str, request: Request) -> HTMLResponse:
+        agent = await store.get_agent(device_id)
+        if agent is None:
+            return HTMLResponse(_PAGE.format(css=_CSS, body="<p>Agent not found.</p>"))
+        persona = await store.get_persona_for_device(device_id)
+        dev = session_state.get_state(device_id)
+        connected = session_state.is_connected(device_id)
+
+        status_class = f"status-{agent.status}"
+        conn_badge = (
+            '<span style="color:#3fb950">● connected</span>'
+            if connected else
+            '<span style="color:#6e7681">○ offline</span>'
+        )
+
+        # Persona section
+        if persona:
+            model_str = (
+                persona.llm_model
+                or config.get("llm", {}).get("openai", {}).get("model", "")
+                or f"{persona.llm_provider} default"
+            )
+            base_url = config.get("llm", {}).get("openai", {}).get("base_url", "")
+            provider_detail = f"{persona.llm_provider}"
+            if base_url:
+                provider_detail += f' <span style="color:#8b949e;font-size:0.75rem">({base_url})</span>'
+            persona_html = f"""\
+<h3>Persona</h3>
+<table style="width:auto">
+  <tr><th>name</th><td>{persona.name}</td></tr>
+  <tr><th>model</th><td>{model_str}</td></tr>
+  <tr><th>LLM provider</th><td>{provider_detail}</td></tr>
+  <tr><th>TTS provider</th><td>{persona.tts_provider}{f" / {persona.tts_voice}" if persona.tts_voice else ""}</td></tr>
+  <tr><th>ASR provider</th><td>{persona.asr_provider}</td></tr>
+  <tr><th>system prompt</th><td style="white-space:pre-wrap;max-width:600px">{persona.system_prompt or "—"}</td></tr>
+</table>"""
+        else:
+            persona_html = "<p>No persona assigned.</p>"
+
+        # Tools section
+        import agent_hub.skills as _skills
+        device_tool_badges = "".join(
+            f'<span class="badge badge-tool">{t}</span>' for t in dev.mcp_tools
+        ) or '<span style="color:#6e7681">none discovered yet</span>'
+        skill_badges = "".join(
+            f'<span class="badge badge-skill">{d["function"]["name"]}</span>'
+            for d in _skills.get_definitions()
+        )
+
+        # Latency section
+        if dev.turns > 0:
+            L, A = dev.last, dev.avg
+            lat_html = f"""\
+<table style="width:auto">
+  <tr><th></th><th>last turn</th><th>avg (EMA)</th></tr>
+  <tr><td>ASR</td><td>{L.asr_ms} ms</td><td>{A.asr_ms} ms</td></tr>
+  <tr><td>LLM</td><td>{L.llm_ms} ms</td><td>{A.llm_ms} ms</td></tr>
+  <tr><td>TTS</td><td>{L.tts_ms} ms</td><td>{A.tts_ms} ms</td></tr>
+  <tr><td><strong>total</strong></td><td><strong>{L.total_ms} ms</strong></td><td><strong>{A.total_ms} ms</strong></td></tr>
+</table>
+<p style="color:#8b949e;font-size:0.8rem">{dev.turns} turns recorded this session</p>"""
+        else:
+            lat_html = '<p style="color:#6e7681">No turns recorded this session.</p>'
+
+        # Send message form
+        speak_form = f"""\
+<h3>Send message to device</h3>
+<form hx-post="/dashboard/agents/{device_id}/speak"
+      hx-target="#speak-result" hx-swap="innerHTML">
+  <input type="text" name="text" placeholder="Say something..." style="width:400px">
+  <button type="submit">Speak</button>
+</form>
+<div id="speak-result"></div>"""
+
+        body = f"""\
+<p><a href="/dashboard/" style="color:#58a6ff">← agents</a></p>
+<h2>{device_id} <span class="{status_class}" style="font-size:1rem">{agent.status}</span>
+  &nbsp;{conn_badge}</h2>
+<p style="color:#8b949e">
+  IP: {agent.ip_address or "—"} &nbsp;·&nbsp;
+  Firmware: {agent.firmware_version or "—"} &nbsp;·&nbsp;
+  Last seen: {agent.last_seen.strftime("%H:%M:%S") if agent.last_seen else "—"}
+</p>
+{persona_html}
+<h3>Device MCP tools</h3>
+<div>{device_tool_badges}</div>
+<h3>Server skills</h3>
+<div>{skill_badges}</div>
+<h3>Latency</h3>
+{lat_html}
+{speak_form}"""
+        return HTMLResponse(_PAGE.format(css=_CSS, body=body))
+
+    @router.post("/dashboard/agents/{device_id}/speak", response_class=HTMLResponse)
+    async def agent_speak(device_id: str, text: str = Form(...)) -> HTMLResponse:
+        if not text.strip():
+            return HTMLResponse('<p style="color:#f85149">Empty message.</p>')
+        speak = session_state.get_speak(device_id)
+        if speak is None:
+            return HTMLResponse('<p style="color:#f85149">Device not connected.</p>')
+        try:
+            await speak(text.strip())
+            return HTMLResponse(f'<p class="msg">✓ sent: "{text.strip()}"</p>')
+        except Exception as exc:
+            return HTMLResponse(f'<p style="color:#f85149">Error: {exc}</p>')
+
+    # ── Models ────────────────────────────────────────────────────────────────
+
+    @router.get("/dashboard/models", response_class=HTMLResponse)
+    async def models_page(request: Request) -> HTMLResponse:
+        personas = await store.list_personas()
+        current = next(
+            (p.llm_model for p in personas if p.name == "hub-default"), None
+        ) or config.get("llm", {}).get("openai", {}).get("model", "")
+        body = f"""\
+<h2>Model Picker</h2>
+<p>Current: <strong id="current-model">{current or "not set"}</strong></p>
+<div class="controls">
+  <input id="search" type="text" placeholder="Search models..."
+    hx-get="/dashboard/models/list"
+    hx-trigger="input changed delay:300ms"
+    hx-target="#model-list"
+    hx-include="#multimodal-only"
+    name="search">
+  <label>
+    <input id="multimodal-only" type="checkbox" name="multimodal" value="1"
+      hx-get="/dashboard/models/list"
+      hx-trigger="change"
+      hx-target="#model-list"
+      hx-include="#search">
+    Multimodal only
+  </label>
+</div>
+<div id="model-list"
+  hx-get="/dashboard/models/list"
+  hx-trigger="load"
+  hx-include="#search,#multimodal-only">
+  Loading…
+</div>
+"""
+        return HTMLResponse(_PAGE.format(css=_CSS, body=body))
+
+    @router.get("/dashboard/models/list", response_class=HTMLResponse)
+    async def models_list(
+        request: Request,
+        search: str = "",
+        multimodal: str = "",
+    ) -> HTMLResponse:
+        models = await _fetch_openrouter_models(api_key)
+        personas = await store.list_personas()
+        current = next(
+            (p.llm_model for p in personas if p.name == "hub-default"), None
+        ) or config.get("llm", {}).get("openai", {}).get("model", "")
+
+        only_multi = bool(multimodal)
+        q = search.lower()
+
+        filtered = [
+            m for m in models
+            if (not q or q in m["id"].lower() or q in m["name"].lower())
+            and (not only_multi or m["multimodal"])
+        ]
+
+        if not filtered:
+            return HTMLResponse("<p>No models match.</p>")
+
+        rows = []
+        for m in filtered:
+            selected = m["id"] == current
+            badge_multi = '<span class="badge badge-multi">vision</span>' if m["multimodal"] else ""
+            badge_free = '<span class="badge badge-free">free</span>' if m["free"] else ""
+            btn_class = "selected" if selected else ""
+            rows.append(f"""\
+<tr>
+  <td>{m["id"]}{badge_multi}{badge_free}</td>
+  <td>{m["name"]}</td>
+  <td>{m["context_k"]}k</td>
+  <td>{m["price_in"]}</td>
+  <td>
+    <button class="{btn_class}"
+      hx-post="/dashboard/models/select"
+      hx-vals='{{"model_id":"{m["id"]}","persona":"hub-default"}}'
+      hx-target="#model-list"
+      hx-swap="none"
+      hx-on::after-request="document.getElementById('current-model').innerText='{m["id"]}'"
+    >{"✓ active" if selected else "select"}</button>
+  </td>
+</tr>""")
+
+        table = f"""\
+<table>
+<thead><tr>
+  <th>model id</th><th>name</th><th>ctx</th><th>$/M in</th><th></th>
+</tr></thead>
+<tbody>{"".join(rows)}</tbody>
+</table>"""
+        return HTMLResponse(table)
+
+    @router.post("/dashboard/models/select", response_class=HTMLResponse)
+    async def models_select(
+        model_id: str = Form(...),
+        persona: str = Form(default="hub-default"),
+    ) -> HTMLResponse:
+        ok = await store.update_persona_model(persona, model_id)
+        if ok:
+            logger.info(f"Persona '{persona}' model set to {model_id!r}")
+            return HTMLResponse("")
+        return HTMLResponse(f"<p>Persona '{persona}' not found.</p>", status_code=404)
+
+    return router
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _agent_table(rows: str) -> str:
+    return f"""\
+<div hx-get="/dashboard/agents" hx-trigger="every 5s" hx-swap="outerHTML">
+<table>
+<thead><tr>
+  <th>device-id</th><th>status</th><th>persona / model</th>
+  <th>tools</th><th>latency (last / avg)</th>
+  <th>ip</th><th>fw</th><th>last seen</th>
+</tr></thead>
+<tbody>{rows}</tbody>
+</table>
+</div>"""
+
+
+async def _render_agent_rows(store: RegistryStore) -> str:
+    try:
+        rows_data = await store.list_agents_with_personas()
+    except Exception as exc:
+        logger.error(f"Dashboard agent query failed: {exc}")
+        return "<tr><td colspan=8>error loading agents</td></tr>"
+
+    if not rows_data:
+        return "<tr><td colspan=8>no agents registered yet</td></tr>"
+
+    import agent_hub.skills as server_skills  # local import avoids circular at module level
+
+    skill_names = [d["function"]["name"] for d in server_skills.get_definitions()]
+
+    rows = []
+    for agent, persona in rows_data:
+        last_seen = agent.last_seen.strftime("%H:%M:%S") if agent.last_seen else "—"
+        dev = session_state.get_state(agent.device_id)
+
+        # Persona / model cell
+        persona_name = persona.name if persona else "—"
+        model = (persona.llm_model or "") if persona else ""
+        if not model and persona:
+            model = persona.llm_provider or ""
+        model_line = f'<span class="model">{model}</span>' if model else ""
+
+        # Tools cell — device MCP badges + skill badges
+        tool_badges = "".join(
+            f'<span class="badge badge-tool">{t}</span>'
+            for t in dev.mcp_tools
+        )
+        skill_badges = "".join(
+            f'<span class="badge badge-skill">{s}</span>'
+            for s in skill_names
+        )
+        tools_cell = (tool_badges + skill_badges) or '<span style="color:#6e7681">—</span>'
+
+        # Latency cell
+        if dev.turns > 0:
+            L, A = dev.last, dev.avg
+            lat_cell = (
+                f'<div class="lat">ASR <span>{L.asr_ms}ms</span> / '
+                f'LLM <span>{L.llm_ms}ms</span> / '
+                f'TTS <span>{L.tts_ms}ms</span></div>'
+                f'<div class="lat">avg <span>{A.asr_ms}</span>/'
+                f'<span>{A.llm_ms}</span>/<span>{A.tts_ms}</span>ms '
+                f'· {dev.turns} turns</div>'
+            )
+        else:
+            lat_cell = '<span style="color:#6e7681">—</span>'
+
+        rows.append(f"""\
+<tr>
+  <td><a href="/dashboard/agents/{agent.device_id}" style="color:#58a6ff">{agent.device_id}</a></td>
+  <td class="status-{agent.status}">{agent.status}</td>
+  <td>{persona_name}{model_line}</td>
+  <td>{tools_cell}</td>
+  <td>{lat_cell}</td>
+  <td>{agent.ip_address or "—"}</td>
+  <td>{agent.firmware_version or "—"}</td>
+  <td>{last_seen}</td>
+</tr>""")
+    return "".join(rows)
+
+
+async def _fetch_openrouter_models(api_key: str) -> list[dict[str, Any]]:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            resp = await client.get(_OPENROUTER_MODELS_URL, headers=headers)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+    except Exception as exc:
+        logger.error(f"OpenRouter models fetch failed: {exc}")
+        return []
+
+    out = []
+    for m in data:
+        arch = m.get("architecture", {})
+        modality = arch.get("modality", "") or arch.get("input_modalities", [])
+        multimodal = (
+            "image" in str(modality)
+            if isinstance(modality, str)
+            else any("image" in str(x) for x in modality)
+        )
+        pricing = m.get("pricing", {})
+        try:
+            price_in = float(pricing.get("prompt", 0)) * 1_000_000
+            price_str = f"${price_in:.3f}" if price_in > 0 else "free"
+            free = price_in == 0
+        except (ValueError, TypeError):
+            price_str = "—"
+            free = False
+        ctx = m.get("context_length", 0)
+        out.append({
+            "id": m.get("id", ""),
+            "name": m.get("name", ""),
+            "context_k": ctx // 1000 if ctx else "—",
+            "price_in": price_str,
+            "multimodal": multimodal,
+            "free": free,
+        })
+
+    out.sort(key=lambda x: (not x["multimodal"], x["id"]))
+    return out

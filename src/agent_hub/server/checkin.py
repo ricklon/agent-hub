@@ -1,0 +1,129 @@
+"""Check-in endpoint: /checkin/ and /xiaozhi/ota/ (permanent alias).
+
+Devices POST here on boot to receive:
+  - The WebSocket URL for their voice session
+  - Server timestamp and timezone offset
+  - Firmware update URL if a newer build is available (not yet implemented)
+
+Rule: no activation gate. First-contact devices are auto-provisioned to
+the hub-default persona and are functional immediately.
+"""
+
+from __future__ import annotations
+
+import socket
+from typing import Any
+
+from fastapi import APIRouter
+from fastapi.requests import Request
+from fastapi.responses import JSONResponse, PlainTextResponse
+from loguru import logger
+
+from agent_hub.config import Settings
+from agent_hub.registry.models import AgentKind
+from agent_hub.registry.store import RegistryStore
+from agent_hub.server.protocol import CheckinRequest, CheckinResponse
+
+_TAG = "checkin"
+
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+}
+
+
+def _local_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+
+
+def _ws_url(settings: Settings) -> str:
+    """Return the WebSocket URL to advertise to devices.
+
+    Uses settings.server.websocket if set; otherwise auto-detects LAN IP.
+    """
+    if settings.server.websocket:
+        return settings.server.websocket
+    return f"ws://{_local_ip()}:{settings.server.ws_port}/xiaozhi/v1/"
+
+
+def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
+    """Build and return the check-in APIRouter with injected dependencies.
+
+    Args:
+        store: Registry store used to persist device first-contact records.
+        settings: Application settings for URL construction and timezone.
+
+    Returns:
+        FastAPI router exposing /checkin/ and /xiaozhi/ota/ on GET/POST/OPTIONS.
+    """
+    router = APIRouter()
+
+    @router.get("/checkin/")
+    @router.get("/xiaozhi/ota/")
+    async def checkin_get(_request: Request) -> PlainTextResponse:
+        """Health-check GET — returns the WebSocket URL in plain text."""
+        return PlainTextResponse(
+            f"Check-in endpoint OK. WebSocket: {_ws_url(settings)}",
+            headers=_CORS_HEADERS,
+        )
+
+    @router.post("/checkin/")
+    @router.post("/xiaozhi/ota/")
+    async def checkin_post(request: Request) -> JSONResponse:
+        """Handle a device check-in.
+
+        Registers the device on first contact and returns the WebSocket URL.
+        """
+        raw_body = await request.body()
+        body: dict[str, Any] = {}
+        if raw_body:
+            try:
+                body = await request.json()
+            except Exception:
+                pass
+
+        headers = dict(request.headers)
+        client_host = request.client.host if request.client else ""
+
+        try:
+            req = CheckinRequest.from_http(headers, body, client_host)
+        except ValueError as exc:
+            logger.bind(tag=_TAG).warning(f"Bad check-in: {exc}")
+            return JSONResponse(
+                {"success": False, "message": str(exc)},
+                status_code=400,
+                headers=_CORS_HEADERS,
+            )
+
+        logger.bind(tag=_TAG).info(
+            f"Check-in from {req.device_id!r} at {req.ip_address} "
+            f"(fw {req.application_version})"
+        )
+
+        await store.get_or_create_agent(
+            device_id=req.device_id,
+            kind=AgentKind.XIAOZHI,
+            ip_address=req.ip_address,
+            firmware_version=req.application_version,
+        )
+
+        resp = CheckinResponse(
+            websocket_url=_ws_url(settings),
+            firmware_version=req.application_version,
+            timezone_offset_minutes=settings.server.timezone_offset * 60,
+        )
+        return JSONResponse(resp.to_json(), headers=_CORS_HEADERS)
+
+    @router.options("/checkin/")
+    @router.options("/xiaozhi/ota/")
+    async def checkin_options() -> JSONResponse:
+        """CORS preflight handler."""
+        return JSONResponse({}, headers=_CORS_HEADERS)
+
+    return router
