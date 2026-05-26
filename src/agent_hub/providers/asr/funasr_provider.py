@@ -19,7 +19,7 @@ _TAG = "funasr"
 _TAG_RE = re.compile(r"<\|([^|]+)\|>")
 
 _SPEECH_EVENTS = {"Speech"}
-_NON_SPEECH_EVENTS = {"BGM", "Applause", "Laughter", "Cry", "Sneeze", "Cough", "EMO_UNKNOWN"}
+_NON_SPEECH_EVENTS = {"BGM", "Applause", "Laughter", "Cry", "Sneeze", "Cough"}
 _EMOTIONS = {"NEUTRAL", "HAPPY", "SAD", "ANGRY", "FEARFUL", "DISGUSTED", "SURPRISED"}
 _LANGUAGES = {"zh", "en", "ja", "ko", "yue", "ar", "de", "es", "fr", "id", "it",
               "ms", "pt", "ru", "th", "tr", "vi"}
@@ -33,6 +33,7 @@ def _parse_tags(raw: str) -> Transcript:
     """
     tags = _TAG_RE.findall(raw)
     text = _TAG_RE.sub("", raw).strip()
+    logger.bind(tag=_TAG).debug(f"SenseVoice raw={raw!r} tags={tags} text={text!r}")
 
     language = ""
     emotion = "NEUTRAL"

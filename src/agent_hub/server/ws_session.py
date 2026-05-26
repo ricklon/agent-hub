@@ -195,7 +195,14 @@ async def _run_voice_turn(
             logger.bind(tag=_TAG).info(f"Tool call: {name!r} args={args}")
             try:
                 if mcp_client and mcp_client.ready and name in mcp_client.tools:
-                    result = await mcp_client.call_tool(name, args)
+                    # Strip on-device LLM question arg from camera tools — let server LLM
+                    # describe the image instead, avoiding ESP32 OOM crash
+                    if "camera" in name or "photo" in name:
+                        args = {k: v for k, v in args.items() if k != "question"}
+                    result = await mcp_client.call_tool(
+                        name, args,
+                        timeout=60.0 if ("camera" in name or "photo" in name) else 30.0,
+                    )
                 elif server_skills.has_skill(name):
                     result = await server_skills.run(name, args)
                 else:
