@@ -71,6 +71,18 @@ class Persona(Base):
         return json.loads(self.mcp_tools_allowlist) if self.mcp_tools_allowlist else None
 
 
+class ConversationTurn(Base):
+    """One message in a device's persisted conversation history."""
+
+    __tablename__ = "conversation_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(64), index=True)
+    role: Mapped[str] = mapped_column(String(16))   # 'user' or 'assistant'
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class Agent(Base):
     """A registered agent — ESP32 device, voice agent, or custom agent."""
 

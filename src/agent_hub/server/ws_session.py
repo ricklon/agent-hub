@@ -283,8 +283,17 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
         session_id = uuid.uuid4().hex
         pipeline_lock = asyncio.Lock()
-        conversation: list[dict[str, str]] = []
         mcp_client: MCPClient | None = None
+
+        # Load persisted history; trim to memory_window on reconnect
+        window = (persona.memory_window or 20) * 2
+        conversation: list[dict[str, str]] = await store.load_history(
+            device_id, limit=window
+        )
+        if conversation:
+            logger.bind(tag=_TAG).debug(
+                f"{device_id!r} resumed {len(conversation)} messages from history"
+            )
 
         async def _dispatch_pipeline(frames: list[bytes]) -> None:
             if pipeline_lock.locked():
@@ -292,6 +301,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     f"{device_id!r} pipeline busy — dropping {len(frames)} frames"
                 )
                 return
+            prev_len = len(conversation)
             async with pipeline_lock:
                 try:
                     await _run_voice_turn(
@@ -311,6 +321,10 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     logger.bind(tag=_TAG).error(
                         f"Pipeline error for {device_id!r}: {exc}"
                     )
+            # Persist any new messages added by the turn (user + assistant = 2)
+            new_msgs = conversation[prev_len:]
+            for msg in new_msgs:
+                await store.append_history(device_id, msg["role"], msg["content"])
 
         try:
             # hello / welcome handshake

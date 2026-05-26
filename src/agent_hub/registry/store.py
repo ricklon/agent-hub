@@ -9,7 +9,7 @@ from loguru import logger
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from agent_hub.registry.models import Agent, AgentKind, AgentStatus, Base, Persona
+from agent_hub.registry.models import Agent, AgentKind, AgentStatus, Base, ConversationTurn, Persona
 
 _DEFAULT_PERSONA_NAME = "hub-default"
 _DEFAULT_SYSTEM_PROMPT = (
@@ -255,6 +255,47 @@ class RegistryStore:
                 persona.memory_window = memory_window
             await session.commit()
             return True
+
+    async def load_history(
+        self, device_id: str, limit: int = 40
+    ) -> list[dict[str, str]]:
+        """Return the most recent messages for device_id, oldest first.
+
+        Args:
+            device_id: The device to load history for.
+            limit: Maximum number of messages (not turns) to return.
+
+        Returns:
+            List of {role, content} dicts ready for LLM context.
+        """
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(ConversationTurn)
+                .where(ConversationTurn.device_id == device_id)
+                .order_by(ConversationTurn.id.desc())
+                .limit(limit)
+            )
+            rows = list(result.scalars().all())
+        rows.reverse()
+        return [{"role": r.role, "content": r.content} for r in rows]
+
+    async def append_history(
+        self, device_id: str, role: str, content: str
+    ) -> None:
+        """Append one message to the persisted conversation history."""
+        async with self._sessions() as session:
+            session.add(ConversationTurn(device_id=device_id, role=role, content=content))
+            await session.commit()
+
+    async def clear_history(self, device_id: str) -> None:
+        """Delete all conversation history for a device."""
+        from sqlalchemy import delete
+        async with self._sessions() as session:
+            await session.execute(
+                delete(ConversationTurn).where(ConversationTurn.device_id == device_id)
+            )
+            await session.commit()
+        logger.info(f"Cleared conversation history for {device_id!r}")
 
     async def get_agent(self, device_id: str) -> Agent | None:
         """Return the agent row for device_id, or None if not found.
