@@ -65,6 +65,9 @@ class LLMProvider(abc.ABC):
         """
 
 
+_cache: dict[str, LLMProvider] = {}
+
+
 def get_provider(
     name: str,
     config: dict[str, Any],
@@ -89,9 +92,14 @@ def get_provider(
 
         cfg = llm_cfg.get("openai", {})
         model = model_override or str(cfg.get("model", "gpt-4o-mini"))
-        return OpenAILLMProvider(
+        cache_key = f"{name}:{model}"
+        if cache_key in _cache:
+            return _cache[cache_key]
+        provider: LLMProvider = OpenAILLMProvider(
             api_key=str(cfg.get("api_key", "")),
             model=model,
             base_url=cfg.get("base_url") or None,
         )
+        _cache[cache_key] = provider
+        return provider
     raise ValueError(f"Unknown LLM provider: {name!r}")

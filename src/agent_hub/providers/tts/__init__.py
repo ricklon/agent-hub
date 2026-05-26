@@ -74,6 +74,9 @@ class TTSProvider(abc.ABC):
         return []
 
 
+_cache: dict[str, TTSProvider] = {}
+
+
 def get_provider(name: str, config: dict[str, Any]) -> TTSProvider:
     """Instantiate a TTS provider by name from config.
 
@@ -87,23 +90,30 @@ def get_provider(name: str, config: dict[str, Any]) -> TTSProvider:
     Raises:
         ValueError: If the provider name is unknown.
     """
+    if name in _cache:
+        return _cache[name]
+
     tts_cfg: dict[str, Any] = config.get("tts", {})
     if name == "edge":
         from agent_hub.providers.tts.edge import EdgeTTSProvider
 
         cfg = tts_cfg.get("edge", {})
-        return EdgeTTSProvider(
+        provider: TTSProvider = EdgeTTSProvider(
             voice=cfg.get("voice", "en-US-AriaNeural"),
             rate=cfg.get("rate", "+0%"),
             volume=cfg.get("volume", "+0%"),
         )
-    if name == "kitten":
+    elif name == "kitten":
         from agent_hub.providers.tts.kitten import KittenTTSProvider
 
         cfg = tts_cfg.get("kitten", {})
-        return KittenTTSProvider(
+        provider = KittenTTSProvider(
             model=cfg.get("model", "KittenML/kitten-tts-nano-0.8"),
             voice=cfg.get("voice", "Luna"),
             speed=float(cfg.get("speed", 1.0)),
         )
-    raise ValueError(f"Unknown TTS provider: {name!r}")
+    else:
+        raise ValueError(f"Unknown TTS provider: {name!r}")
+
+    _cache[name] = provider
+    return provider

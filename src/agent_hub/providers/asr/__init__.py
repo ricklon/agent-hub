@@ -38,6 +38,9 @@ class ASRProvider(abc.ABC):
         """
 
 
+_cache: dict[str, ASRProvider] = {}
+
+
 def get_provider(name: str, config: dict[str, Any]) -> ASRProvider:
     """Instantiate an ASR provider by name from config.
 
@@ -51,23 +54,30 @@ def get_provider(name: str, config: dict[str, Any]) -> ASRProvider:
     Raises:
         ValueError: If the provider name is unknown.
     """
+    if name in _cache:
+        return _cache[name]
+
     asr_cfg: dict[str, Any] = config.get("asr", {})
     if name in ("funasr", "fun_local"):
         from agent_hub.providers.asr.funasr_provider import FunASRProvider
 
         cfg = asr_cfg.get("funasr", {})
-        return FunASRProvider(
+        provider: ASRProvider = FunASRProvider(
             model_dir=str(cfg.get("model_dir", "models/SenseVoiceSmall")),
             language=str(cfg.get("language", "en")),
         )
-    if name == "openai_whisper":
+    elif name == "openai_whisper":
         from agent_hub.providers.asr.openai_whisper import OpenAIWhisperASRProvider
 
         cfg = asr_cfg.get("openai_whisper", {})
         api_key = cfg.get("api_key") or config.get("llm", {}).get("openai", {}).get("api_key", "")
-        return OpenAIWhisperASRProvider(
+        provider = OpenAIWhisperASRProvider(
             api_key=str(api_key),
             model=str(cfg.get("model", "whisper-1")),
             language=cfg.get("language") or None,
         )
-    raise ValueError(f"Unknown ASR provider: {name!r}")
+    else:
+        raise ValueError(f"Unknown ASR provider: {name!r}")
+
+    _cache[name] = provider
+    return provider
