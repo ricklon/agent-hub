@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from loguru import logger
 
 from agent_hub.config import load_config, load_settings
@@ -38,6 +39,10 @@ def build_app() -> FastAPI:
             f"WS on :{settings.server.ws_port}, "
             f"dashboard on :{settings.server.dashboard_port}"
         )
+
+    @app.get("/")
+    async def root() -> RedirectResponse:
+        return RedirectResponse(url="/dashboard/")
 
     app.include_router(make_checkin_router(store, settings))
     app.include_router(make_ws_router(store, raw_config))
