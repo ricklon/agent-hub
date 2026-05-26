@@ -43,13 +43,19 @@ def _local_ip() -> str:
 
 
 def _ws_url(settings: Settings) -> str:
-    """Return the WebSocket URL to advertise to devices.
-
-    Uses settings.server.websocket if set; otherwise auto-detects LAN IP.
-    """
     if settings.server.websocket:
         return settings.server.websocket
     return f"ws://{_local_ip()}:{settings.server.ws_port}/xiaozhi/v1/"
+
+
+def _image_url(settings: Settings) -> str:
+    ws = _ws_url(settings)
+    # Derive HTTP base from WebSocket URL (ws:// → http://, wss:// → https://)
+    http_base = ws.replace("ws://", "http://").replace("wss://", "https://")
+    # Strip path component and append image endpoint
+    from urllib.parse import urlparse, urlunparse
+    p = urlparse(http_base)
+    return urlunparse(p._replace(path="/xiaozhi/v1/image/", query="", fragment=""))
 
 
 def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
@@ -113,10 +119,13 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
             firmware_version=req.application_version,
         )
 
+        image_token = (settings.raw.get("server") or {}).get("image_token", "")
         resp = CheckinResponse(
             websocket_url=_ws_url(settings),
             firmware_version=req.application_version,
             timezone_offset_minutes=settings.server.timezone_offset * 60,
+            image_url=_image_url(settings),
+            image_token=image_token,
         )
         return JSONResponse(resp.to_json(), headers=_CORS_HEADERS)
 

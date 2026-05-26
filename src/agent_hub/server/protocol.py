@@ -79,6 +79,8 @@ class CheckinResponse:
     firmware_version: str = ""
     firmware_url: str = ""
     token: str = ""
+    image_url: str = ""
+    image_token: str = ""
 
     def to_json(self) -> dict[str, Any]:
         """Serialize to the upstream-compatible JSON wire format.
@@ -86,7 +88,7 @@ class CheckinResponse:
         Returns:
             Dict ready for json.dumps or FastAPI's JSONResponse.
         """
-        return {
+        d: dict[str, Any] = {
             "server_time": {
                 "timestamp": self.server_timestamp_ms,
                 "timezone_offset": self.timezone_offset_minutes,
@@ -100,6 +102,9 @@ class CheckinResponse:
                 "token": self.token,
             },
         }
+        if self.image_url:
+            d["image"] = {"url": self.image_url, "token": self.image_token}
+        return d
 
 
 @dataclass

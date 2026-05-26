@@ -101,13 +101,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         if not turns:
             return HTMLResponse('<p style="color:#6e7681">No history yet.</p>')
         rows = "".join(
-            f'<tr><td style="color:{"#79c0ff" if t["role"]=="user" else "#3fb950"};'
+            f'<tr>'
+            f'<td style="color:#8b949e;white-space:nowrap;font-size:0.75rem">'
+            f'{t.get("created_at","")[:19].replace("T"," ")}</td>'
+            f'<td style="color:{"#79c0ff" if t["role"]=="user" else "#3fb950"};'
             f'white-space:nowrap">{t["role"]}</td>'
-            f'<td style="white-space:pre-wrap;max-width:640px">{t["content"]}</td></tr>'
+            f'<td style="white-space:pre-wrap;max-width:600px">{t["content"]}</td></tr>'
             for t in turns
         )
         return HTMLResponse(
-            f'<table style="width:100%"><thead><tr><th>role</th><th>content</th></tr></thead>'
+            f'<table style="width:100%"><thead><tr><th>time</th><th>role</th><th>content</th></tr></thead>'
             f'<tbody>{rows}</tbody></table>'
             f'<p style="color:#8b949e;font-size:0.8rem">{len(turns)} messages</p>'
         )

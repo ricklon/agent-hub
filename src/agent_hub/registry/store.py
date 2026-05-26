@@ -277,7 +277,10 @@ class RegistryStore:
             )
             rows = list(result.scalars().all())
         rows.reverse()
-        return [{"role": r.role, "content": r.content} for r in rows]
+        return [
+            {"role": r.role, "content": r.content, "created_at": r.created_at.isoformat()}
+            for r in rows
+        ]
 
     async def append_history(
         self, device_id: str, role: str, content: str

@@ -169,15 +169,18 @@ async def _run_voice_turn(
 
     base_prompt = persona.system_prompt or ""
 
-    # Append camera hint if the device exposes a photo tool and the model is multimodal
+    # Append camera hint if the device exposes a photo tool.
+    # The camera tool runs on-device vision and returns a text description —
+    # always pass a 'question' arg describing what to look for.
     camera_tools = {
         n for n in (mcp_client.tools if (mcp_client and mcp_client.ready) else {})
         if "photo" in n or "camera" in n or "image" in n
     }
     if camera_tools:
         base_prompt = (
-            f"{base_prompt}\nYou have access to the device camera. "
-            f"Call {next(iter(camera_tools))} to take a photo when it would help."
+            f"{base_prompt}\nYou have access to the device camera via {next(iter(camera_tools))}. "
+            f"Pass a 'question' arg describing what to look for. "
+            f"The tool returns a text description from the on-device vision model."
         ).strip()
 
     if result.emotion and result.emotion != "NEUTRAL":
@@ -195,10 +198,10 @@ async def _run_voice_turn(
             logger.bind(tag=_TAG).info(f"Tool call: {name!r} args={args}")
             try:
                 if mcp_client and mcp_client.ready and name in mcp_client.tools:
-                    # Strip on-device LLM question arg from camera tools — let server LLM
-                    # describe the image instead, avoiding ESP32 OOM crash
-                    if "camera" in name or "photo" in name:
-                        args = {k: v for k, v in args.items() if k != "question"}
+                    # Camera tool: firmware requires 'question' arg and returns on-device LLM text.
+                    # If the LLM omits question, supply a default so the call doesn't fail.
+                    if ("camera" in name or "photo" in name) and "question" not in args:
+                        args = {**args, "question": "What do you see?"}
                     result = await mcp_client.call_tool(
                         name, args,
                         timeout=60.0 if ("camera" in name or "photo" in name) else 30.0,
@@ -422,8 +425,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         payload = ctrl.get("payload", {})
                         asyncio.create_task(mcp_client.handle_message(payload))
                     else:
-                        logger.bind(tag=_TAG).debug(
-                            f"{device_id!r} ctrl: {msg['text'][:200]}"
+                        logger.bind(tag=_TAG).info(
+                            f"{device_id!r} ctrl: {msg['text'][:400]}"
                         )
 
         except WebSocketDisconnect:

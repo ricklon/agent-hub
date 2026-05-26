@@ -8,9 +8,15 @@ server:
   websocket: ""
   # Hours from UTC (e.g. -8 for PST, 8 for CST/Beijing)
   timezone_offset: -8
+  # Shared secret for the image explain endpoint (sent to devices on check-in).
+  # Leave empty to disable auth (fine for LAN-only deployments).
+  image_token: ""
 
 llm:
   default_provider: openai
+  # Vision model used by the image explain endpoint (POST /xiaozhi/v1/image/).
+  # Must support vision/image_url inputs. Defaults to google/gemma-3-27b-it on OpenRouter.
+  vision_model: "google/gemma-3-27b-it"
   openai:
     api_key: "YOUR_OPENAI_API_KEY"
     model: "gpt-4o-mini"
