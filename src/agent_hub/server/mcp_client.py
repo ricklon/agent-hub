@@ -112,7 +112,14 @@ class MCPClient:
             if content and isinstance(content[0], dict):
                 c = content[0]
                 if c.get("type") == "image":
-                    return c.get("image", "[image]")
+                    # Build a data URL so the LLM provider can pass it as image_url
+                    data = c.get("data") or c.get("image", "")
+                    mime = c.get("mimeType", "image/jpeg")
+                    if data:
+                        if data.startswith("data:"):
+                            return data
+                        return f"data:{mime};base64,{data}"
+                    return "[image: no data]"
                 return c.get("text", str(raw))
         return str(raw)
 

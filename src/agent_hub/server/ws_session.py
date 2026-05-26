@@ -168,6 +168,18 @@ async def _run_voice_turn(
     llm = get_llm(persona.llm_provider, config, model_override=persona.llm_model or None)
 
     base_prompt = persona.system_prompt or ""
+
+    # Append camera hint if the device exposes a photo tool and the model is multimodal
+    camera_tools = {
+        n for n in (mcp_client.tools if (mcp_client and mcp_client.ready) else {})
+        if "photo" in n or "camera" in n or "image" in n
+    }
+    if camera_tools:
+        base_prompt = (
+            f"{base_prompt}\nYou have access to the device camera. "
+            f"Call {next(iter(camera_tools))} to take a photo when it would help."
+        ).strip()
+
     if result.emotion and result.emotion != "NEUTRAL":
         system_prompt = f"{base_prompt}\n[User tone: {result.emotion.lower()}]".strip()
     else:

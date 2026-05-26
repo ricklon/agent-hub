@@ -93,10 +93,15 @@ class OpenAILLMProvider(LLMProvider):
             for tc in msg.tool_calls:
                 args = json.loads(tc.function.arguments or "{}")
                 result = await tool_executor(tc.function.name, args)
+                # Image results (data URLs) need multimodal content blocks
+                if isinstance(result, str) and result.startswith("data:"):
+                    content: Any = [{"type": "image_url", "image_url": {"url": result}}]
+                else:
+                    content = result
                 working.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": result,
+                    "content": content,
                 })
 
         # Exhausted rounds — final call without tools
