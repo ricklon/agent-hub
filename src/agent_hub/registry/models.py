@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import enum
+import json
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import ForeignKey, String, Text, func
+from sqlalchemy import ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -49,9 +50,25 @@ class Persona(Base):
     tts_voice: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     asr_provider: Mapped[str] = mapped_column(String(64))
     system_prompt: Mapped[str] = mapped_column(Text, default="")
+    # JSON-encoded list of enabled skill names; NULL means all skills enabled
+    server_skills: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON-encoded list of allowed device MCP tool names; NULL means all allowed
+    mcp_tools_allowlist: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Max conversation turns kept in LLM context
+    memory_window: Mapped[int] = mapped_column(Integer, default=20)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     agents: Mapped[list[Agent]] = relationship(back_populates="persona")
+
+    @property
+    def server_skills_list(self) -> list[str] | None:
+        """Decoded server_skills, or None (all skills enabled)."""
+        return json.loads(self.server_skills) if self.server_skills else None
+
+    @property
+    def mcp_tools_allowlist_list(self) -> list[str] | None:
+        """Decoded mcp_tools_allowlist, or None (all tools allowed)."""
+        return json.loads(self.mcp_tools_allowlist) if self.mcp_tools_allowlist else None
 
 
 class Agent(Base):

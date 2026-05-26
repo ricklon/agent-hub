@@ -47,6 +47,16 @@ button.selected{background:#1f4a2e;color:#3fb950;border:1px solid #3fb950}
 .controls{display:flex;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem}
 """
 
+_CSS_EXTRA = """\
+textarea{background:#161b22;color:#c9d1d9;border:1px solid #30363d;padding:0.4rem 0.6rem;
+  border-radius:4px;width:100%;box-sizing:border-box;font-family:monospace;resize:vertical}
+label{display:block;color:#8b949e;font-size:0.8rem;margin-top:0.75rem;margin-bottom:0.2rem}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.form-section{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1.25rem;margin-bottom:1.5rem}
+.form-section h3{margin:0 0 1rem;color:#58a6ff}
+input[type=number]{width:6rem}
+"""
+
 _PAGE = """\
 <!doctype html><html><head>
 <meta charset="utf-8"><title>agent-hub</title>
@@ -56,6 +66,7 @@ _PAGE = """\
 <h1>agent-hub</h1>
 <nav>
   <a href="/dashboard/">Agents</a>
+  <a href="/dashboard/personas">Personas</a>
   <a href="/dashboard/models">Models</a>
 </nav>
 {body}
@@ -69,11 +80,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
     # ── Agents ───────────────────────────────────────────────────────────────
 
+    _full_css = _CSS + _CSS_EXTRA
+
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(request: Request) -> HTMLResponse:
         rows = await _render_agent_rows(store)
         body = _agent_table(rows)
-        return HTMLResponse(_PAGE.format(css=_CSS, body=body))
+        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
 
     @router.get("/dashboard/agents", response_class=HTMLResponse)
     async def dashboard_agents_partial(request: Request) -> HTMLResponse:
@@ -86,7 +99,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     async def agent_detail(device_id: str, request: Request) -> HTMLResponse:
         agent = await store.get_agent(device_id)
         if agent is None:
-            return HTMLResponse(_PAGE.format(css=_CSS, body="<p>Agent not found.</p>"))
+            return HTMLResponse(_PAGE.format(css=_full_css, body="<p>Agent not found.</p>"))
         persona = await store.get_persona_for_device(device_id)
         dev = session_state.get_state(device_id)
         connected = session_state.is_connected(device_id)
@@ -174,7 +187,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 <h3>Latency</h3>
 {lat_html}
 {speak_form}"""
-        return HTMLResponse(_PAGE.format(css=_CSS, body=body))
+        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
 
     @router.post("/dashboard/agents/{device_id}/speak", response_class=HTMLResponse)
     async def agent_speak(device_id: str, text: str = Form(...)) -> HTMLResponse:
@@ -188,6 +201,143 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             return HTMLResponse(f'<p class="msg">✓ sent: "{text.strip()}"</p>')
         except Exception as exc:
             return HTMLResponse(f'<p style="color:#f85149">Error: {exc}</p>')
+
+    # ── Personas ──────────────────────────────────────────────────────────────
+
+    @router.get("/dashboard/personas", response_class=HTMLResponse)
+    async def personas_list(request: Request) -> HTMLResponse:
+        personas = await store.list_personas()
+        rows = "".join(
+            f'<tr><td><a href="/dashboard/personas/{p.name}" style="color:#58a6ff">{p.name}</a></td>'
+            f'<td>{p.llm_provider} / {p.llm_model or "default"}</td>'
+            f'<td>{p.tts_provider}{f" / {p.tts_voice}" if p.tts_voice else ""}</td>'
+            f'<td>{p.asr_provider}</td>'
+            f'<td>{p.memory_window}</td>'
+            f'<td><a href="/dashboard/personas/{p.name}" style="color:#58a6ff">edit</a></td></tr>'
+            for p in personas
+        ) or "<tr><td colspan=6>no personas</td></tr>"
+        body = f"""\
+<h2>Personas</h2>
+<table>
+<thead><tr>
+  <th>name</th><th>LLM</th><th>TTS</th><th>ASR</th><th>memory</th><th></th>
+</tr></thead>
+<tbody>{rows}</tbody>
+</table>"""
+        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+
+    @router.get("/dashboard/personas/{name}", response_class=HTMLResponse)
+    async def persona_edit_page(name: str, request: Request) -> HTMLResponse:
+        import agent_hub.skills as _skills
+        persona = await store.get_persona_by_name(name)
+        if persona is None:
+            return HTMLResponse(_PAGE.format(css=_full_css, body="<p>Persona not found.</p>"))
+
+        all_skills = [d["function"]["name"] for d in _skills.get_definitions()]
+        enabled = persona.server_skills_list  # None = all
+        skills_val = ", ".join(enabled) if enabled is not None else ""
+
+        allowed_tools = persona.mcp_tools_allowlist_list  # None = all
+        tools_val = ", ".join(allowed_tools) if allowed_tools is not None else ""
+
+        body = f"""\
+<p><a href="/dashboard/personas" style="color:#58a6ff">← personas</a></p>
+<h2>Edit persona: {name}</h2>
+<div id="save-result"></div>
+<form hx-post="/dashboard/personas/{name}"
+      hx-target="#save-result" hx-swap="innerHTML">
+
+  <div class="form-section">
+    <h3>Prompt</h3>
+    <label>System prompt</label>
+    <textarea name="system_prompt" rows="6">{persona.system_prompt or ""}</textarea>
+  </div>
+
+  <div class="form-section">
+    <h3>Providers</h3>
+    <div class="field-row">
+      <div>
+        <label>LLM provider</label>
+        <input type="text" name="llm_provider" value="{persona.llm_provider}">
+      </div>
+      <div>
+        <label>LLM model (blank = config default)</label>
+        <input type="text" name="llm_model" value="{persona.llm_model or ""}" style="width:300px">
+      </div>
+    </div>
+    <div class="field-row">
+      <div>
+        <label>TTS provider</label>
+        <input type="text" name="tts_provider" value="{persona.tts_provider}">
+      </div>
+      <div>
+        <label>TTS voice (blank = provider default)</label>
+        <input type="text" name="tts_voice" value="{persona.tts_voice or ""}" style="width:300px">
+      </div>
+    </div>
+    <div class="field-row">
+      <div>
+        <label>ASR provider</label>
+        <input type="text" name="asr_provider" value="{persona.asr_provider}">
+      </div>
+    </div>
+  </div>
+
+  <div class="form-section">
+    <h3>Skills &amp; tools</h3>
+    <label>Server skills (comma-separated; blank = all enabled)
+      <span style="color:#6e7681"> — available: {", ".join(all_skills) or "none"}</span>
+    </label>
+    <input type="text" name="server_skills" value="{skills_val}" style="width:100%">
+    <label>Device MCP tool allowlist (comma-separated; blank = all allowed)</label>
+    <input type="text" name="mcp_tools_allowlist" value="{tools_val}" style="width:100%">
+  </div>
+
+  <div class="form-section">
+    <h3>Memory</h3>
+    <label>Conversation window (turns kept in LLM context)</label>
+    <input type="number" name="memory_window" value="{persona.memory_window}" min="1" max="200">
+  </div>
+
+  <button type="submit">Save</button>
+</form>"""
+        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+
+    @router.post("/dashboard/personas/{name}", response_class=HTMLResponse)
+    async def persona_save(
+        name: str,
+        system_prompt: str = Form(default=""),
+        llm_provider: str = Form(default=""),
+        llm_model: str = Form(default=""),
+        tts_provider: str = Form(default=""),
+        tts_voice: str = Form(default=""),
+        asr_provider: str = Form(default=""),
+        server_skills: str = Form(default=""),
+        mcp_tools_allowlist: str = Form(default=""),
+        memory_window: int = Form(default=20),
+    ) -> HTMLResponse:
+        import json as _json
+
+        def _to_json_list(raw: str) -> str | None:
+            parts = [s.strip() for s in raw.split(",") if s.strip()]
+            return _json.dumps(parts) if parts else None
+
+        ok = await store.update_persona(
+            name,
+            system_prompt=system_prompt,
+            llm_provider=llm_provider or None,
+            llm_model=llm_model,
+            tts_provider=tts_provider or None,
+            tts_voice=tts_voice,
+            asr_provider=asr_provider or None,
+            server_skills=_to_json_list(server_skills),
+            mcp_tools_allowlist=_to_json_list(mcp_tools_allowlist),
+            memory_window=max(1, memory_window),
+        )
+        if ok:
+            logger.info(f"Persona '{name}' updated via dashboard")
+            return HTMLResponse('<p class="msg">✓ Saved.</p>')
+        return HTMLResponse(f'<p style="color:#f85149">Persona \'{name}\' not found.</p>')
 
     # ── Models ────────────────────────────────────────────────────────────────
 
@@ -223,7 +373,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
   Loading…
 </div>
 """
-        return HTMLResponse(_PAGE.format(css=_CSS, body=body))
+        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
 
     @router.get("/dashboard/models/list", response_class=HTMLResponse)
     async def models_list(

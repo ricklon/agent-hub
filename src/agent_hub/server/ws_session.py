@@ -161,6 +161,10 @@ async def _run_voice_turn(
 
     # 3 — LLM (device MCP tools + server skills)
     history.append({"role": "user", "content": transcript})
+    # Trim to memory_window (keep most recent N turns = N*2 messages)
+    window = (persona.memory_window or 20) * 2
+    if len(history) > window:
+        del history[:-window]
     llm = get_llm(persona.llm_provider, config, model_override=persona.llm_model or None)
 
     base_prompt = persona.system_prompt or ""

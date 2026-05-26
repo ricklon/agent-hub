@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from agent_hub.registry.models import Agent, AgentKind, AgentStatus, Base, Persona
@@ -43,9 +43,24 @@ class RegistryStore:
         """Create tables and seed the hub-default persona if missing."""
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        await self._migrate()
         async with self._sessions() as session:
             await self._ensure_default_persona(session)
         logger.info("Registry store initialized")
+
+    async def _migrate(self) -> None:
+        """Add columns introduced after the initial schema without Alembic."""
+        new_columns = [
+            "ALTER TABLE personas ADD COLUMN server_skills TEXT",
+            "ALTER TABLE personas ADD COLUMN mcp_tools_allowlist TEXT",
+            "ALTER TABLE personas ADD COLUMN memory_window INTEGER DEFAULT 20 NOT NULL",
+        ]
+        async with self._engine.begin() as conn:
+            for stmt in new_columns:
+                try:
+                    await conn.execute(text(stmt))
+                except Exception:
+                    pass  # column already exists
 
     async def _ensure_default_persona(self, session: AsyncSession) -> None:
         result = await session.execute(
@@ -187,6 +202,57 @@ class RegistryStore:
             if persona is None:
                 return False
             persona.llm_model = model
+            await session.commit()
+            return True
+
+    async def get_persona_by_name(self, name: str) -> Persona | None:
+        """Return a persona by name, or None."""
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(Persona).where(Persona.name == name)
+            )
+            return result.scalar_one_or_none()
+
+    async def update_persona(
+        self,
+        persona_name: str,
+        *,
+        system_prompt: str | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        tts_provider: str | None = None,
+        tts_voice: str | None = None,
+        asr_provider: str | None = None,
+        server_skills: str | None = None,
+        mcp_tools_allowlist: str | None = None,
+        memory_window: int | None = None,
+    ) -> bool:
+        """Update editable fields on a persona. Returns False if not found."""
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(Persona).where(Persona.name == persona_name)
+            )
+            persona = result.scalar_one_or_none()
+            if persona is None:
+                return False
+            if system_prompt is not None:
+                persona.system_prompt = system_prompt
+            if llm_provider is not None:
+                persona.llm_provider = llm_provider
+            if llm_model is not None:
+                persona.llm_model = llm_model or None
+            if tts_provider is not None:
+                persona.tts_provider = tts_provider
+            if tts_voice is not None:
+                persona.tts_voice = tts_voice or None
+            if asr_provider is not None:
+                persona.asr_provider = asr_provider
+            if server_skills is not None:
+                persona.server_skills = server_skills or None
+            if mcp_tools_allowlist is not None:
+                persona.mcp_tools_allowlist = mcp_tools_allowlist or None
+            if memory_window is not None:
+                persona.memory_window = memory_window
             await session.commit()
             return True
 
