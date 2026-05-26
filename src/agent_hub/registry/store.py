@@ -213,6 +213,34 @@ class RegistryStore:
             )
             return result.scalar_one_or_none()
 
+    async def find_best_persona_for_tools(self, tool_names: list[str]) -> Persona | None:
+        """Return the most specific persona whose mcp_tools_allowlist is satisfied
+        by tool_names, or None if no persona has a matching non-empty allowlist.
+
+        "Most specific" means the longest allowlist that is still a subset of
+        the device's available tools — so a camera-aware persona beats a generic one
+        when both would otherwise qualify.
+        """
+        tool_set = set(tool_names)
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(Persona).where(Persona.mcp_tools_allowlist.isnot(None))
+            )
+            candidates = list(result.scalars().all())
+
+        best: Persona | None = None
+        best_score = -1
+        for p in candidates:
+            required = p.mcp_tools_allowlist_list
+            if not required:
+                continue
+            if set(required).issubset(tool_set):
+                score = len(required)
+                if score > best_score:
+                    best_score = score
+                    best = p
+        return best
+
     async def update_persona(
         self,
         persona_name: str,

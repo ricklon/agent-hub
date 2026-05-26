@@ -24,6 +24,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
+from starlette.requests import ClientDisconnect
 
 _TAG = "image_explain"
 
@@ -58,21 +59,27 @@ def make_router(config: dict[str, Any]) -> APIRouter:
         question = request.query_params.get("question", "What do you see?")
         jpeg_bytes: bytes = b""
 
-        if "multipart/form-data" in content_type:
-            form = await request.form()
-            for key in ("file", "image", "photo"):
-                if key in form:
-                    field_val = form[key]
-                    if hasattr(field_val, "read"):
-                        jpeg_bytes = await field_val.read()
-                    else:
-                        jpeg_bytes = str(field_val).encode()
-                    break
-            q = form.get("question")
-            if q:
-                question = str(q)
-        else:
-            jpeg_bytes = await request.body()
+        try:
+            if "multipart/form-data" in content_type:
+                form = await request.form()
+                for key in ("file", "image", "photo"):
+                    if key in form:
+                        field_val = form[key]
+                        if hasattr(field_val, "read"):
+                            jpeg_bytes = await field_val.read()
+                        else:
+                            jpeg_bytes = str(field_val).encode()
+                        break
+                q = form.get("question")
+                if q:
+                    question = str(q)
+            else:
+                jpeg_bytes = await request.body()
+        except ClientDisconnect:
+            logger.bind(tag=_TAG).debug("Client disconnected before sending image body")
+            return JSONResponse(
+                {"error": "client disconnected"}, status_code=499, headers=_CORS_HEADERS
+            )
 
         if not jpeg_bytes:
             return JSONResponse(

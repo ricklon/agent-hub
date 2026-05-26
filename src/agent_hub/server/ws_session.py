@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import uuid
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
@@ -48,6 +50,25 @@ from agent_hub.server import emotion as emotion_utils
 _TAG = "ws_session"
 
 _GREETING = "Agent hub connected. Ready."
+
+
+def _vision_url(config: dict) -> str:
+    """Derive the image-explain HTTP URL from the server config."""
+    srv = config.get("server") or {}
+    ws_port = int(srv.get("ws_port", 8000))
+    ws_override = str(srv.get("websocket", ""))
+    if ws_override:
+        http_base = ws_override.replace("ws://", "http://").replace("wss://", "https://")
+    else:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+        except Exception:
+            local_ip = "127.0.0.1"
+        http_base = f"http://{local_ip}:{ws_port}"
+    p = urlparse(http_base)
+    return urlunparse(p._replace(path="/xiaozhi/v1/image/", query="", fragment=""))
 
 
 async def _speak(
@@ -169,19 +190,27 @@ async def _run_voice_turn(
 
     base_prompt = persona.system_prompt or ""
 
-    # Append camera hint if the device exposes a photo tool.
-    # The camera tool runs on-device vision and returns a text description —
-    # always pass a 'question' arg describing what to look for.
-    camera_tools = {
-        n for n in (mcp_client.tools if (mcp_client and mcp_client.ready) else {})
-        if "photo" in n or "camera" in n or "image" in n
-    }
-    if camera_tools:
-        base_prompt = (
-            f"{base_prompt}\nYou have access to the device camera via {next(iter(camera_tools))}. "
-            f"Pass a 'question' arg describing what to look for. "
-            f"The tool returns a text description from the on-device vision model."
-        ).strip()
+    # Build a tools-awareness block so the LLM knows what's available.
+    # Tools vary per device (MCP) and are always extended by server skills.
+    tool_lines: list[str] = []
+
+    # Server-side skills (always present)
+    for defn in server_skills.get_definitions():
+        fn = defn["function"]
+        tool_lines.append(f"- {fn['name']}: {fn['description']}")
+
+    # Device MCP tools (discovered at connect time; vary by board)
+    if mcp_client and mcp_client.ready:
+        for name, data in mcp_client.tools.items():
+            desc = data.get("description", "")
+            extra = ""
+            if "photo" in name or "camera" in name or "image" in name:
+                extra = " Always pass a 'question' arg describing what to look for."
+            tool_lines.append(f"- {name}: {desc}{extra}")
+
+    if tool_lines:
+        tools_section = "Available tools you MUST use when relevant:\n" + "\n".join(tool_lines)
+        base_prompt = f"{base_prompt}\n\n{tools_section}".strip()
 
     if result.emotion and result.emotion != "NEUTRAL":
         system_prompt = f"{base_prompt}\n[User tone: {result.emotion.lower()}]".strip()
@@ -292,64 +321,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         await websocket.accept()
         logger.bind(tag=_TAG).info(f"WS connected: {device_id!r}")
 
-        # Resolve persona before touching the audio
-        persona = await store.get_persona_for_device(device_id)
-        if persona is None:
-            logger.bind(tag=_TAG).warning(
-                f"{device_id!r} has no persona — device may not have checked in yet"
-            )
-            await websocket.close(code=1008, reason="device not registered")
-            return
-
-        await store.set_agent_status(device_id, AgentStatus.ACTIVE)
-
         session_id = uuid.uuid4().hex
         pipeline_lock = asyncio.Lock()
         mcp_client: MCPClient | None = None
-
-        # Load persisted history; trim to memory_window on reconnect
-        window = (persona.memory_window or 20) * 2
-        conversation: list[dict[str, str]] = await store.load_history(
-            device_id, limit=window
-        )
-        if conversation:
-            logger.bind(tag=_TAG).debug(
-                f"{device_id!r} resumed {len(conversation)} messages from history"
-            )
-
-        async def _dispatch_pipeline(frames: list[bytes]) -> None:
-            if pipeline_lock.locked():
-                logger.bind(tag=_TAG).debug(
-                    f"{device_id!r} pipeline busy — dropping {len(frames)} frames"
-                )
-                return
-            prev_len = len(conversation)
-            async with pipeline_lock:
-                try:
-                    await _run_voice_turn(
-                        websocket,
-                        frames,
-                        session_id,
-                        hello.audio_params.sample_rate,
-                        hello.audio_params.frame_duration,
-                        persona,
-                        conversation,
-                        config,
-                        mcp_client,
-                        device_id,
-                        supports_emoji=hello.supports_emoji,
-                    )
-                except Exception as exc:
-                    logger.bind(tag=_TAG).error(
-                        f"Pipeline error for {device_id!r}: {exc}"
-                    )
-            # Persist any new messages added by the turn (user + assistant = 2)
-            new_msgs = conversation[prev_len:]
-            for msg in new_msgs:
-                await store.append_history(device_id, msg["role"], msg["content"])
+        active_pipeline: asyncio.Task | None = None
 
         try:
-            # hello / welcome handshake
+            # 1. Hello / welcome handshake
             raw = await websocket.receive_text()
             hello = ClientHello.from_json(json.loads(raw))
             logger.bind(tag=_TAG).debug(
@@ -362,13 +340,122 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 json.dumps(ServerWelcome(session_id=session_id).to_json())
             )
 
+            # 2. MCP registration — complete before persona assignment so the
+            #    server knows the device's exact capabilities when picking a persona.
             if hello.supports_mcp:
                 mcp_client = MCPClient(
                     websocket,
                     device_id,
                     on_ready=lambda tools: session_state.set_tools(device_id, tools),
                 )
-                await mcp_client.initialize()
+                image_token = (config.get("server") or {}).get("image_token", "")
+                await mcp_client.initialize(
+                    vision_url=_vision_url(config),
+                    vision_token=image_token,
+                )
+
+                # Drain incoming messages until the tools/list handshake completes.
+                # Audio bytes arriving now are dropped — the device hasn't been
+                # asked to listen yet so this is safe.
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 5.0
+                while not mcp_client.ready:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        logger.bind(tag=_TAG).warning(
+                            f"{device_id!r} MCP handshake timed out — "
+                            "proceeding without device tools"
+                        )
+                        break
+                    try:
+                        msg = await asyncio.wait_for(
+                            websocket.receive(), timeout=remaining
+                        )
+                    except asyncio.TimeoutError:
+                        break
+                    if "text" in msg:
+                        try:
+                            ctrl = json.loads(msg["text"])
+                        except (json.JSONDecodeError, TypeError):
+                            ctrl = {}
+                        if ctrl.get("type") == "mcp":
+                            await mcp_client.handle_message(ctrl.get("payload", {}))
+                        # other ctrl messages (listen:start etc.) handled in audio loop
+
+            # 3. Assign persona now that MCP capabilities are known.
+            #    Prefer a persona whose mcp_tools_allowlist matches the device's
+            #    tools (most specific wins); fall back to the device's stored assignment.
+            persona = None
+            if mcp_client and mcp_client.ready and mcp_client.tools:
+                persona = await store.find_best_persona_for_tools(
+                    list(mcp_client.tools.keys())
+                )
+                if persona:
+                    logger.bind(tag=_TAG).info(
+                        f"{device_id!r} matched persona {persona.name!r} "
+                        f"via tools {list(mcp_client.tools.keys())}"
+                    )
+            if persona is None:
+                persona = await store.get_persona_for_device(device_id)
+            if persona is None:
+                logger.bind(tag=_TAG).warning(
+                    f"{device_id!r} has no persona — device may not have checked in yet"
+                )
+                await websocket.close(code=1008, reason="device not registered")
+                return
+
+            await store.set_agent_status(device_id, AgentStatus.ACTIVE)
+
+            # Load persisted history; trim to memory_window on reconnect
+            window = (persona.memory_window or 20) * 2
+            conversation: list[dict[str, str]] = await store.load_history(
+                device_id, limit=window
+            )
+            if conversation:
+                logger.bind(tag=_TAG).debug(
+                    f"{device_id!r} resumed {len(conversation)} messages from history"
+                )
+
+            async def _dispatch_pipeline(frames: list[bytes]) -> None:
+                if pipeline_lock.locked():
+                    logger.bind(tag=_TAG).debug(
+                        f"{device_id!r} pipeline busy — dropping {len(frames)} frames"
+                    )
+                    return
+                prev_len = len(conversation)
+                async with pipeline_lock:
+                    try:
+                        await _run_voice_turn(
+                            websocket,
+                            frames,
+                            session_id,
+                            hello.audio_params.sample_rate,
+                            hello.audio_params.frame_duration,
+                            persona,
+                            conversation,
+                            config,
+                            mcp_client,
+                            device_id,
+                            supports_emoji=hello.supports_emoji,
+                        )
+                    except Exception as exc:
+                        import traceback as _tb
+                        logger.bind(tag=_TAG).error(
+                            f"Pipeline error for {device_id!r}: {exc}\n"
+                            + _tb.format_exc()
+                        )
+                new_msgs = conversation[prev_len:]
+                for msg in new_msgs:
+                    await store.append_history(device_id, msg["role"], msg["content"])
+
+            def _fire_pipeline(frames: list[bytes]) -> None:
+                nonlocal active_pipeline
+                if active_pipeline and not active_pipeline.done():
+                    logger.bind(tag=_TAG).debug(
+                        f"{device_id!r} pipeline busy — dropping {len(frames)} frames"
+                    )
+                    return
+                active_pipeline = asyncio.create_task(_dispatch_pipeline(frames))
 
             session_state.register_session(
                 device_id,
@@ -395,13 +482,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     frame_duration_ms=hello.audio_params.frame_duration,
                 )
 
-            # audio loop
+            # 4. Main audio loop
             while True:
                 msg = await websocket.receive()
 
                 if "bytes" in msg:
                     if vad.push(msg["bytes"]):
-                        await _dispatch_pipeline(vad.take())
+                        _fire_pipeline(vad.take())
 
                 elif "text" in msg:
                     try:
@@ -417,7 +504,6 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                             _speak(websocket, _GREETING, persona, config, session_id)
                         )
                     if ctrl_type == "listen" and ctrl.get("state") == "stop":
-                        # Button released / manual listen-stop — trigger immediately
                         frames = vad.take()
                         if frames:
                             await _dispatch_pipeline(frames)
@@ -434,6 +520,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         except Exception as exc:
             logger.bind(tag=_TAG).error(f"WS session error for {device_id!r}: {exc}")
         finally:
+            if active_pipeline and not active_pipeline.done():
+                active_pipeline.cancel()
             if mcp_client is not None:
                 mcp_client.cancel_pending()
             session_state.unregister_session(device_id)

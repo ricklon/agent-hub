@@ -83,6 +83,8 @@ class OpenAILLMProvider(LLMProvider):
                 tools=tools,  # type: ignore[arg-type]
                 tool_choice="auto",
             )
+            if not resp.choices:
+                return ""
             msg = resp.choices[0].message
 
             if not msg.tool_calls:
@@ -91,8 +93,10 @@ class OpenAILLMProvider(LLMProvider):
             working.append(msg.model_dump(exclude_unset=True))
 
             for tc in msg.tool_calls:
+                if tc is None or tc.function is None:
+                    continue
                 args = json.loads(tc.function.arguments or "{}")
-                result = await tool_executor(tc.function.name, args)
+                result = await tool_executor(tc.function.name or "", args)
                 # Image results (data URLs) need multimodal content blocks
                 if isinstance(result, str) and result.startswith("data:"):
                     content: Any = [{"type": "image_url", "image_url": {"url": result}}]
@@ -100,7 +104,7 @@ class OpenAILLMProvider(LLMProvider):
                     content = result
                 working.append({
                     "role": "tool",
-                    "tool_call_id": tc.id,
+                    "tool_call_id": tc.id or "",
                     "content": content,
                 })
 
@@ -109,6 +113,8 @@ class OpenAILLMProvider(LLMProvider):
             model=self._model,
             messages=working,  # type: ignore[arg-type]
         )
+        if not resp.choices:
+            return ""
         return (resp.choices[0].message.content or "").strip()
 
     async def stream(

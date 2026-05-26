@@ -63,15 +63,22 @@ class MCPClient:
     async def _send(self, payload: dict[str, Any]) -> None:
         await self._ws.send_text(json.dumps({"type": "mcp", "payload": payload}))
 
-    async def initialize(self) -> None:
-        logger.bind(tag=_TAG).debug(f"{self._device_id!r} sending MCP initialize")
+    async def initialize(self, vision_url: str = "", vision_token: str = "") -> None:
+        capabilities: dict[str, Any] = {}
+        if vision_url:
+            capabilities["vision"] = {"url": vision_url, "token": vision_token}
+
+        logger.bind(tag=_TAG).debug(
+            f"{self._device_id!r} sending MCP initialize "
+            f"(vision_url={vision_url!r})"
+        )
         await self._send({
             "jsonrpc": "2.0",
             "id": _MCP_INIT_ID,
             "method": "initialize",
             "params": {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {},
+                "capabilities": capabilities,
                 "clientInfo": {"name": "agent-hub", "version": "0.1.0"},
             },
         })
