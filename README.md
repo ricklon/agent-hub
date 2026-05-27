@@ -2,8 +2,6 @@
 
 A control plane for voice-enabled ESP32 devices and the agents that drive them.
 
-> **Working name.** `agent-hub` is a placeholder. Rename before public commits.
-
 ## What this is
 
 A self-hosted server that:
@@ -73,68 +71,147 @@ be changed remotely. New endpoints and documentation use `/checkin/`.
 
 ## Getting started
 
-### Prerequisites
+### Step 1 — Install the tools
 
-- Python 3.12+, [`uv`](https://github.com/astral-sh/uv) installed
-- An OpenAI-compatible API key (OpenRouter works; key goes in `.env`)
+You need two command-line tools before anything else.
 
-### First-time setup
-
-```sh
-uv sync --all-extras        # install dependencies
-just download-models        # download SenseVoiceSmall + Silero VAD (one-time, ~1 GB)
-cp .env.example .env        # then edit .env and set AGENT_HUB_LLM_OPENAI_API_KEY
-```
-
-The server also reads an optional `data/.config.yaml` for YAML-based config.
-If the file is absent, defaults and `.env` variables are used.
-
-### Run (local dev)
+**uv** — a fast Python package manager (replaces pip + virtualenv):
 
 ```sh
-just run        # starts WS :8000 + dashboard :8001 + check-in :8003
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Open `http://localhost:8001/dashboard/` to see connected devices.
-
-### Run (Docker)
+**just** — a command runner (like `make`, but simpler). All project tasks
+are defined in `justfile`. Install it once, then use `just <target>`:
 
 ```sh
-just docker-build
-just docker-up
+# macOS
+brew install just
+
+# Linux
+curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+
+# Windows (winget)
+winget install Casey.Just
 ```
 
-The compose file mounts `./data` and reads `.env`. Same three ports are
-exposed on the host.
+> **No `just`?** Every `just <target>` is just a shortcut. You can run the
+> underlying command directly — e.g. `just run` is `uv run python -m agent_hub.server`.
+> Check `justfile` in the repo root to see each command.
 
-### Configuration
+### Step 2 — Get an API key
 
-Environment variable override pattern: `AGENT_HUB_<SECTION>_<KEY>`.
-Key variables:
+agent-hub needs a language model to power conversation. The easiest option
+is **OpenRouter**, which provides free access to many models and accepts a
+single API key for all of them.
+
+1. Go to [openrouter.ai](https://openrouter.ai) and sign in
+2. Click your profile → **Keys** → **Create key**
+3. Copy the key (starts with `sk-or-`)
+
+You can also use OpenAI directly, a local Ollama server, or any other
+OpenAI-compatible API. See `.env.example` for examples.
+
+### Step 3 — Configure
+
+```sh
+cp .env.example .env
+```
+
+Open `.env` and set at minimum:
+
+```
+AGENT_HUB_LLM_OPENAI_API_KEY=sk-or-your-key-here
+```
+
+If your server and devices are on the same LAN (home, classroom, makerspace),
+also set the WebSocket URL so devices know where to connect:
+
+```
+AGENT_HUB_SERVER_WEBSOCKET=ws://YOUR_LAN_IP:8000/xiaozhi/v1/
+```
+
+Replace `YOUR_LAN_IP` with the IP address of the machine running agent-hub
+(find it with `ip route get 8.8.8.8` on Linux or `ipconfig` on Windows).
+
+### Step 4 — Download models (first time only, ~1 GB)
+
+agent-hub runs speech recognition locally using SenseVoiceSmall. Download
+it once:
+
+```sh
+just download-models
+# or without just:
+uv run python scripts/download_models.py
+```
+
+This downloads to the `models/` folder and only needs to run once.
+
+### Step 5 — Run
+
+```sh
+just run
+# or without just:
+uv run python -m agent_hub.server
+```
+
+Open **`http://localhost:8000/dashboard/`** in a browser. Devices will
+appear there as they connect.
+
+Three ports are used:
+
+| Port | Purpose |
+|------|---------|
+| `8000` | WebSocket voice sessions + dashboard |
+| `8001` | Dashboard (same app, alternate port) |
+| `8003` | Device check-in / OTA endpoint |
+
+### Docker (optional)
+
+Docker lets you run agent-hub in a container without installing Python or
+uv on your machine. It's most useful for always-on deployments (a home
+server, a Raspberry Pi, a cloud VM) rather than day-to-day development.
+
+```sh
+just docker-build   # build the image (once, or after code changes)
+just docker-up      # start the container
+```
+
+The container reads your `.env` file and mounts `./data` so the device
+registry and transcripts persist between restarts.
+
+### Configuration reference
+
+All settings can be set via environment variables using the pattern
+`AGENT_HUB_<SECTION>_<KEY>`. The `.env` file is the easiest place to put them.
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENT_HUB_LLM_OPENAI_API_KEY` | — | **Required.** LLM provider API key |
-| `AGENT_HUB_LLM_OPENAI_BASE_URL` | OpenAI | Override for OpenRouter or local LLM |
-| `AGENT_HUB_LLM_OPENAI_MODEL` | `gpt-4o-mini` | Model name |
-| `AGENT_HUB_SERVER_HOST` | `0.0.0.0` | Bind address |
-| `AGENT_HUB_SERVER_WS_PORT` | `8000` | WebSocket session port |
-| `AGENT_HUB_SERVER_WEBSOCKET` | — | Public WS URL sent to devices on check-in |
+| `AGENT_HUB_LLM_OPENAI_API_KEY` | — | **Required.** API key for the LLM |
+| `AGENT_HUB_LLM_OPENAI_BASE_URL` | OpenAI | URL of the LLM API (OpenRouter, Ollama, etc.) |
+| `AGENT_HUB_LLM_OPENAI_MODEL` | `gpt-4o-mini` | Model name to use |
+| `AGENT_HUB_TTS_EDGE_VOICE` | `en-US-AriaNeural` | Edge TTS voice name |
+| `AGENT_HUB_SERVER_WEBSOCKET` | auto-detected LAN IP | WS URL sent to devices on check-in |
+| `AGENT_HUB_SERVER_WS_PORT` | `8000` | WebSocket / dashboard port |
+| `AGENT_HUB_SERVER_HTTP_PORT` | `8003` | Device check-in port |
 
-See `.env.example` for the full list.
+See `.env.example` for the full list with comments.
 
-### Available `just` targets
+### `just` targets reference
 
-| Target | What it does |
-|---|---|
-| `just run` | Start server (all three ports, single process) |
-| `just dashboard` | Dashboard UI only |
-| `just docker-build` | Build Docker image |
-| `just docker-up` | Run via Docker Compose |
-| `just install` | `uv sync --all-extras` |
-| `just download-models` | Fetch SenseVoice + Silero models |
-| `just test` | Run pytest suite |
-| `just lint` | Ruff check + format check |
+| Target | Command | What it does |
+|---|---|---|
+| `just run` | `uv run python -m agent_hub.server` | Start server (all ports) |
+| `just install` | `uv sync --all-extras` | Install / update dependencies |
+| `just download-models` | `uv run python scripts/download_models.py` | Fetch local ASR models |
+| `just docker-build` | `docker compose build` | Build Docker image |
+| `just docker-up` | `docker compose up` | Run via Docker |
+| `just test` | `pytest -xvs` | Run test suite |
+| `just lint` | `ruff check src/ tests/` | Check code style |
 
 ## Status
 
@@ -205,6 +282,7 @@ TBD.
 
 ## See also
 
+- [`docs/device-setup.md`](docs/device-setup.md) — how to configure an ESP32 device to connect
 - `AGENTS.md` — coding-agent instructions and skill catalogue
 - Upstream xiaozhi-server: https://github.com/xinnan-tech/xiaozhi-esp32-server
 - Upstream firmware: https://github.com/78/xiaozhi-esp32
