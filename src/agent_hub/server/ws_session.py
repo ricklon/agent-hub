@@ -373,6 +373,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         )
                     except asyncio.TimeoutError:
                         break
+                    except (WebSocketDisconnect, RuntimeError):
+                        logger.bind(tag=_TAG).debug(
+                            f"{device_id!r} disconnected during MCP handshake"
+                        )
+                        return
+                    if msg.get("type") == "websocket.disconnect":
+                        logger.bind(tag=_TAG).debug(
+                            f"{device_id!r} disconnect frame during MCP handshake"
+                        )
+                        return
                     if "text" in msg:
                         try:
                             ctrl = json.loads(msg["text"])
