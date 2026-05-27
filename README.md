@@ -1,6 +1,12 @@
 # agent-hub
 
-A control plane for voice-enabled ESP32 devices and the agents that drive them.
+A self-hosted server that turns ESP32 hardware into talking AI assistants.
+Flash a device, point it at agent-hub, and it can hold a spoken conversation
+powered by any AI model you choose — running in your home, classroom, or
+makerspace with no cloud dependency beyond the model API.
+
+> New here? Read **[docs/concepts.md](docs/concepts.md)** for a plain-English
+> explanation of how everything fits together before diving into setup.
 
 ## What this is
 
@@ -282,6 +288,7 @@ TBD.
 
 ## See also
 
+- [`docs/concepts.md`](docs/concepts.md) — plain-English explanation of how everything works
 - [`docs/device-setup.md`](docs/device-setup.md) — how to configure an ESP32 device to connect
 - `AGENTS.md` — coding-agent instructions and skill catalogue
 - Upstream xiaozhi-server: https://github.com/xinnan-tech/xiaozhi-esp32-server
