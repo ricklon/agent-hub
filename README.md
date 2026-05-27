@@ -290,6 +290,7 @@ TBD.
 
 - [`docs/concepts.md`](docs/concepts.md) — plain-English explanation of how everything works
 - [`docs/device-setup.md`](docs/device-setup.md) — how to configure an ESP32 device to connect
+- [`docs/lessons-learned.md`](docs/lessons-learned.md) — non-obvious bugs, root causes, and fixes
 - `AGENTS.md` — coding-agent instructions and skill catalogue
 - Firmware fork (use this): https://github.com/ricklon/xiaozhi-esp32
 - Upstream xiaozhi-server: https://github.com/xinnan-tech/xiaozhi-esp32-server
