@@ -241,6 +241,60 @@ class RegistryStore:
                     best = p
         return best
 
+    async def create_persona(
+        self,
+        name: str,
+        *,
+        system_prompt: str = "",
+        llm_provider: str = "openai",
+        llm_model: str | None = None,
+        tts_provider: str = "edge",
+        tts_voice: str | None = None,
+        asr_provider: str = "funasr",
+    ) -> Persona | None:
+        """Create a new persona. Returns None if the name is already taken."""
+        async with self._sessions() as session:
+            existing = await session.execute(
+                select(Persona).where(Persona.name == name)
+            )
+            if existing.scalar_one_or_none() is not None:
+                return None
+            persona = Persona(
+                name=name,
+                system_prompt=system_prompt,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                tts_provider=tts_provider,
+                tts_voice=tts_voice,
+                asr_provider=asr_provider,
+            )
+            session.add(persona)
+            await session.commit()
+            await session.refresh(persona)
+            logger.info(f"Created persona '{name}'")
+            return persona
+
+    async def assign_persona(self, device_id: str, persona_name: str) -> bool:
+        """Assign a persona to a device by name. Returns False if either not found."""
+        async with self._sessions() as session:
+            agent_result = await session.execute(
+                select(Agent).where(Agent.device_id == device_id)
+            )
+            agent = agent_result.scalar_one_or_none()
+            if agent is None:
+                return False
+            persona_result = await session.execute(
+                select(Persona).where(Persona.name == persona_name)
+            )
+            persona = persona_result.scalar_one_or_none()
+            if persona is None:
+                return False
+            agent.persona_id = persona.id
+            agent.status = AgentStatus.CLAIMED.value
+            await session.commit()
+            logger.info(f"Assigned persona '{persona_name}' to agent '{device_id}'")
+            return True
+
     async def update_persona(
         self,
         persona_name: str,

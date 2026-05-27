@@ -115,12 +115,20 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             f'<p style="color:#8b949e;font-size:0.8rem">{len(turns)} messages</p>'
         )
 
+    @router.post("/dashboard/agents/{device_id}/assign_persona", response_class=HTMLResponse)
+    async def agent_assign_persona(device_id: str, persona_name: str = Form(...)) -> HTMLResponse:
+        ok = await store.assign_persona(device_id, persona_name)
+        if not ok:
+            return HTMLResponse(f'<p style="color:#f85149">Assignment failed — persona or device not found.</p>')
+        return HTMLResponse(f'<p class="msg">✓ Assigned <strong>{persona_name}</strong>. Takes effect on next voice session.</p>')
+
     @router.get("/dashboard/agents/{device_id}", response_class=HTMLResponse)
     async def agent_detail(device_id: str, request: Request) -> HTMLResponse:
         agent = await store.get_agent(device_id)
         if agent is None:
             return HTMLResponse(_PAGE.format(css=_full_css, body="<p>Agent not found.</p>"))
         persona = await store.get_persona_for_device(device_id)
+        all_personas = await store.list_personas()
         dev = session_state.get_state(device_id)
         connected = session_state.is_connected(device_id)
 
@@ -132,6 +140,18 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         )
 
         # Persona section
+        persona_options = "".join(
+            f'<option value="{p.name}" {"selected" if persona and p.name == persona.name else ""}>'
+            f'{p.name}</option>'
+            for p in all_personas
+        )
+        assign_form = f"""\
+<form hx-post="/dashboard/agents/{device_id}/assign_persona"
+      hx-target="#assign-result" hx-swap="innerHTML" style="display:inline-flex;gap:0.5rem;align-items:center">
+  <select name="persona_name">{persona_options}</select>
+  <button type="submit">Assign</button>
+</form>
+<span id="assign-result" style="margin-left:0.5rem"></span>"""
         if persona:
             model_str = (
                 persona.llm_model
@@ -144,8 +164,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 provider_detail += f' <span style="color:#8b949e;font-size:0.75rem">({base_url})</span>'
             persona_html = f"""\
 <h3>Persona</h3>
-<table style="width:auto">
-  <tr><th>name</th><td>{persona.name}</td></tr>
+{assign_form}
+<table style="width:auto;margin-top:0.75rem">
+  <tr><th>name</th><td>{persona.name} &nbsp;<a href="/dashboard/personas/{persona.name}" style="color:#58a6ff;font-size:0.8rem">edit →</a></td></tr>
   <tr><th>model</th><td>{model_str}</td></tr>
   <tr><th>LLM provider</th><td>{provider_detail}</td></tr>
   <tr><th>TTS provider</th><td>{persona.tts_provider}{f" / {persona.tts_voice}" if persona.tts_voice else ""}</td></tr>
@@ -153,7 +174,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
   <tr><th>system prompt</th><td style="white-space:pre-wrap;max-width:600px">{persona.system_prompt or "—"}</td></tr>
 </table>"""
         else:
-            persona_html = "<p>No persona assigned.</p>"
+            persona_html = f"<h3>Persona</h3><p>No persona assigned.</p>{assign_form}"
 
         # Tools section
         import agent_hub.skills as _skills
@@ -292,8 +313,51 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
   <th>name</th><th>LLM</th><th>TTS</th><th>ASR</th><th>memory</th><th></th>
 </tr></thead>
 <tbody>{rows}</tbody>
-</table>"""
+</table>
+<h3 style="margin-top:2rem">New persona</h3>
+<div id="new-persona-result"></div>
+<form hx-post="/dashboard/personas"
+      hx-target="#new-persona-result" hx-swap="innerHTML">
+  <div class="field-row">
+    <div>
+      <label>Name</label>
+      <input type="text" name="name" required placeholder="e.g. grumpy-pirate">
+    </div>
+    <div>
+      <label>TTS voice</label>
+      <input type="text" name="tts_voice" placeholder="e.g. en-GB-RyanNeural">
+    </div>
+    <div>
+      <label>LLM model (blank = default)</label>
+      <input type="text" name="llm_model" placeholder="">
+    </div>
+  </div>
+  <label>System prompt</label>
+  <textarea name="system_prompt" rows="4"
+    placeholder="You are a helpful voice assistant..."></textarea>
+  <button type="submit">Create</button>
+</form>"""
         return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+
+    @router.post("/dashboard/personas", response_class=HTMLResponse)
+    async def persona_create(
+        name: str = Form(...),
+        system_prompt: str = Form(default=""),
+        tts_voice: str = Form(default=""),
+        llm_model: str = Form(default=""),
+    ) -> HTMLResponse:
+        persona = await store.create_persona(
+            name,
+            system_prompt=system_prompt,
+            tts_voice=tts_voice or None,
+            llm_model=llm_model or None,
+        )
+        if persona is None:
+            return HTMLResponse(f'<p style="color:#f85149">Name \'{name}\' already taken.</p>')
+        return HTMLResponse(
+            f'<p class="msg">✓ Created. <a href="/dashboard/personas/{persona.name}" '
+            f'style="color:#58a6ff">Edit {persona.name} →</a></p>'
+        )
 
     @router.get("/dashboard/personas/{name}", response_class=HTMLResponse)
     async def persona_edit_page(name: str, request: Request) -> HTMLResponse:
