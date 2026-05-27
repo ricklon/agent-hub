@@ -288,6 +288,7 @@ TBD.
 
 ## See also
 
+- [`docs/demo-quickstart.md`](docs/demo-quickstart.md) — pre-event checklist + fast setup for demos and study groups
 - [`docs/concepts.md`](docs/concepts.md) — plain-English explanation of how everything works
 - [`docs/device-setup.md`](docs/device-setup.md) — how to configure an ESP32 device to connect
 - [`docs/lessons-learned.md`](docs/lessons-learned.md) — non-obvious bugs, root causes, and fixes
