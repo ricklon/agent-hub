@@ -26,10 +26,11 @@ supported here (XIAO ESP32-S3 Sense, Waveshare ESP32-S3) add a microphone,
 speaker, and sometimes a camera or touchscreen.
 
 These boards run firmware — low-level software burned onto the chip. The
-firmware used here is [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32),
-an open-source project that turns the board into a voice terminal. The
-firmware handles wake-word detection, audio encoding, and WiFi; it does not
-do any AI itself.
+firmware used here is [ricklon/xiaozhi-esp32](https://github.com/ricklon/xiaozhi-esp32),
+a fork of the open-source xiaozhi-esp32 project that adds a local-server
+workflow, per-board build tooling (`switch-board.sh`), and serial commands
+for configuration (`!server`, `!wifi`, `!status`). The firmware handles
+wake-word detection, audio encoding, and WiFi; it does not do any AI itself.
 
 ## The voice pipeline
 
