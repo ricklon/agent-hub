@@ -185,6 +185,8 @@ async def _run_llm_turn(
     tools = device_tools + skill_tools
 
     t1 = time.monotonic()
+    captured_images: list[str] = []
+
     if tools:
         async def _exec_tool(name: str, args: dict) -> str:
             logger.bind(tag=_TAG).info(f"Tool call: {name!r} args={args}")
@@ -198,6 +200,10 @@ async def _run_llm_turn(
                         name, args,
                         timeout=60.0 if ("camera" in name or "photo" in name) else 30.0,
                     )
+                    if "camera" in name or "photo" in name:
+                        img = session_state.get_latest_image(device_id)
+                        if img:
+                            captured_images.append(img)
                 elif server_skills.has_skill(name):
                     result = await server_skills.run(name, args)
                 else:
@@ -218,7 +224,11 @@ async def _run_llm_turn(
     if not reply:
         history.pop()
         return 0, 0, ""
-    history.append({"role": "assistant", "content": reply})
+    # Embed captured image path as a marker so the history view can render it
+    history_content = reply
+    if captured_images:
+        history_content = f"{reply}\n[image:{captured_images[0]}]"
+    history.append({"role": "assistant", "content": history_content})
     logger.bind(tag=_TAG).info(f"LLM ({llm_ms}ms): {reply!r}")
 
     tts_text = reply
@@ -503,12 +513,26 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     f"{device_id!r} resumed {len(conversation)} messages from history"
                 )
 
+            pending_frames: list[bytes] | None = None
+
             async def _dispatch_pipeline(frames: list[bytes]) -> None:
+                nonlocal pending_frames
                 if pipeline_lock.locked():
                     logger.bind(tag=_TAG).debug(
                         f"{device_id!r} pipeline busy — dropping {len(frames)} frames"
                     )
                     return
+                # Signal device that we're thinking
+                if hello.supports_emoji:
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "llm",
+                            "session_id": session_id,
+                            "text": "🤔",
+                            "emotion": "thinking",
+                        }))
+                    except Exception:
+                        pass
                 prev_len = len(conversation)
                 async with pipeline_lock:
                     try:
@@ -534,13 +558,19 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 new_msgs = conversation[prev_len:]
                 for msg in new_msgs:
                     await store.append_history(device_id, msg["role"], msg["content"])
+                # Run the most recent turn that arrived while we were busy
+                if pending_frames is not None:
+                    queued = pending_frames
+                    pending_frames = None
+                    _fire_pipeline(queued)
 
             def _fire_pipeline(frames: list[bytes]) -> None:
-                nonlocal active_pipeline
+                nonlocal active_pipeline, pending_frames
                 if active_pipeline and not active_pipeline.done():
                     logger.bind(tag=_TAG).debug(
-                        f"{device_id!r} pipeline busy — dropping {len(frames)} frames"
+                        f"{device_id!r} pipeline busy — queuing {len(frames)} frames"
                     )
+                    pending_frames = frames
                     return
                 active_pipeline = asyncio.create_task(_dispatch_pipeline(frames))
 

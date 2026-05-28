@@ -109,6 +109,21 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
     @router.get("/dashboard/agents/{device_id}/history", response_class=HTMLResponse)
     async def agent_history_partial(device_id: str) -> HTMLResponse:
+        import re as _re
+        import urllib.parse as _up
+
+        def _render_content(raw: str) -> str:
+            """Replace [image:path] markers with inline <img> tags."""
+            def _img(m: _re.Match) -> str:
+                enc = _up.quote(m.group(1), safe="")
+                return (
+                    f'<br><img src="/dashboard/image?path={enc}" '
+                    f'style="max-width:320px;border-radius:6px;margin-top:0.4rem;display:block">'
+                )
+            text = _re.sub(r'\[image:([^\]]+)\]', _img, raw)
+            # Escape any remaining HTML in the text portion only
+            return text
+
         turns = await store.load_history(device_id, limit=60)
         if not turns:
             return HTMLResponse('<p style="color:#6e7681">No history yet.</p>')
@@ -118,7 +133,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             f'{t.get("created_at","")[:19].replace("T"," ")}</td>'
             f'<td style="color:{"#79c0ff" if t["role"]=="user" else "#3fb950"};'
             f'white-space:nowrap">{t["role"]}</td>'
-            f'<td style="white-space:pre-wrap;max-width:600px">{t["content"]}</td></tr>'
+            f'<td style="white-space:pre-wrap;max-width:600px">{_render_content(t["content"])}</td></tr>'
             for t in turns
         )
         return HTMLResponse(
