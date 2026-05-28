@@ -7,6 +7,7 @@ The dashboard reads this alongside the DB to show live metrics.
 
 from __future__ import annotations
 
+import time as _time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -50,6 +51,8 @@ _device_latest_image: dict[str, str] = {}
 # Live pipeline status per device: phase + current text snippet
 _pipeline_phase: dict[str, str] = {}   # "idle" | "transcribing" | "thinking" | "speaking"
 _pipeline_text: dict[str, str] = {}    # current transcript or reply snippet
+_pipeline_prev: dict[str, str] = {}    # phase before the current one
+_pipeline_since: dict[str, float] = {} # monotonic time of last phase change
 
 
 def register_session(
@@ -156,6 +159,10 @@ def mark_greeted(device_id: str) -> None:
 # ── Live pipeline status ──────────────────────────────────────────────────────
 
 def set_pipeline_status(device_id: str, phase: str, text: str = "") -> None:
+    old = _pipeline_phase.get(device_id, "idle")
+    if old != phase:
+        _pipeline_prev[device_id] = old
+        _pipeline_since[device_id] = _time.monotonic()
     _pipeline_phase[device_id] = phase
     _pipeline_text[device_id] = text
 
@@ -165,3 +172,12 @@ def get_pipeline_status(device_id: str) -> tuple[str, str]:
         _pipeline_phase.get(device_id, "idle"),
         _pipeline_text.get(device_id, ""),
     )
+
+
+def get_pipeline_age(device_id: str) -> float:
+    """Seconds since the pipeline phase last changed."""
+    return _time.monotonic() - _pipeline_since.get(device_id, 0.0)
+
+
+def get_prev_pipeline_phase(device_id: str) -> str:
+    return _pipeline_prev.get(device_id, "idle")

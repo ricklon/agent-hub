@@ -144,7 +144,14 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
     @router.get("/dashboard/agents/{device_id}/pipeline_status", response_class=HTMLResponse)
     async def agent_pipeline_status(device_id: str) -> HTMLResponse:
+        import time as _time
         phase, text = session_state.get_pipeline_status(device_id)
+        # Debounce idle: hold the previous active phase for 1.5s so brief
+        # failed transcriptions don't cause idle↔transcribing flickering.
+        if phase == "idle" and session_state.get_pipeline_age(device_id) < 1.5:
+            prev = session_state.get_prev_pipeline_phase(device_id)
+            if prev not in ("idle", "offline"):
+                phase = prev
         phase_styles = {
             "idle":          ("color:#6e7681", "idle"),
             "transcribing":  ("color:#d29922", "▶ transcribing…"),
