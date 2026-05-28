@@ -51,6 +51,32 @@ _TAG = "ws_session"
 
 _GREETING = "Agent hub connected. Ready."
 
+import re as _re
+
+def _parse_ctrl(text: str) -> dict:
+    """Parse a WebSocket text control message, repairing known firmware JSON bugs.
+
+    Some firmware versions emit ) instead of } as a JSON object closing delimiter.
+    We repair that pattern before parsing so MCP handshake succeeds.
+    """
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    try:
+        # Firmware bug: stray ) inserted before } in JSON object close sequence
+        repaired = _re.sub(r'\)([,}\]\s])', r'\1', text)
+        result = json.loads(repaired)
+        logger.bind(tag=_TAG).debug("Repaired malformed firmware JSON (')' → '}')")
+        return result
+    except (json.JSONDecodeError, TypeError) as _e2:
+        logger.bind(tag=_TAG).warning(
+            f"JSON repair also failed ({_e2})\nFull text: {text!r}"
+        )
+        return {}
+
 
 def _vision_url(config: dict) -> str:
     """Derive the image-explain HTTP URL from the server config."""
@@ -384,10 +410,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         )
                         return
                     if "text" in msg:
-                        try:
-                            ctrl = json.loads(msg["text"])
-                        except (json.JSONDecodeError, TypeError):
-                            ctrl = {}
+                        ctrl = _parse_ctrl(msg["text"] or "")
                         if ctrl.get("type") == "mcp":
                             await mcp_client.handle_message(ctrl.get("payload", {}))
                         # other ctrl messages (listen:start etc.) handled in audio loop
@@ -501,11 +524,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         _fire_pipeline(vad.take())
 
                 elif "text" in msg:
-                    try:
-                        ctrl = json.loads(msg["text"])
-                    except (json.JSONDecodeError, TypeError):
-                        ctrl = {}
-
+                    ctrl = _parse_ctrl(msg["text"] or "")
                     ctrl_type = ctrl.get("type")
                     if ctrl_type == "listen" and ctrl.get("state") == "start" \
                             and not session_state.has_greeted(device_id):
