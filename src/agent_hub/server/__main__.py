@@ -25,6 +25,41 @@ from agent_hub.server.image_explain import make_router as make_image_router
 from agent_hub.server.ws_session import make_router as make_ws_router
 
 
+_prewarmed = False
+
+
+async def _prewarm_providers(config: dict) -> None:
+    """Load local ML models before the first voice turn so latency is consistent.
+
+    Guarded by a module-level flag because the startup event fires once per
+    uvicorn server instance (three times in the multi-port setup).
+    """
+    global _prewarmed
+    if _prewarmed:
+        return
+    _prewarmed = True
+
+    from pathlib import Path
+    from agent_hub.providers.asr import get_provider as get_asr
+    from agent_hub.server.audio import pcm_to_wav
+
+    model_dir = config.get("asr", {}).get("funasr", {}).get(
+        "model_dir", "models/SenseVoiceSmall"
+    )
+    if not Path(model_dir).exists():
+        return  # funasr not installed/configured, nothing to warm
+
+    try:
+        logger.info(f"Pre-warming FunASR model ({model_dir})…")
+        asr = get_asr("funasr", config)
+        # 0.1 s of silence at 16 kHz (16-bit PCM) — just enough to trigger model load
+        silent_wav = pcm_to_wav(bytes(3200), 16000)
+        await asr.transcribe(silent_wav)
+        logger.info("FunASR model warm — first turn will not stall.")
+    except Exception as exc:
+        logger.warning(f"ASR pre-warm failed (non-fatal): {exc}")
+
+
 def build_app() -> FastAPI:
     raw_config = load_config()
     settings = load_settings()
@@ -41,6 +76,7 @@ def build_app() -> FastAPI:
             f"WS on :{settings.server.ws_port}, "
             f"dashboard on :{settings.server.dashboard_port}"
         )
+        asyncio.create_task(_prewarm_providers(raw_config))
 
     @app.get("/")
     async def root() -> RedirectResponse:
