@@ -127,6 +127,39 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             f'<p style="color:#8b949e;font-size:0.8rem">{len(turns)} messages</p>'
         )
 
+    @router.get("/dashboard/agents/{device_id}/status", response_class=HTMLResponse)
+    async def agent_status_partial(device_id: str) -> HTMLResponse:
+        ws_connected = session_state.is_connected(device_id)
+        mcp_client = session_state.get_mcp_client(device_id)
+        agent = await store.get_agent(device_id)
+        db_status = agent.status if agent else "unknown"
+
+        if ws_connected:
+            ws_html = '<span style="color:#3fb950">● connected</span>'
+        else:
+            ws_html = '<span style="color:#6e7681">○ offline</span>'
+
+        if mcp_client and mcp_client.ready:
+            tool_names = ", ".join(mcp_client.tools.keys())
+            mcp_html = (
+                f'<span style="color:#3fb950">● ready</span> '
+                f'<span style="color:#8b949e;font-size:0.8rem">— {len(mcp_client.tools)} tools: {tool_names}</span>'
+            )
+        elif mcp_client and not mcp_client.ready:
+            mcp_html = '<span style="color:#d29922">⚠ handshake pending</span>'
+        elif ws_connected:
+            mcp_html = '<span style="color:#6e7681">— not supported</span>'
+        else:
+            mcp_html = '<span style="color:#6e7681">○ —</span>'
+
+        status_color = {"active": "#3fb950", "idle": "#d29922"}.get(str(db_status).lower(), "#6e7681")
+        return HTMLResponse(f"""\
+<table style="width:auto;margin-bottom:0.5rem">
+  <tr><th style="width:7rem">WebSocket</th><td>{ws_html}</td></tr>
+  <tr><th>MCP</th><td>{mcp_html}</td></tr>
+  <tr><th>Agent status</th><td><span style="color:{status_color}">{db_status}</span></td></tr>
+</table>""")
+
     @router.post("/dashboard/agents/{device_id}/assign_persona", response_class=HTMLResponse)
     async def agent_assign_persona(device_id: str, persona_name: str = Form(...)) -> HTMLResponse:
         ok = await store.assign_persona(device_id, persona_name)
@@ -262,13 +295,17 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
         body = f"""\
 <p><a href="/dashboard/" style="color:#58a6ff">← agents</a></p>
-<h2>{device_id} <span class="{status_class}" style="font-size:1rem">{agent.status}</span>
-  &nbsp;{conn_badge}</h2>
-<p style="color:#8b949e">
+<h2>{device_id}</h2>
+<p style="color:#8b949e;margin-top:-0.5rem">
   IP: {agent.ip_address or "—"} &nbsp;·&nbsp;
   Firmware: {agent.firmware_version or "—"} &nbsp;·&nbsp;
   Last seen: {agent.last_seen.strftime("%H:%M:%S") if agent.last_seen else "—"}
 </p>
+<h3>Connection</h3>
+<div hx-get="/dashboard/agents/{device_id}/status"
+     hx-trigger="load, every 3s"
+     hx-swap="innerHTML"
+     id="device-status">Loading…</div>
 {persona_html}
 <h3>Device MCP tools</h3>
 <div>{device_tool_badges}</div>
@@ -669,7 +706,7 @@ def _agent_table(rows: str) -> str:
 <div hx-get="/dashboard/agents" hx-trigger="every 5s" hx-swap="outerHTML">
 <table>
 <thead><tr>
-  <th>device-id</th><th>status</th><th>persona / model</th>
+  <th>device-id</th><th>connection</th><th>persona / model</th>
   <th>tools</th><th>latency (last / avg)</th>
   <th>ip</th><th>fw</th><th>last seen</th>
 </tr></thead>
@@ -715,6 +752,28 @@ async def _render_agent_rows(store: RegistryStore) -> str:
         )
         tools_cell = (tool_badges + skill_badges) or '<span style="color:#6e7681">—</span>'
 
+        # Connection + MCP status cell
+        ws_connected = session_state.is_connected(agent.device_id)
+        mcp_client = session_state.get_mcp_client(agent.device_id)
+        if ws_connected and mcp_client and mcp_client.ready:
+            conn_cell = (
+                '<span style="color:#3fb950">● WS + MCP ready</span>'
+                f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
+                f'{len(mcp_client.tools)} tools · {agent.status}</div>'
+            )
+        elif ws_connected:
+            conn_cell = (
+                '<span style="color:#d29922">◑ WS connected</span>'
+                f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
+                f'MCP pending · {agent.status}</div>'
+            )
+        else:
+            conn_cell = (
+                '<span style="color:#6e7681">○ offline</span>'
+                f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
+                f'{agent.status}</div>'
+            )
+
         # Latency cell
         if dev.turns > 0:
             L, A = dev.last, dev.avg
@@ -732,7 +791,7 @@ async def _render_agent_rows(store: RegistryStore) -> str:
         rows.append(f"""\
 <tr>
   <td><a href="/dashboard/agents/{agent.device_id}" style="color:#58a6ff">{agent.device_id}</a></td>
-  <td class="status-{agent.status}">{agent.status}</td>
+  <td>{conn_cell}</td>
   <td>{persona_name}{model_line}</td>
   <td>{tools_cell}</td>
   <td>{lat_cell}</td>
