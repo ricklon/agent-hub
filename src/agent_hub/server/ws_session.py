@@ -192,6 +192,8 @@ async def _run_llm_turn(
                 if mcp_client and mcp_client.ready and name in mcp_client.tools:
                     if ("camera" in name or "photo" in name) and "question" not in args:
                         args = {**args, "question": "What do you see?"}
+                    if "camera" in name or "photo" in name:
+                        await _speak(websocket, "Hold on, let me take a look.", persona, config, session_id)
                     result = await mcp_client.call_tool(
                         name, args,
                         timeout=60.0 if ("camera" in name or "photo" in name) else 30.0,
