@@ -220,6 +220,71 @@ raw text if a new firmware version breaks this again.
 
 ## Audio pipeline
 
+### FunASR / SenseVoiceSmall has significant cold-start latency
+
+**What happened:** First voice turn after server start took 10–20 seconds to
+transcribe. Subsequent turns were fast (under 1 second).
+
+**Root cause:** FunASR loads the SenseVoiceSmall ONNX model lazily on first
+use — `asr.transcribe()` triggers a multi-second model load the first time.
+
+**Fix:** Added `_prewarm_providers()` in `__main__.py` that runs a silent 0.1s
+WAV through the ASR model at startup, inside `asyncio.create_task`. The task
+guard (`_prewarmed` flag) prevents the three uvicorn startup events from each
+triggering a load.
+
+**Watch for:** If a new ASR provider is added, it won't be pre-warmed
+automatically. The prewarm task is currently hardcoded to check for the
+FunASR `model_dir` config key.
+
+---
+
+### LLM call hangs silently for up to 10 minutes
+
+**What happened:** A device would ask a question, the server would log "ASR",
+then nothing for many minutes. The session appeared frozen.
+
+**Root cause:** `AsyncOpenAI` default timeout is 600 seconds. A slow or
+unresponsive inference backend simply stalls the coroutine for the full
+default.
+
+**Fix:** Constructed the client with `timeout=60.0`. Camera MCP calls also
+got an explicit 60-second timeout (versus 30s for other tools).
+
+---
+
+### Greeting fires after the first voice turn, not before
+
+**What happened:** The device would process the user's first utterance, reply,
+and then say "Hello! Agent Hub connected." — backwards.
+
+**Root cause:** Greeting was sent via `asyncio.create_task(speak(...))` on a
+"listen:start" control message. The task raced with the first incoming voice
+pipeline and usually lost.
+
+**Fix:** Moved the greeting to a plain `await _speak(...)` call placed before
+the audio receive loop, guarded by `session_state.has_greeted(device_id)`.
+Greeting now always completes before any user audio is processed.
+
+---
+
+### Pipeline status display flickers between idle and transcribing
+
+**What happened:** Dashboard showed rapid idle↔transcribing cycling even when
+no speech was being processed.
+
+**Root cause:** VAD triggers frequently on ambient noise and speaker echo.
+Each triggered segment goes through ASR and, if rejected as non-speech or
+too short, immediately resets to idle. With a 1-second poll interval, the
+dashboard caught these brief cycles visually.
+
+**Fix:** Added a 1.5-second debounce in the pipeline status endpoint: if the
+current phase is "idle" and the phase changed less than 1.5s ago, the
+endpoint returns the previous active phase instead. This masks rapid
+noise-triggered cycles without delaying real state transitions.
+
+---
+
 ### SenseVoice EMO_UNKNOWN was filtering out real speech
 
 **What happened:** Short or quiet speech was being dropped because the ASR
@@ -244,6 +309,37 @@ excessive "pipeline busy — dropping N frames."
 **Fix:** Changed from lock-based dispatch to `asyncio.Task` (`_fire_pipeline`).
 A running task blocks new dispatches, but the logic is cleaner and the
 task can be cancelled on disconnect.
+
+---
+
+### Speech during a long LLM turn was silently discarded
+
+**What happened:** If the user spoke while the LLM was still generating a
+reply (e.g. during a slow tool call), the VAD frames were dropped and the
+device never processed what was said.
+
+**Root cause:** `_fire_pipeline` returned immediately if a pipeline task was
+already running. The incoming frames were thrown away.
+
+**Fix:** Added a `pending_frames` variable in the session closure. When the
+pipeline is busy, `_fire_pipeline` stores the latest batch instead of
+discarding it. After each pipeline completes, `_dispatch_pipeline` checks
+`pending_frames` and re-fires if anything is waiting. The device is sent
+a 🤔 emoji immediately when frames are queued so the user gets visual
+feedback that their speech was received.
+
+---
+
+### Long tool calls (camera) give no user feedback
+
+**What happened:** The device called the camera MCP tool, which can take up
+to 60 seconds. The device face showed nothing and the user had no idea
+what was happening.
+
+**Fix:** The `_exec_tool` closure now speaks "Hold on, let me take a look."
+before any camera/photo tool call. The TTS plays immediately on the device
+so the user knows something is in progress even before the tool result
+returns.
 
 ---
 
@@ -288,4 +384,4 @@ via `-DSDKCONFIG=$bdir/sdkconfig`. Switching boards is now safe and fast
 
 ---
 
-*Last updated: 2026-05-27*
+*Last updated: 2026-05-28*
