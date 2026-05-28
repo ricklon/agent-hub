@@ -41,8 +41,11 @@ _sessions: dict[str, tuple[
 # Active MCP clients: device_id → MCPClient (any to avoid circular import)
 _mcp_clients: dict[str, Any] = {}
 
-# Text injectors: device_id → async callable(text: str)
-_injectors: dict[str, Callable[[str], Awaitable[None]]] = {}
+# Text injectors: device_id → async callable(text: str) → reply str
+_injectors: dict[str, Callable[[str], Awaitable[str]]] = {}
+
+# Latest captured image path per device
+_device_latest_image: dict[str, str] = {}
 
 
 def register_session(
@@ -69,13 +72,21 @@ def get_mcp_client(device_id: str) -> Any | None:
 
 def register_injector(
     device_id: str,
-    fn: Callable[[str], Awaitable[None]],
+    fn: Callable[[str], Awaitable[str]],
 ) -> None:
     _injectors[device_id] = fn
 
 
-def get_injector(device_id: str) -> Callable[[str], Awaitable[None]] | None:
+def get_injector(device_id: str) -> Callable[[str], Awaitable[str]] | None:
     return _injectors.get(device_id)
+
+
+def set_latest_image(device_id: str, path: str) -> None:
+    _device_latest_image[device_id] = path
+
+
+def get_latest_image(device_id: str) -> str | None:
+    return _device_latest_image.get(device_id)
 
 
 def get_speak(device_id: str) -> Callable[[str], Awaitable[None]] | None:

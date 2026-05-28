@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
 from agent_hub.registry.store import RegistryStore
@@ -78,6 +78,17 @@ _PAGE = """\
 def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     router = APIRouter()
     api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
+
+    # ── Static image serving ──────────────────────────────────────────────────
+
+    @router.get("/dashboard/image")
+    async def serve_image(path: str) -> Response:
+        """Serve a saved device capture JPEG by filesystem path."""
+        from pathlib import Path as _Path
+        p = _Path(path)
+        if not p.exists() or p.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+            return Response(status_code=404)
+        return Response(content=p.read_bytes(), media_type="image/jpeg")
 
     # ── Agents ───────────────────────────────────────────────────────────────
 
@@ -325,8 +336,27 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         injector = session_state.get_injector(device_id)
         if injector is None:
             return HTMLResponse('<p style="color:#f85149">Device not connected.</p>')
-        asyncio.create_task(injector(text.strip()))
-        return HTMLResponse(f'<p class="msg">▶ Injected: "{text.strip()}" — reply will be spoken on device.</p>')
+        try:
+            reply = await asyncio.wait_for(injector(text.strip()), timeout=90.0)
+        except asyncio.TimeoutError:
+            return HTMLResponse('<p style="color:#f85149">Timed out waiting for reply (>90s).</p>')
+        except Exception as exc:
+            return HTMLResponse(f'<p style="color:#f85149">Pipeline error: {exc}</p>')
+        if not reply:
+            return HTMLResponse('<p style="color:#6e7681">Pipeline ran but produced no reply.</p>')
+        # Show reply + latest captured image (if this turn triggered a capture)
+        img_path = session_state.get_latest_image(device_id)
+        img_html = ""
+        if img_path:
+            import urllib.parse as _up
+            enc = _up.quote(img_path, safe="")
+            img_html = (
+                f'<img src="/dashboard/image?path={enc}" '
+                f'style="max-width:100%;border-radius:6px;margin-top:0.5rem;display:block">'
+            )
+        return HTMLResponse(
+            f'<p class="msg">▶ {reply}</p>{img_html}'
+        )
 
     @router.post("/dashboard/agents/{device_id}/clear_history", response_class=HTMLResponse)
     async def agent_clear_history(device_id: str) -> HTMLResponse:

@@ -330,14 +330,24 @@ async def _run_text_turn(
     mcp_client: MCPClient | None,
     device_id: str,
     supports_emoji: bool,
-) -> None:
-    """Run one LLM → TTS cycle from an injected text utterance, bypassing ASR."""
+) -> str:
+    """Run one LLM → TTS cycle from an injected text utterance, bypassing ASR.
+    Returns the LLM reply text (empty string if no reply).
+    """
     logger.bind(tag=_TAG).info(f"{device_id!r} injected utterance: {transcript!r}")
     await websocket.send_text(json.dumps({
         "type": "stt",
         "session_id": session_id,
         "text": transcript,
     }))
+    # Show thinking face on device while pipeline runs
+    if supports_emoji:
+        await websocket.send_text(json.dumps({
+            "type": "llm",
+            "session_id": session_id,
+            "text": "🤔",
+            "emotion": "thinking",
+        }))
 
     llm_ms, tts_ms, reply = await _run_llm_turn(
         websocket, transcript, session_id, persona, history, config,
@@ -356,6 +366,7 @@ async def _run_text_turn(
             llm_ms=llm_ms,
             tts_ms=tts_ms,
         )
+    return reply
 
 
 def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
@@ -413,8 +424,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 )
                 session_state.register_mcp_client(device_id, mcp_client)
                 image_token = (config.get("server") or {}).get("image_token", "")
+                base_vision_url = _vision_url(config)
+                sep = "&" if "?" in base_vision_url else "?"
+                vision_url_with_id = f"{base_vision_url}{sep}device_id={device_id}"
                 await mcp_client.initialize(
-                    vision_url=_vision_url(config),
+                    vision_url=vision_url_with_id,
                     vision_token=image_token,
                 )
 
@@ -534,16 +548,17 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 send_json=lambda payload: websocket.send_text(json.dumps(payload)),
             )
 
-            async def _dispatch_text_pipeline(transcript: str) -> None:
+            async def _dispatch_text_pipeline(transcript: str) -> str:
                 if pipeline_lock.locked():
                     logger.bind(tag=_TAG).debug(
                         f"{device_id!r} pipeline busy — dropping injected turn"
                     )
-                    return
+                    return ""
+                reply = ""
                 prev_len = len(conversation)
                 async with pipeline_lock:
                     try:
-                        await _run_text_turn(
+                        reply = await _run_text_turn(
                             websocket, transcript, session_id, persona,
                             conversation, config, mcp_client, device_id,
                             supports_emoji=hello.supports_emoji,
@@ -557,6 +572,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 new_msgs = conversation[prev_len:]
                 for m in new_msgs:
                     await store.append_history(device_id, m["role"], m["content"])
+                return reply
 
             session_state.register_injector(device_id, _dispatch_text_pipeline)
 

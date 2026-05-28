@@ -18,6 +18,8 @@ Empty/missing token config disables auth entirely (dev mode).
 from __future__ import annotations
 
 import base64
+from datetime import datetime, UTC
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -25,6 +27,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.requests import ClientDisconnect
+
+from agent_hub.server import session_state as _session_state
 
 _TAG = "image_explain"
 
@@ -86,9 +90,20 @@ def make_router(config: dict[str, Any]) -> APIRouter:
                 {"error": "no image data"}, status_code=400, headers=_CORS_HEADERS
             )
 
+        device_id = request.query_params.get("device_id", "")
         logger.bind(tag=_TAG).info(
             f"Image explain: {len(jpeg_bytes)} bytes, question={question!r}"
+            + (f", device={device_id!r}" if device_id else "")
         )
+
+        # Save the JPEG so the dashboard can display it
+        if device_id:
+            img_dir = Path("data/images") / device_id.replace(":", "-")
+            img_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+            img_path = img_dir / f"{ts}.jpg"
+            img_path.write_bytes(jpeg_bytes)
+            _session_state.set_latest_image(device_id, str(img_path))
 
         # Build data URL for the vision model
         b64 = base64.b64encode(jpeg_bytes).decode()
