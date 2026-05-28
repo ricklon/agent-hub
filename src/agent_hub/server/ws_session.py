@@ -140,92 +140,30 @@ async def _speak(
     }))
 
 
-async def _run_voice_turn(
+async def _run_llm_turn(
     websocket: WebSocket,
-    opus_frames: list[bytes],
+    transcript: str,
     session_id: str,
-    audio_params_sample_rate: int,
-    audio_params_frame_duration: int,
     persona: Persona,
     history: list[dict[str, str]],
     config: dict[str, Any],
-    mcp_client: MCPClient | None = None,
-    device_id: str = "",
-    supports_emoji: bool = False,
-) -> None:
-    """Run one ASR → LLM → TTS → Opus-encode → send cycle.
-
-    Args:
-        websocket: Open WebSocket connection to the device.
-        opus_frames: Raw Opus packets comprising one speech turn.
-        session_id: Session UUID echoed in stt/tts state messages.
-        audio_params_sample_rate: Device sample rate from the hello message.
-        audio_params_frame_duration: Device Opus frame duration in ms (typically 60).
-        persona: The device's assigned persona (LLM / TTS / ASR config).
-        history: Conversation history, mutated in-place with new turns.
-        config: Raw application config dict for provider factory calls.
-    """
-    # 1 — decode Opus frames to WAV for Whisper
-    decoder = OpusDecoder(audio_params_sample_rate, audio_params_frame_duration)
-    pcm_chunks = [decoder.decode(f) for f in opus_frames]
-    wav_bytes = pcm_to_wav(b"".join(pcm_chunks), audio_params_sample_rate)
-
-    # 2 — ASR
-    t0 = time.monotonic()
-    asr = get_asr(persona.asr_provider, config)
-    result = await asr.transcribe(wav_bytes)
-    asr_ms = int((time.monotonic() - t0) * 1000)
-    if not result.is_speech:
-        logger.bind(tag=_TAG).debug(f"Non-speech event, skipping turn")
-        return
-    transcript = result.text
-    if not transcript or len(transcript.split()) < 2:
-        logger.bind(tag=_TAG).debug(f"Transcript too short, skipping: {transcript!r}")
-        return
-    logger.bind(tag=_TAG).info(
-        f"ASR ({asr_ms}ms): {transcript!r} "
-        f"[emotion={result.emotion} lang={result.language or '?'}]"
-    )
-
-    # Tell the device what was heard (shown on display if present)
-    await websocket.send_text(json.dumps({
-        "type": "stt",
-        "session_id": session_id,
-        "text": transcript,
-    }))
-
-    # Reactive emotion: mirror user's detected tone on device face immediately
-    if supports_emoji:
-        face = emotion_utils.user_emotion_face(result.emotion)
-        if face:
-            emoji, em_name = face
-            await websocket.send_text(json.dumps({
-                "type": "llm",
-                "session_id": session_id,
-                "text": emoji,
-                "emotion": em_name,
-            }))
-
-    # 3 — LLM (device MCP tools + server skills)
+    mcp_client: MCPClient | None,
+    device_id: str,
+    supports_emoji: bool,
+    emotion: str = "",
+) -> tuple[int, int, str]:
+    """LLM + TTS half of a voice turn. Mutates history. Returns (llm_ms, tts_ms, reply)."""
     history.append({"role": "user", "content": transcript})
-    # Trim to memory_window (keep most recent N turns = N*2 messages)
     window = (persona.memory_window or 20) * 2
     if len(history) > window:
         del history[:-window]
     llm = get_llm(persona.llm_provider, config, model_override=persona.llm_model or None)
 
     base_prompt = persona.system_prompt or ""
-
-    # Build a tools-awareness block so the LLM knows what's available.
-    # Tools vary per device (MCP) and are always extended by server skills.
     tool_lines: list[str] = []
-
-    # Server-side skills (always present)
     for defn in server_skills.get_definitions():
         fn = defn["function"]
         tool_lines.append(f"- {fn['name']}: {fn['description']}")
-
-    # Device MCP tools (discovered at connect time; vary by board)
     if mcp_client and mcp_client.ready:
         for name, data in mcp_client.tools.items():
             desc = data.get("description", "")
@@ -233,13 +171,12 @@ async def _run_voice_turn(
             if "photo" in name or "camera" in name or "image" in name:
                 extra = " Always pass a 'question' arg describing what to look for."
             tool_lines.append(f"- {name}: {desc}{extra}")
-
     if tool_lines:
         tools_section = "Available tools you MUST use when relevant:\n" + "\n".join(tool_lines)
         base_prompt = f"{base_prompt}\n\n{tools_section}".strip()
 
-    if result.emotion and result.emotion != "NEUTRAL":
-        system_prompt = f"{base_prompt}\n[User tone: {result.emotion.lower()}]".strip()
+    if emotion and emotion != "NEUTRAL":
+        system_prompt = f"{base_prompt}\n[User tone: {emotion.lower()}]".strip()
     else:
         system_prompt = base_prompt
 
@@ -253,8 +190,6 @@ async def _run_voice_turn(
             logger.bind(tag=_TAG).info(f"Tool call: {name!r} args={args}")
             try:
                 if mcp_client and mcp_client.ready and name in mcp_client.tools:
-                    # Camera tool: firmware requires 'question' arg and returns on-device LLM text.
-                    # If the LLM omits question, supply a default so the call doesn't fail.
                     if ("camera" in name or "photo" in name) and "question" not in args:
                         args = {**args, "question": "What do you see?"}
                     result = await mcp_client.call_tool(
@@ -279,12 +214,11 @@ async def _run_voice_turn(
     llm_ms = int((time.monotonic() - t1) * 1000)
 
     if not reply:
-        history.pop()  # don't persist a turn with no reply
-        return
+        history.pop()
+        return 0, 0, ""
     history.append({"role": "assistant", "content": reply})
     logger.bind(tag=_TAG).info(f"LLM ({llm_ms}ms): {reply!r}")
 
-    # Extract emoji from reply → send device face, strip before TTS
     tts_text = reply
     if supports_emoji:
         face = emotion_utils.extract_reply_emotion(reply)
@@ -298,10 +232,75 @@ async def _run_voice_turn(
             }))
             tts_text = emotion_utils.strip_emoji(reply)
 
-    # 4 — TTS → stream to device
     t2 = time.monotonic()
     await _speak(websocket, tts_text, persona, config, session_id)
     tts_ms = int((time.monotonic() - t2) * 1000)
+
+    return llm_ms, tts_ms, reply
+
+
+async def _run_voice_turn(
+    websocket: WebSocket,
+    opus_frames: list[bytes],
+    session_id: str,
+    audio_params_sample_rate: int,
+    audio_params_frame_duration: int,
+    persona: Persona,
+    history: list[dict[str, str]],
+    config: dict[str, Any],
+    mcp_client: MCPClient | None = None,
+    device_id: str = "",
+    supports_emoji: bool = False,
+) -> None:
+    """Run one ASR → LLM → TTS cycle."""
+    # 1 — decode Opus frames to WAV for Whisper
+    decoder = OpusDecoder(audio_params_sample_rate, audio_params_frame_duration)
+    pcm_chunks = [decoder.decode(f) for f in opus_frames]
+    wav_bytes = pcm_to_wav(b"".join(pcm_chunks), audio_params_sample_rate)
+
+    # 2 — ASR
+    t0 = time.monotonic()
+    asr = get_asr(persona.asr_provider, config)
+    result = await asr.transcribe(wav_bytes)
+    asr_ms = int((time.monotonic() - t0) * 1000)
+    if not result.is_speech:
+        logger.bind(tag=_TAG).debug(f"Non-speech event, skipping turn")
+        return
+    transcript = result.text
+    if not transcript or len(transcript.split()) < 2:
+        logger.bind(tag=_TAG).debug(f"Transcript too short, skipping: {transcript!r}")
+        return
+    logger.bind(tag=_TAG).info(
+        f"ASR ({asr_ms}ms): {transcript!r} "
+        f"[emotion={result.emotion} lang={result.language or '?'}]"
+    )
+
+    await websocket.send_text(json.dumps({
+        "type": "stt",
+        "session_id": session_id,
+        "text": transcript,
+    }))
+
+    # Reactive emotion: mirror user's detected tone on device face immediately
+    if supports_emoji:
+        face = emotion_utils.user_emotion_face(result.emotion)
+        if face:
+            emoji, em_name = face
+            await websocket.send_text(json.dumps({
+                "type": "llm",
+                "session_id": session_id,
+                "text": emoji,
+                "emotion": em_name,
+            }))
+
+    # 3+4 — LLM + TTS
+    llm_ms, tts_ms, reply = await _run_llm_turn(
+        websocket, transcript, session_id, persona, history, config,
+        mcp_client, device_id, supports_emoji, emotion=result.emotion,
+    )
+
+    if not reply:
+        return
 
     if device_id:
         session_state.record_turn(device_id, asr_ms, llm_ms, tts_ms)
@@ -309,7 +308,7 @@ async def _run_voice_turn(
             device_id=device_id,
             text=transcript,
             emotion=result.emotion,
-            language=result.language,
+            language=result.language or "",
             reply=reply,
             asr_ms=asr_ms,
             llm_ms=llm_ms,
@@ -319,6 +318,44 @@ async def _run_voice_turn(
         f"Turn latency — ASR:{asr_ms}ms LLM:{llm_ms}ms TTS:{tts_ms}ms "
         f"total:{asr_ms + llm_ms + tts_ms}ms"
     )
+
+
+async def _run_text_turn(
+    websocket: WebSocket,
+    transcript: str,
+    session_id: str,
+    persona: Persona,
+    history: list[dict[str, str]],
+    config: dict[str, Any],
+    mcp_client: MCPClient | None,
+    device_id: str,
+    supports_emoji: bool,
+) -> None:
+    """Run one LLM → TTS cycle from an injected text utterance, bypassing ASR."""
+    logger.bind(tag=_TAG).info(f"{device_id!r} injected utterance: {transcript!r}")
+    await websocket.send_text(json.dumps({
+        "type": "stt",
+        "session_id": session_id,
+        "text": transcript,
+    }))
+
+    llm_ms, tts_ms, reply = await _run_llm_turn(
+        websocket, transcript, session_id, persona, history, config,
+        mcp_client, device_id, supports_emoji, emotion="",
+    )
+
+    if reply and device_id:
+        session_state.record_turn(device_id, 0, llm_ms, tts_ms)
+        transcript_log.log_turn(
+            device_id=device_id,
+            text=transcript,
+            emotion="injected",
+            language="",
+            reply=reply,
+            asr_ms=0,
+            llm_ms=llm_ms,
+            tts_ms=tts_ms,
+        )
 
 
 def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
@@ -496,6 +533,32 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 speak=lambda text: _speak(websocket, text, persona, config, session_id),
                 send_json=lambda payload: websocket.send_text(json.dumps(payload)),
             )
+
+            async def _dispatch_text_pipeline(transcript: str) -> None:
+                if pipeline_lock.locked():
+                    logger.bind(tag=_TAG).debug(
+                        f"{device_id!r} pipeline busy — dropping injected turn"
+                    )
+                    return
+                prev_len = len(conversation)
+                async with pipeline_lock:
+                    try:
+                        await _run_text_turn(
+                            websocket, transcript, session_id, persona,
+                            conversation, config, mcp_client, device_id,
+                            supports_emoji=hello.supports_emoji,
+                        )
+                    except Exception as exc:
+                        import traceback as _tb
+                        logger.bind(tag=_TAG).error(
+                            f"Text pipeline error for {device_id!r}: {exc}\n"
+                            + _tb.format_exc()
+                        )
+                new_msgs = conversation[prev_len:]
+                for m in new_msgs:
+                    await store.append_history(device_id, m["role"], m["content"])
+
+            session_state.register_injector(device_id, _dispatch_text_pipeline)
 
             vad_model = config.get("vad", {}).get("silero", {}).get(
                 "model_path", "models/silero_vad.onnx"

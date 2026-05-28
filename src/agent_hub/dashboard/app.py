@@ -5,6 +5,7 @@ Server-rendered with HTMX — no SPA build step.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -221,6 +222,14 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 </form>
 {camera_btn}
 <span id="reboot-result" style="margin-left:0.75rem"></span>
+<h3>Inject utterance</h3>
+<p style="color:#8b949e;font-size:0.85rem">Simulate speech — runs the full LLM pipeline and speaks the reply on the device.</p>
+<form hx-post="/dashboard/agents/{device_id}/inject"
+      hx-target="#inject-result" hx-swap="innerHTML" style="display:flex;gap:0.5rem;align-items:center">
+  <input type="text" name="text" value="tell me what you see" style="width:360px">
+  <button type="submit" style="background:#1a4a6e">▶ Inject</button>
+</form>
+<div id="inject-result" style="margin-top:0.5rem"></div>
 <h3>Send message to device</h3>
 <form hx-post="/dashboard/agents/{device_id}/speak"
       hx-target="#speak-result" hx-swap="innerHTML">
@@ -308,6 +317,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             return HTMLResponse(f'<p style="color:#c9d1d9">{result}</p>')
         except Exception as exc:
             return HTMLResponse(f'<p style="color:#f85149">Capture failed: {exc}</p>')
+
+    @router.post("/dashboard/agents/{device_id}/inject", response_class=HTMLResponse)
+    async def agent_inject(device_id: str, text: str = Form(...)) -> HTMLResponse:
+        if not text.strip():
+            return HTMLResponse('<p style="color:#f85149">Empty message.</p>')
+        injector = session_state.get_injector(device_id)
+        if injector is None:
+            return HTMLResponse('<p style="color:#f85149">Device not connected.</p>')
+        asyncio.create_task(injector(text.strip()))
+        return HTMLResponse(f'<p class="msg">▶ Injected: "{text.strip()}" — reply will be spoken on device.</p>')
 
     @router.post("/dashboard/agents/{device_id}/clear_history", response_class=HTMLResponse)
     async def agent_clear_history(device_id: str) -> HTMLResponse:

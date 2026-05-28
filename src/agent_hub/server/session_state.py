@@ -41,6 +41,9 @@ _sessions: dict[str, tuple[
 # Active MCP clients: device_id → MCPClient (any to avoid circular import)
 _mcp_clients: dict[str, Any] = {}
 
+# Text injectors: device_id → async callable(text: str)
+_injectors: dict[str, Callable[[str], Awaitable[None]]] = {}
+
 
 def register_session(
     device_id: str,
@@ -53,6 +56,7 @@ def register_session(
 def unregister_session(device_id: str) -> None:
     _sessions.pop(device_id, None)
     _mcp_clients.pop(device_id, None)
+    _injectors.pop(device_id, None)
 
 
 def register_mcp_client(device_id: str, client: Any) -> None:
@@ -61,6 +65,17 @@ def register_mcp_client(device_id: str, client: Any) -> None:
 
 def get_mcp_client(device_id: str) -> Any | None:
     return _mcp_clients.get(device_id)
+
+
+def register_injector(
+    device_id: str,
+    fn: Callable[[str], Awaitable[None]],
+) -> None:
+    _injectors[device_id] = fn
+
+
+def get_injector(device_id: str) -> Callable[[str], Awaitable[None]] | None:
+    return _injectors.get(device_id)
 
 
 def get_speak(device_id: str) -> Callable[[str], Awaitable[None]] | None:
