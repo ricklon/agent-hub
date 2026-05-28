@@ -201,9 +201,16 @@ but `tools/list` was never sent and no tools were discovered. Server logged
 fails immediately at that character, so `handle_message` was never called, and the
 `tools/list` request was never sent.
 
-**Fix:** `_parse_ctrl()` in `ws_session.py` tries `json.loads` first; on failure it
-strips stray `)` characters that appear immediately before `,` or `}` (structural JSON
-positions) using `re.sub(r'\)([,}\]])', r'\1', text)`, then retries.
+**Server-side fix (applied first):** `_parse_ctrl()` in `ws_session.py` tries `json.loads`
+first; on failure it strips stray `)` characters that appear immediately before `,` or `}`
+using `re.sub(r'\)([,}\]])', r'\1', text)`, then retries. Still in place as a safety net
+for devices on old firmware.
+
+**Firmware fix:** `Board::GetMcpCapabilitiesJson()`, `WifiBoard::GetBoardJson()`, and the
+MCP initialize/reply paths were converted from hand-rolled string serialization to cJSON.
+This eliminates the stray-delimiter class of bug entirely. MCP replies now also escape
+error messages, include `error.code`, and correctly echo string/number/null IDs.
+Fixed in the build after 2.2.6 (xiao-esp32-s3-sense verified).
 
 **Watch for:** `"MCP handshake timed out"` with no preceding `"MCP server:"` line means
 the `initialize` response never parsed. Add `_parse_ctrl` debug logging to inspect the
