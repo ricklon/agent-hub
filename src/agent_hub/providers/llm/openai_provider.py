@@ -32,7 +32,7 @@ class OpenAILLMProvider(LLMProvider):
             base_url: Override API base URL (e.g. 'http://localhost:11434/v1'
                 for Ollama).
         """
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
         self._model = model
 
     def _build_messages(
