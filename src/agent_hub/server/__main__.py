@@ -10,7 +10,7 @@ All routes share a single process and SQLite registry, served on three ports:
 from __future__ import annotations
 
 import asyncio
-import socket
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
@@ -24,11 +24,10 @@ from agent_hub.server.checkin import make_router as make_checkin_router
 from agent_hub.server.image_explain import make_router as make_image_router
 from agent_hub.server.ws_session import make_router as make_ws_router
 
-
 _prewarmed = False
 
 
-async def _prewarm_providers(config: dict) -> None:
+async def _prewarm_providers(config: dict[str, Any]) -> None:
     """Load local ML models before the first voice turn so latency is consistent.
 
     Guarded by a module-level flag because the startup event fires once per
@@ -40,12 +39,11 @@ async def _prewarm_providers(config: dict) -> None:
     _prewarmed = True
 
     from pathlib import Path
+
     from agent_hub.providers.asr import get_provider as get_asr
     from agent_hub.server.audio import pcm_to_wav
 
-    model_dir = config.get("asr", {}).get("funasr", {}).get(
-        "model_dir", "models/SenseVoiceSmall"
-    )
+    model_dir = config.get("asr", {}).get("funasr", {}).get("model_dir", "models/SenseVoiceSmall")
     if not Path(model_dir).exists():
         return  # funasr not installed/configured, nothing to warm
 
@@ -100,11 +98,13 @@ if __name__ == "__main__":
     app = build_app()
     host = settings.server.host
 
-    ports = sorted({
-        settings.server.ws_port,
-        settings.server.http_port,
-        settings.server.dashboard_port,
-    })
+    ports = sorted(
+        {
+            settings.server.ws_port,
+            settings.server.http_port,
+            settings.server.dashboard_port,
+        }
+    )
 
     servers = [_make_server(app, host, p) for p in ports]
 

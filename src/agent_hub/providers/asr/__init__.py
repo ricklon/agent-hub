@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -12,9 +12,9 @@ class Transcript:
     """Result from a single ASR transcription."""
 
     text: str
-    emotion: str = "NEUTRAL"   # SenseVoice emotion tag, uppercase
-    language: str = ""          # BCP-47 detected language, empty = unknown
-    is_speech: bool = True      # False when event type is non-speech (BGM, noise, etc.)
+    emotion: str = "NEUTRAL"  # SenseVoice emotion tag, uppercase
+    language: str = ""  # BCP-47 detected language, empty = unknown
+    is_speech: bool = True  # False when event type is non-speech (BGM, noise, etc.)
 
     def __bool__(self) -> bool:
         return bool(self.text) and self.is_speech

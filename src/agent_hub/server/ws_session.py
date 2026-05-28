@@ -16,15 +16,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re as _re
 import socket
+import time
 import uuid
+from contextlib import suppress
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
-
-import time
 
 import agent_hub.skills as server_skills
 from agent_hub.providers.asr import get_provider as get_asr
@@ -32,6 +33,8 @@ from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.tts import get_provider as get_tts
 from agent_hub.registry.models import AgentStatus, Persona
 from agent_hub.registry.store import RegistryStore
+from agent_hub.server import emotion as emotion_utils
+from agent_hub.server import session_state, transcript_log
 from agent_hub.server.audio import (
     AudioRateController,
     OpusDecoder,
@@ -43,17 +46,16 @@ from agent_hub.server.audio import (
 )
 from agent_hub.server.mcp_client import MCPClient
 from agent_hub.server.protocol import SERVER_TTS_AUDIO_PARAMS, ClientHello, ServerWelcome
-from agent_hub.server import session_state
-from agent_hub.server import transcript_log
-from agent_hub.server import emotion as emotion_utils
 
 _TAG = "ws_session"
 
 _GREETING = "Agent hub connected. Ready."
 
-import re as _re
 
-def _parse_ctrl(text: str) -> dict:
+JsonDict = dict[str, Any]
+
+
+def _parse_ctrl(text: str) -> JsonDict:
     """Parse a WebSocket text control message, repairing known firmware JSON bugs.
 
     Some firmware versions emit ) instead of } as a JSON object closing delimiter.
@@ -62,23 +64,22 @@ def _parse_ctrl(text: str) -> dict:
     if not text:
         return {}
     try:
-        return json.loads(text)
+        result = json.loads(text)
+        return result if isinstance(result, dict) else {}
     except (json.JSONDecodeError, TypeError):
         pass
     try:
         # Firmware bug: stray ) inserted before } in JSON object close sequence
-        repaired = _re.sub(r'\)([,}\]\s])', r'\1', text)
+        repaired = _re.sub(r"\)([,}\]\s])", r"\1", text)
         result = json.loads(repaired)
         logger.bind(tag=_TAG).debug("Repaired malformed firmware JSON (')' → '}')")
-        return result
+        return result if isinstance(result, dict) else {}
     except (json.JSONDecodeError, TypeError) as _e2:
-        logger.bind(tag=_TAG).warning(
-            f"JSON repair also failed ({_e2})\nFull text: {text!r}"
-        )
+        logger.bind(tag=_TAG).warning(f"JSON repair also failed ({_e2})\nFull text: {text!r}")
         return {}
 
 
-def _vision_url(config: dict) -> str:
+def _vision_url(config: JsonDict) -> str:
     """Derive the image-explain HTTP URL from the server config."""
     srv = config.get("server") or {}
     ws_port = int(srv.get("ws_port", 8000))
@@ -111,12 +112,16 @@ async def _speak(
     if tts_rate != target_rate:
         pcm_bytes = await pcm_resample(pcm_bytes, tts_rate, target_rate)
 
-    await websocket.send_text(json.dumps({
-        "type": "tts",
-        "session_id": session_id,
-        "state": "start",
-        "text": text,
-    }))
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "tts",
+                "session_id": session_id,
+                "state": "start",
+                "text": text,
+            }
+        )
+    )
 
     encoder = OpusEncoder(target_rate, frame_duration_ms=SERVER_TTS_AUDIO_PARAMS.frame_duration)
     rate_ctrl = AudioRateController(frame_duration_ms=SERVER_TTS_AUDIO_PARAMS.frame_duration)
@@ -133,11 +138,15 @@ async def _speak(
         await rate_ctrl.wait_until_done()
         rate_ctrl.stop()
 
-    await websocket.send_text(json.dumps({
-        "type": "tts",
-        "session_id": session_id,
-        "state": "stop",
-    }))
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "tts",
+                "session_id": session_id,
+                "state": "stop",
+            }
+        )
+    )
 
 
 async def _run_llm_turn(
@@ -189,16 +198,20 @@ async def _run_llm_turn(
     captured_images: list[str] = []
 
     if tools:
-        async def _exec_tool(name: str, args: dict) -> str:
+
+        async def _exec_tool(name: str, args: JsonDict) -> str:
             logger.bind(tag=_TAG).info(f"Tool call: {name!r} args={args}")
             try:
                 if mcp_client and mcp_client.ready and name in mcp_client.tools:
                     if ("camera" in name or "photo" in name) and "question" not in args:
                         args = {**args, "question": "What do you see?"}
                     if "camera" in name or "photo" in name:
-                        await _speak(websocket, "Hold on, let me take a look.", persona, config, session_id)
+                        await _speak(
+                            websocket, "Hold on, let me take a look.", persona, config, session_id
+                        )
                     result = await mcp_client.call_tool(
-                        name, args,
+                        name,
+                        args,
                         timeout=60.0 if ("camera" in name or "photo" in name) else 30.0,
                     )
                     if "camera" in name or "photo" in name:
@@ -216,7 +229,10 @@ async def _run_llm_turn(
                 return f"error: {exc}"
 
         reply = await llm.complete_with_tools(
-            history, tools, _exec_tool, system_prompt=system_prompt,
+            history,
+            tools,
+            _exec_tool,
+            system_prompt=system_prompt,
         )
     else:
         reply = await llm.complete(history, system_prompt=system_prompt)
@@ -237,12 +253,16 @@ async def _run_llm_turn(
         face = emotion_utils.extract_reply_emotion(reply)
         if face:
             emoji, em_name = face
-            await websocket.send_text(json.dumps({
-                "type": "llm",
-                "session_id": session_id,
-                "text": emoji,
-                "emotion": em_name,
-            }))
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "llm",
+                        "session_id": session_id,
+                        "text": emoji,
+                        "emotion": em_name,
+                    }
+                )
+            )
             tts_text = emotion_utils.strip_emoji(reply)
 
     session_state.set_pipeline_status(device_id, "speaking", reply)
@@ -278,40 +298,55 @@ async def _run_voice_turn(
     result = await asr.transcribe(wav_bytes)
     asr_ms = int((time.monotonic() - t0) * 1000)
     if not result.is_speech:
-        logger.bind(tag=_TAG).debug(f"Non-speech event, skipping turn")
+        logger.bind(tag=_TAG).debug("Non-speech event, skipping turn")
         return
     transcript = result.text
     if not transcript or len(transcript.split()) < 2:
         logger.bind(tag=_TAG).debug(f"Transcript too short, skipping: {transcript!r}")
         return
     logger.bind(tag=_TAG).info(
-        f"ASR ({asr_ms}ms): {transcript!r} "
-        f"[emotion={result.emotion} lang={result.language or '?'}]"
+        f"ASR ({asr_ms}ms): {transcript!r} [emotion={result.emotion} lang={result.language or '?'}]"
     )
     session_state.set_pipeline_status(device_id, "thinking", transcript)
 
-    await websocket.send_text(json.dumps({
-        "type": "stt",
-        "session_id": session_id,
-        "text": transcript,
-    }))
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "stt",
+                "session_id": session_id,
+                "text": transcript,
+            }
+        )
+    )
 
     # Reactive emotion: mirror user's detected tone on device face immediately
     if supports_emoji:
         face = emotion_utils.user_emotion_face(result.emotion)
         if face:
             emoji, em_name = face
-            await websocket.send_text(json.dumps({
-                "type": "llm",
-                "session_id": session_id,
-                "text": emoji,
-                "emotion": em_name,
-            }))
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "llm",
+                        "session_id": session_id,
+                        "text": emoji,
+                        "emotion": em_name,
+                    }
+                )
+            )
 
     # 3+4 — LLM + TTS
     llm_ms, tts_ms, reply = await _run_llm_turn(
-        websocket, transcript, session_id, persona, history, config,
-        mcp_client, device_id, supports_emoji, emotion=result.emotion,
+        websocket,
+        transcript,
+        session_id,
+        persona,
+        history,
+        config,
+        mcp_client,
+        device_id,
+        supports_emoji,
+        emotion=result.emotion,
     )
 
     if not reply:
@@ -350,23 +385,39 @@ async def _run_text_turn(
     Returns the LLM reply text (empty string if no reply).
     """
     logger.bind(tag=_TAG).info(f"{device_id!r} injected utterance: {transcript!r}")
-    await websocket.send_text(json.dumps({
-        "type": "stt",
-        "session_id": session_id,
-        "text": transcript,
-    }))
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "stt",
+                "session_id": session_id,
+                "text": transcript,
+            }
+        )
+    )
     # Show thinking face on device while pipeline runs
     if supports_emoji:
-        await websocket.send_text(json.dumps({
-            "type": "llm",
-            "session_id": session_id,
-            "text": "🤔",
-            "emotion": "thinking",
-        }))
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "llm",
+                    "session_id": session_id,
+                    "text": "🤔",
+                    "emotion": "thinking",
+                }
+            )
+        )
 
     llm_ms, tts_ms, reply = await _run_llm_turn(
-        websocket, transcript, session_id, persona, history, config,
-        mcp_client, device_id, supports_emoji, emotion="",
+        websocket,
+        transcript,
+        session_id,
+        persona,
+        history,
+        config,
+        mcp_client,
+        device_id,
+        supports_emoji,
+        emotion="",
     )
 
     if reply and device_id:
@@ -399,10 +450,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.websocket("/xiaozhi/v1/")
     async def voice_session(websocket: WebSocket) -> None:
         """Handle one device voice session end-to-end."""
-        device_id = (
-            websocket.headers.get("device-id")
-            or websocket.query_params.get("device-id")
-        )
+        device_id = websocket.headers.get("device-id") or websocket.query_params.get("device-id")
         if not device_id:
             await websocket.close(code=1008, reason="missing device-id")
             return
@@ -413,7 +461,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         session_id = uuid.uuid4().hex
         pipeline_lock = asyncio.Lock()
         mcp_client: MCPClient | None = None
-        active_pipeline: asyncio.Task | None = None
+        active_pipeline: asyncio.Task[None] | None = None
 
         try:
             # 1. Hello / welcome handshake
@@ -425,9 +473,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 f"frame={hello.audio_params.frame_duration}ms "
                 f"mcp={hello.supports_mcp}"
             )
-            await websocket.send_text(
-                json.dumps(ServerWelcome(session_id=session_id).to_json())
-            )
+            await websocket.send_text(json.dumps(ServerWelcome(session_id=session_id).to_json()))
 
             # 2. MCP registration — complete before persona assignment so the
             #    server knows the device's exact capabilities when picking a persona.
@@ -461,10 +507,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         )
                         break
                     try:
-                        msg = await asyncio.wait_for(
-                            websocket.receive(), timeout=remaining
-                        )
-                    except asyncio.TimeoutError:
+                        msg = await asyncio.wait_for(websocket.receive(), timeout=remaining)
+                    except TimeoutError:
                         break
                     except (WebSocketDisconnect, RuntimeError):
                         logger.bind(tag=_TAG).debug(
@@ -487,9 +531,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             #    tools (most specific wins); fall back to the device's stored assignment.
             persona = None
             if mcp_client and mcp_client.ready and mcp_client.tools:
-                persona = await store.find_best_persona_for_tools(
-                    list(mcp_client.tools.keys())
-                )
+                persona = await store.find_best_persona_for_tools(list(mcp_client.tools.keys()))
                 if persona:
                     logger.bind(tag=_TAG).info(
                         f"{device_id!r} matched persona {persona.name!r} "
@@ -508,9 +550,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
             # Load persisted history; trim to memory_window on reconnect
             window = (persona.memory_window or 20) * 2
-            conversation: list[dict[str, str]] = await store.load_history(
-                device_id, limit=window
-            )
+            conversation: list[dict[str, str]] = await store.load_history(device_id, limit=window)
             if conversation:
                 logger.bind(tag=_TAG).debug(
                     f"{device_id!r} resumed {len(conversation)} messages from history"
@@ -527,15 +567,17 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     return
                 # Signal device that we're thinking
                 if hello.supports_emoji:
-                    try:
-                        await websocket.send_text(json.dumps({
-                            "type": "llm",
-                            "session_id": session_id,
-                            "text": "🤔",
-                            "emotion": "thinking",
-                        }))
-                    except Exception:
-                        pass
+                    with suppress(Exception):
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "llm",
+                                    "session_id": session_id,
+                                    "text": "🤔",
+                                    "emotion": "thinking",
+                                }
+                            )
+                        )
                 session_state.set_pipeline_status(device_id, "transcribing")
                 prev_len = len(conversation)
                 async with pipeline_lock:
@@ -555,9 +597,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         )
                     except Exception as exc:
                         import traceback as _tb
+
                         logger.bind(tag=_TAG).error(
-                            f"Pipeline error for {device_id!r}: {exc}\n"
-                            + _tb.format_exc()
+                            f"Pipeline error for {device_id!r}: {exc}\n" + _tb.format_exc()
                         )
                 session_state.set_pipeline_status(device_id, "idle")
                 new_msgs = conversation[prev_len:]
@@ -596,15 +638,21 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 async with pipeline_lock:
                     try:
                         reply = await _run_text_turn(
-                            websocket, transcript, session_id, persona,
-                            conversation, config, mcp_client, device_id,
+                            websocket,
+                            transcript,
+                            session_id,
+                            persona,
+                            conversation,
+                            config,
+                            mcp_client,
+                            device_id,
                             supports_emoji=hello.supports_emoji,
                         )
                     except Exception as exc:
                         import traceback as _tb
+
                         logger.bind(tag=_TAG).error(
-                            f"Text pipeline error for {device_id!r}: {exc}\n"
-                            + _tb.format_exc()
+                            f"Text pipeline error for {device_id!r}: {exc}\n" + _tb.format_exc()
                         )
                 new_msgs = conversation[prev_len:]
                 for m in new_msgs:
@@ -613,8 +661,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
             session_state.register_injector(device_id, _dispatch_text_pipeline)
 
-            vad_model = config.get("vad", {}).get("silero", {}).get(
-                "model_path", "models/silero_vad.onnx"
+            vad_model = (
+                config.get("vad", {}).get("silero", {}).get("model_path", "models/silero_vad.onnx")
             )
             try:
                 vad = SileroVAD(
@@ -659,9 +707,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         payload = ctrl.get("payload", {})
                         asyncio.create_task(mcp_client.handle_message(payload))
                     else:
-                        logger.bind(tag=_TAG).info(
-                            f"{device_id!r} ctrl: {msg['text'][:400]}"
-                        )
+                        logger.bind(tag=_TAG).info(f"{device_id!r} ctrl: {msg['text'][:400]}")
 
         except (WebSocketDisconnect, RuntimeError) as exc:
             if isinstance(exc, RuntimeError):

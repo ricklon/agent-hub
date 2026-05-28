@@ -12,6 +12,7 @@ the hub-default persona and are functional immediately.
 from __future__ import annotations
 
 import socket
+from contextlib import suppress
 from typing import Any
 
 from fastapi import APIRouter
@@ -37,7 +38,8 @@ def _local_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
+            host = s.getsockname()[0]
+            return str(host)
     except Exception:
         return "127.0.0.1"
 
@@ -54,6 +56,7 @@ def _image_url(settings: Settings) -> str:
     http_base = ws.replace("ws://", "http://").replace("wss://", "https://")
     # Strip path component and append image endpoint
     from urllib.parse import urlparse, urlunparse
+
     p = urlparse(http_base)
     return urlunparse(p._replace(path="/xiaozhi/v1/image/", query="", fragment=""))
 
@@ -89,10 +92,8 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
         raw_body = await request.body()
         body: dict[str, Any] = {}
         if raw_body:
-            try:
+            with suppress(Exception):
                 body = await request.json()
-            except Exception:
-                pass
 
         headers = dict(request.headers)
         client_host = request.client.host if request.client else ""
@@ -108,8 +109,7 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
             )
 
         logger.bind(tag=_TAG).info(
-            f"Check-in from {req.device_id!r} at {req.ip_address} "
-            f"(fw {req.application_version})"
+            f"Check-in from {req.device_id!r} at {req.ip_address} (fw {req.application_version})"
         )
 
         await store.get_or_create_agent(

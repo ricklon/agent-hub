@@ -17,14 +17,24 @@ from __future__ import annotations
 
 import asyncio
 import io
-from typing import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
+from typing import Protocol, cast
 
 import numpy as np
+import numpy.typing as npt
 import soundfile as sf
 
 from agent_hub.providers.tts import TTSProvider
 
 _SAMPLE_RATE = 24000
+
+
+class _KittenModel(Protocol):
+    def generate(self, text: str, *, voice: str, speed: float) -> npt.NDArray[np.float32]:
+        """Generate one waveform."""
+
+    def generate_stream(self, *, text: str, voice: str) -> Iterable[npt.NDArray[np.float32]]:
+        """Generate waveform chunks."""
 
 
 class KittenTTSProvider(TTSProvider):
@@ -52,13 +62,13 @@ class KittenTTSProvider(TTSProvider):
         self._model_id = model
         self._voice = voice
         self._speed = speed
-        self._model: object | None = None  # lazy-loaded
+        self._model: _KittenModel | None = None  # lazy-loaded
 
-    def _ensure_model(self) -> object:
+    def _ensure_model(self) -> _KittenModel:
         if self._model is None:
             from kittentts import KittenTTS  # type: ignore[import-untyped]
 
-            self._model = KittenTTS(self._model_id)
+            self._model = cast(_KittenModel, KittenTTS(self._model_id))
         return self._model
 
     @property
@@ -71,9 +81,7 @@ class KittenTTSProvider(TTSProvider):
         sf.write(buf, audio, _SAMPLE_RATE, format="WAV")
         return buf.getvalue()
 
-    async def synthesize_pcm(
-        self, text: str, voice: str | None = None
-    ) -> tuple[bytes, int]:
+    async def synthesize_pcm(self, text: str, voice: str | None = None) -> tuple[bytes, int]:
         """Return PCM int16 bytes directly from KittenTTS numpy output.
 
         Skips the WAV roundtrip used by the default synthesize_pcm().
@@ -87,8 +95,11 @@ class KittenTTSProvider(TTSProvider):
         """
         v = voice or self._voice
         model = self._ensure_model()
-        audio: np.ndarray = await asyncio.to_thread(
-            model.generate, text, voice=v, speed=self._speed  # type: ignore[union-attr]
+        audio = await asyncio.to_thread(
+            model.generate,
+            text,
+            voice=v,
+            speed=self._speed,
         )
         pcm = (np.clip(audio.squeeze(), -1.0, 1.0) * 32767).astype(np.int16).tobytes()
         return pcm, _SAMPLE_RATE
@@ -108,14 +119,15 @@ class KittenTTSProvider(TTSProvider):
         """
         v = voice or self._voice
         model = self._ensure_model()
-        audio: np.ndarray = await asyncio.to_thread(
-            model.generate, text, voice=v, speed=self._speed  # type: ignore[union-attr]
+        audio = await asyncio.to_thread(
+            model.generate,
+            text,
+            voice=v,
+            speed=self._speed,
         )
         return self._array_to_wav(audio)
 
-    async def synthesize_stream(  # type: ignore[override]
-        self, text: str, voice: str | None = None
-    ) -> AsyncIterator[bytes]:
+    async def synthesize_stream(self, text: str, voice: str | None = None) -> AsyncIterator[bytes]:
         """Stream WAV chunks using KittenTTS generate_stream().
 
         Args:
@@ -131,8 +143,8 @@ class KittenTTSProvider(TTSProvider):
         # generate_stream is sync; run each chunk in a thread via an async wrapper
         loop = asyncio.get_event_loop()
 
-        def _iter_chunks():  # type: ignore[return]
-            return list(model.generate_stream(text=text, voice=v))  # type: ignore[union-attr]
+        def _iter_chunks() -> list[npt.NDArray[np.float32]]:
+            return list(model.generate_stream(text=text, voice=v))
 
         chunks = await loop.run_in_executor(None, _iter_chunks)
         for chunk in chunks:

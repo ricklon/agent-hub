@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import abc
-from typing import Any, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 
 class LLMProvider(abc.ABC):
@@ -49,7 +50,7 @@ class LLMProvider(abc.ABC):
         return await self.complete(messages, system_prompt)
 
     @abc.abstractmethod
-    async def stream(
+    def stream(
         self,
         messages: list[dict[str, str]],
         system_prompt: str = "",

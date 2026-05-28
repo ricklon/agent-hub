@@ -15,16 +15,16 @@ download-models:
     echo "Models ready."
 
 lint:
-    ruff check src/ tests/ && ruff format --check src/ tests/
+    uv run --extra dev ruff check src/ tests/ && uv run --extra dev ruff format --check src/ tests/
 
 format:
     ruff format src/ tests/
 
 typecheck:
-    mypy --strict src/agent_hub/
+    uv run --extra dev mypy --strict src/agent_hub/
 
 test:
-    pytest -xvs
+    uv run --extra dev pytest -xvs
 
 test-watch:
     pytest-watch

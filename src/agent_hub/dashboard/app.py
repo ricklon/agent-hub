@@ -6,6 +6,7 @@ Server-rendered with HTMX — no SPA build step.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import httpx
@@ -28,7 +29,8 @@ table{border-collapse:collapse;width:100%}
 th,td{border:1px solid #30363d;padding:0.5rem 0.75rem;text-align:left;vertical-align:top}
 th{background:#161b22;white-space:nowrap}
 tr:hover td{background:#161b22}
-.badge{font-size:0.68rem;padding:0.1rem 0.35rem;border-radius:3px;margin:0.1rem 0.1rem 0 0;display:inline-block}
+.badge{font-size:0.68rem;padding:0.1rem 0.35rem;border-radius:3px;
+  margin:0.1rem 0.1rem 0 0;display:inline-block}
 .badge-multi{background:#1f4a2e;color:#3fb950}
 .badge-free{background:#2d1f6e;color:#a5a0ff}
 .badge-tool{background:#1a2a3a;color:#79c0ff}
@@ -40,8 +42,10 @@ tr:hover td{background:#161b22}
 .lat{font-size:0.75rem;color:#8b949e}
 .lat span{color:#c9d1d9}
 .model{font-size:0.75rem;color:#8b949e;display:block;margin-top:0.15rem}
-input,select{background:#161b22;color:#c9d1d9;border:1px solid #30363d;padding:0.4rem 0.6rem;border-radius:4px;margin-right:0.5rem}
-button{background:#238636;color:#fff;border:none;padding:0.4rem 0.9rem;border-radius:4px;cursor:pointer}
+input,select{background:#161b22;color:#c9d1d9;border:1px solid #30363d;
+  padding:0.4rem 0.6rem;border-radius:4px;margin-right:0.5rem}
+button{background:#238636;color:#fff;border:none;padding:0.4rem 0.9rem;
+  border-radius:4px;cursor:pointer}
 button:hover{background:#2ea043}
 button.selected{background:#1f4a2e;color:#3fb950;border:1px solid #3fb950}
 .msg{color:#3fb950;margin-top:0.5rem}
@@ -51,9 +55,11 @@ button.selected{background:#1f4a2e;color:#3fb950;border:1px solid #3fb950}
 _CSS_EXTRA = """\
 textarea{background:#161b22;color:#c9d1d9;border:1px solid #30363d;padding:0.4rem 0.6rem;
   border-radius:4px;width:100%;box-sizing:border-box;font-family:monospace;resize:vertical}
-label{display:block;color:#8b949e;font-size:0.8rem;margin-top:0.75rem;margin-bottom:0.2rem}
+label{display:block;color:#8b949e;font-size:0.8rem;margin-top:0.75rem;
+  margin-bottom:0.2rem}
 .field-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-.form-section{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1.25rem;margin-bottom:1.5rem}
+.form-section{background:#161b22;border:1px solid #30363d;border-radius:6px;
+  padding:1.25rem;margin-bottom:1.5rem}
 .form-section h3{margin:0 0 1rem;color:#58a6ff}
 input[type=number]{width:6rem}
 """
@@ -85,6 +91,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     async def serve_image(path: str) -> Response:
         """Serve a saved device capture JPEG by filesystem path."""
         from pathlib import Path as _Path
+
         p = _Path(path)
         if not p.exists() or p.suffix.lower() not in (".jpg", ".jpeg", ".png"):
             return Response(status_code=404)
@@ -109,18 +116,19 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
     @router.get("/dashboard/agents/{device_id}/history", response_class=HTMLResponse)
     async def agent_history_partial(device_id: str) -> HTMLResponse:
-        import re as _re
         import urllib.parse as _up
 
         def _render_content(raw: str) -> str:
             """Replace [image:path] markers with inline <img> tags."""
-            def _img(m: _re.Match) -> str:
+
+            def _img(m: re.Match[str]) -> str:
                 enc = _up.quote(m.group(1), safe="")
                 return (
                     f'<br><img src="/dashboard/image?path={enc}" '
                     f'style="max-width:320px;border-radius:6px;margin-top:0.4rem;display:block">'
                 )
-            text = _re.sub(r'\[image:([^\]]+)\]', _img, raw)
+
+            text = re.sub(r"\[image:([^\]]+)\]", _img, raw)
             # Escape any remaining HTML in the text portion only
             return text
 
@@ -128,23 +136,25 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         if not turns:
             return HTMLResponse('<p style="color:#6e7681">No history yet.</p>')
         rows = "".join(
-            f'<tr>'
+            f"<tr>"
             f'<td style="color:#8b949e;white-space:nowrap;font-size:0.75rem">'
-            f'{t.get("created_at","")[:19].replace("T"," ")}</td>'
-            f'<td style="color:{"#79c0ff" if t["role"]=="user" else "#3fb950"};'
+            f"{t.get('created_at', '')[:19].replace('T', ' ')}</td>"
+            f'<td style="color:{"#79c0ff" if t["role"] == "user" else "#3fb950"};'
             f'white-space:nowrap">{t["role"]}</td>'
-            f'<td style="white-space:pre-wrap;max-width:600px">{_render_content(t["content"])}</td></tr>'
+            f'<td style="white-space:pre-wrap;max-width:600px">'
+            f"{_render_content(t['content'])}</td></tr>"
             for t in turns
         )
         return HTMLResponse(
-            f'<table style="width:100%"><thead><tr><th>time</th><th>role</th><th>content</th></tr></thead>'
-            f'<tbody>{rows}</tbody></table>'
+            f'<table style="width:100%"><thead><tr>'
+            f"<th>time</th><th>role</th><th>content</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
             f'<p style="color:#8b949e;font-size:0.8rem">{len(turns)} messages</p>'
         )
 
     @router.get("/dashboard/agents/{device_id}/pipeline_status", response_class=HTMLResponse)
     async def agent_pipeline_status(device_id: str) -> HTMLResponse:
-        import time as _time
+
         phase, text = session_state.get_pipeline_status(device_id)
         # Debounce idle: hold the previous active phase for 1.5s so brief
         # failed transcriptions don't cause idle↔transcribing flickering.
@@ -153,17 +163,19 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             if prev not in ("idle", "offline"):
                 phase = prev
         phase_styles = {
-            "idle":          ("color:#6e7681", "idle"),
-            "transcribing":  ("color:#d29922", "▶ transcribing…"),
-            "thinking":      ("color:#58a6ff", "🤔 thinking…"),
-            "speaking":      ("color:#3fb950", "🔊 speaking"),
-            "offline":       ("color:#6e7681", "offline"),
+            "idle": ("color:#6e7681", "idle"),
+            "transcribing": ("color:#d29922", "▶ transcribing…"),
+            "thinking": ("color:#58a6ff", "🤔 thinking…"),
+            "speaking": ("color:#3fb950", "🔊 speaking"),
+            "offline": ("color:#6e7681", "offline"),
         }
         style, label = phase_styles.get(phase, ("color:#6e7681", phase))
-        snippet = f' <span style="color:#8b949e;font-size:0.8rem">{text[:80]}</span>' if text and phase not in ("idle", "offline", "speaking") else ""
-        return HTMLResponse(
-            f'<span style="{style}">{label}</span>{snippet}'
+        snippet = (
+            f' <span style="color:#8b949e;font-size:0.8rem">{text[:80]}</span>'
+            if text and phase not in ("idle", "offline", "speaking")
+            else ""
         )
+        return HTMLResponse(f'<span style="{style}">{label}</span>{snippet}')
 
     @router.get("/dashboard/agents/{device_id}/status", response_class=HTMLResponse)
     async def agent_status_partial(device_id: str) -> HTMLResponse:
@@ -181,7 +193,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             tool_names = ", ".join(mcp_client.tools.keys())
             mcp_html = (
                 f'<span style="color:#3fb950">● ready</span> '
-                f'<span style="color:#8b949e;font-size:0.8rem">— {len(mcp_client.tools)} tools: {tool_names}</span>'
+                f'<span style="color:#8b949e;font-size:0.8rem">'
+                f"— {len(mcp_client.tools)} tools: {tool_names}</span>"
             )
         elif mcp_client and not mcp_client.ready:
             mcp_html = '<span style="color:#d29922">⚠ handshake pending</span>'
@@ -190,7 +203,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         else:
             mcp_html = '<span style="color:#6e7681">○ —</span>'
 
-        status_color = {"active": "#3fb950", "idle": "#d29922"}.get(str(db_status).lower(), "#6e7681")
+        status_color = {"active": "#3fb950", "idle": "#d29922"}.get(
+            str(db_status).lower(), "#6e7681"
+        )
         return HTMLResponse(f"""\
 <table style="width:auto;margin-bottom:0.5rem">
   <tr><th style="width:7rem">WebSocket</th><td>{ws_html}</td></tr>
@@ -202,8 +217,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     async def agent_assign_persona(device_id: str, persona_name: str = Form(...)) -> HTMLResponse:
         ok = await store.assign_persona(device_id, persona_name)
         if not ok:
-            return HTMLResponse(f'<p style="color:#f85149">Assignment failed — persona or device not found.</p>')
-        return HTMLResponse(f'<p class="msg">✓ Assigned <strong>{persona_name}</strong>. Takes effect on next voice session.</p>')
+            return HTMLResponse(
+                '<p style="color:#f85149">Assignment failed — persona or device not found.</p>'
+            )
+        return HTMLResponse(
+            f'<p class="msg">✓ Assigned <strong>{persona_name}</strong>. '
+            f"Takes effect on next voice session.</p>"
+        )
 
     @router.get("/dashboard/agents/{device_id}", response_class=HTMLResponse)
     async def agent_detail(device_id: str, request: Request) -> HTMLResponse:
@@ -213,24 +233,17 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         persona = await store.get_persona_for_device(device_id)
         all_personas = await store.list_personas()
         dev = session_state.get_state(device_id)
-        connected = session_state.is_connected(device_id)
-
-        status_class = f"status-{agent.status}"
-        conn_badge = (
-            '<span style="color:#3fb950">● connected</span>'
-            if connected else
-            '<span style="color:#6e7681">○ offline</span>'
-        )
 
         # Persona section
         persona_options = "".join(
             f'<option value="{p.name}" {"selected" if persona and p.name == persona.name else ""}>'
-            f'{p.name}</option>'
+            f"{p.name}</option>"
             for p in all_personas
         )
         assign_form = f"""\
 <form hx-post="/dashboard/agents/{device_id}/assign_persona"
-      hx-target="#assign-result" hx-swap="innerHTML" style="display:inline-flex;gap:0.5rem;align-items:center">
+      hx-target="#assign-result" hx-swap="innerHTML"
+      style="display:inline-flex;gap:0.5rem;align-items:center">
   <select name="persona_name">{persona_options}</select>
   <button type="submit">Assign</button>
 </form>
@@ -244,26 +257,36 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             base_url = config.get("llm", {}).get("openai", {}).get("base_url", "")
             provider_detail = f"{persona.llm_provider}"
             if base_url:
-                provider_detail += f' <span style="color:#8b949e;font-size:0.75rem">({base_url})</span>'
+                provider_detail += (
+                    f' <span style="color:#8b949e;font-size:0.75rem">({base_url})</span>'
+                )
             persona_html = f"""\
 <h3>Persona</h3>
 {assign_form}
 <table style="width:auto;margin-top:0.75rem">
-  <tr><th>name</th><td>{persona.name} &nbsp;<a href="/dashboard/personas/{persona.name}" style="color:#58a6ff;font-size:0.8rem">edit →</a></td></tr>
+  <tr><th>name</th><td>{persona.name} &nbsp;
+    <a href="/dashboard/personas/{persona.name}"
+       style="color:#58a6ff;font-size:0.8rem">edit →</a></td></tr>
   <tr><th>model</th><td>{model_str}</td></tr>
   <tr><th>LLM provider</th><td>{provider_detail}</td></tr>
-  <tr><th>TTS provider</th><td>{persona.tts_provider}{f" / {persona.tts_voice}" if persona.tts_voice else ""}</td></tr>
+  <tr><th>TTS provider</th><td>{persona.tts_provider}{
+                f" / {persona.tts_voice}" if persona.tts_voice else ""
+            }</td></tr>
   <tr><th>ASR provider</th><td>{persona.asr_provider}</td></tr>
-  <tr><th>system prompt</th><td style="white-space:pre-wrap;max-width:600px">{persona.system_prompt or "—"}</td></tr>
+  <tr><th>system prompt</th><td style="white-space:pre-wrap;max-width:600px">{
+                persona.system_prompt or "—"
+            }</td></tr>
 </table>"""
         else:
             persona_html = f"<h3>Persona</h3><p>No persona assigned.</p>{assign_form}"
 
         # Tools section
         import agent_hub.skills as _skills
-        device_tool_badges = "".join(
-            f'<span class="badge badge-tool">{t}</span>' for t in dev.mcp_tools
-        ) or '<span style="color:#6e7681">none discovered yet</span>'
+
+        device_tool_badges = (
+            "".join(f'<span class="badge badge-tool">{t}</span>' for t in dev.mcp_tools)
+            or '<span style="color:#6e7681">none discovered yet</span>'
+        )
         skill_badges = "".join(
             f'<span class="badge badge-skill">{d["function"]["name"]}</span>'
             for d in _skills.get_definitions()
@@ -278,7 +301,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
   <tr><td>ASR</td><td>{L.asr_ms} ms</td><td>{A.asr_ms} ms</td></tr>
   <tr><td>LLM</td><td>{L.llm_ms} ms</td><td>{A.llm_ms} ms</td></tr>
   <tr><td>TTS</td><td>{L.tts_ms} ms</td><td>{A.tts_ms} ms</td></tr>
-  <tr><td><strong>total</strong></td><td><strong>{L.total_ms} ms</strong></td><td><strong>{A.total_ms} ms</strong></td></tr>
+  <tr><td><strong>total</strong></td>
+      <td><strong>{L.total_ms} ms</strong></td>
+      <td><strong>{A.total_ms} ms</strong></td></tr>
 </table>
 <p style="color:#8b949e;font-size:0.8rem">{dev.turns} turns recorded this session</p>"""
         else:
@@ -305,9 +330,12 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 {camera_btn}
 <span id="reboot-result" style="margin-left:0.75rem"></span>
 <h3>Inject utterance</h3>
-<p style="color:#8b949e;font-size:0.85rem">Simulate speech — runs the full LLM pipeline and speaks the reply on the device.</p>
+<p style="color:#8b949e;font-size:0.85rem">
+  Simulate speech — runs the full LLM pipeline and speaks the reply on the device.
+</p>
 <form hx-post="/dashboard/agents/{device_id}/inject"
-      hx-target="#inject-result" hx-swap="innerHTML" style="display:flex;gap:0.5rem;align-items:center">
+      hx-target="#inject-result" hx-swap="innerHTML"
+      style="display:flex;gap:0.5rem;align-items:center">
   <input type="text" name="text" value="tell me what you see" style="width:360px">
   <button type="submit" style="background:#1a4a6e">▶ Inject</button>
 </form>
@@ -373,17 +401,23 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 logger.warning(f"WS reboot failed for {device_id}: {exc}")
 
         # Fall back to USB serial !reboot
-        import glob
         import asyncio as _asyncio
+        import glob
+
         ports = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
         if not ports:
-            return HTMLResponse('<p style="color:#f85149">No serial port found and device not connected.</p>')
+            return HTMLResponse(
+                '<p style="color:#f85149">No serial port found and device not connected.</p>'
+            )
         try:
             import serial as _serial
+
             port = ports[0]
+
             def _send_serial() -> None:
                 with _serial.Serial(port, 115200, timeout=1) as ser:
                     ser.write(b"!reboot\r\n")
+
             await _asyncio.to_thread(_send_serial)
             return HTMLResponse(f'<p class="msg">↺ Reboot sent via {port}.</p>')
         except Exception as exc:
@@ -393,9 +427,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     async def agent_capture(device_id: str) -> HTMLResponse:
         mcp_client = session_state.get_mcp_client(device_id)
         if mcp_client is None or not mcp_client.ready:
-            return HTMLResponse('<p style="color:#f85149">Device not connected or MCP not ready.</p>')
+            return HTMLResponse(
+                '<p style="color:#f85149">Device not connected or MCP not ready.</p>'
+            )
         if not any("camera" in t or "photo" in t for t in mcp_client.tools):
-            return HTMLResponse('<p style="color:#f85149">No camera tool available on this device.</p>')
+            return HTMLResponse(
+                '<p style="color:#f85149">No camera tool available on this device.</p>'
+            )
         try:
             result = await mcp_client.call_tool(
                 "self_camera_take_photo",
@@ -404,7 +442,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             )
             if isinstance(result, str) and result.startswith("data:"):
                 return HTMLResponse(
-                    f'<img src="{result}" style="max-width:100%;border-radius:6px;margin-top:0.5rem">'
+                    f'<img src="{result}" '
+                    f'style="max-width:100%;border-radius:6px;margin-top:0.5rem">'
                     f'<p style="color:#8b949e;font-size:0.8rem">Captured</p>'
                 )
             return HTMLResponse(f'<p style="color:#c9d1d9">{result}</p>')
@@ -420,7 +459,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             return HTMLResponse('<p style="color:#f85149">Device not connected.</p>')
         try:
             reply = await asyncio.wait_for(injector(text.strip()), timeout=90.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return HTMLResponse('<p style="color:#f85149">Timed out waiting for reply (>90s).</p>')
         except Exception as exc:
             return HTMLResponse(f'<p style="color:#f85149">Pipeline error: {exc}</p>')
@@ -431,14 +470,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         img_html = ""
         if img_path:
             import urllib.parse as _up
+
             enc = _up.quote(img_path, safe="")
             img_html = (
                 f'<img src="/dashboard/image?path={enc}" '
                 f'style="max-width:100%;border-radius:6px;margin-top:0.5rem;display:block">'
             )
-        return HTMLResponse(
-            f'<p class="msg">▶ {reply}</p>{img_html}'
-        )
+        return HTMLResponse(f'<p class="msg">▶ {reply}</p>{img_html}')
 
     @router.post("/dashboard/agents/{device_id}/clear_history", response_class=HTMLResponse)
     async def agent_clear_history(device_id: str) -> HTMLResponse:
@@ -463,15 +501,20 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.get("/dashboard/personas", response_class=HTMLResponse)
     async def personas_list(request: Request) -> HTMLResponse:
         personas = await store.list_personas()
-        rows = "".join(
-            f'<tr><td><a href="/dashboard/personas/{p.name}" style="color:#58a6ff">{p.name}</a></td>'
-            f'<td>{p.llm_provider} / {p.llm_model or "default"}</td>'
-            f'<td>{p.tts_provider}{f" / {p.tts_voice}" if p.tts_voice else ""}</td>'
-            f'<td>{p.asr_provider}</td>'
-            f'<td>{p.memory_window}</td>'
-            f'<td><a href="/dashboard/personas/{p.name}" style="color:#58a6ff">edit</a></td></tr>'
-            for p in personas
-        ) or "<tr><td colspan=6>no personas</td></tr>"
+        rows = (
+            "".join(
+                f'<tr><td><a href="/dashboard/personas/{p.name}" '
+                f'style="color:#58a6ff">{p.name}</a></td>'
+                f"<td>{p.llm_provider} / {p.llm_model or 'default'}</td>"
+                f"<td>{p.tts_provider}{f' / {p.tts_voice}' if p.tts_voice else ''}</td>"
+                f"<td>{p.asr_provider}</td>"
+                f"<td>{p.memory_window}</td>"
+                f'<td><a href="/dashboard/personas/{p.name}" '
+                f'style="color:#58a6ff">edit</a></td></tr>'
+                for p in personas
+            )
+            or "<tr><td colspan=6>no personas</td></tr>"
+        )
         body = f"""\
 <h2>Personas</h2>
 <table>
@@ -519,7 +562,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             llm_model=llm_model or None,
         )
         if persona is None:
-            return HTMLResponse(f'<p style="color:#f85149">Name \'{name}\' already taken.</p>')
+            return HTMLResponse(f"<p style=\"color:#f85149\">Name '{name}' already taken.</p>")
         return HTMLResponse(
             f'<p class="msg">✓ Created. <a href="/dashboard/personas/{persona.name}" '
             f'style="color:#58a6ff">Edit {persona.name} →</a></p>'
@@ -528,6 +571,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.get("/dashboard/personas/{name}", response_class=HTMLResponse)
     async def persona_edit_page(name: str, request: Request) -> HTMLResponse:
         import agent_hub.skills as _skills
+
         persona = await store.get_persona_by_name(name)
         if persona is None:
             return HTMLResponse(_PAGE.format(css=_full_css, body="<p>Persona not found.</p>"))
@@ -636,7 +680,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         if ok:
             logger.info(f"Persona '{name}' updated via dashboard")
             return HTMLResponse('<p class="msg">✓ Saved.</p>')
-        return HTMLResponse(f'<p style="color:#f85149">Persona \'{name}\' not found.</p>')
+        return HTMLResponse(f"<p style=\"color:#f85149\">Persona '{name}' not found.</p>")
 
     # ── Models ────────────────────────────────────────────────────────────────
 
@@ -690,7 +734,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         q = search.lower()
 
         filtered = [
-            m for m in models
+            m
+            for m in models
             if (not q or q in m["id"].lower() or q in m["name"].lower())
             and (not only_multi or m["multimodal"])
         ]
@@ -746,6 +791,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _agent_table(rows: str) -> str:
     return f"""\
 <div hx-get="/dashboard/agents" hx-trigger="every 5s" hx-swap="outerHTML">
@@ -787,14 +833,8 @@ async def _render_agent_rows(store: RegistryStore) -> str:
         model_line = f'<span class="model">{model}</span>' if model else ""
 
         # Tools cell — device MCP badges + skill badges
-        tool_badges = "".join(
-            f'<span class="badge badge-tool">{t}</span>'
-            for t in dev.mcp_tools
-        )
-        skill_badges = "".join(
-            f'<span class="badge badge-skill">{s}</span>'
-            for s in skill_names
-        )
+        tool_badges = "".join(f'<span class="badge badge-tool">{t}</span>' for t in dev.mcp_tools)
+        skill_badges = "".join(f'<span class="badge badge-skill">{s}</span>' for s in skill_names)
         tools_cell = (tool_badges + skill_badges) or '<span style="color:#6e7681">—</span>'
 
         # Connection + MCP status cell
@@ -804,19 +844,19 @@ async def _render_agent_rows(store: RegistryStore) -> str:
             conn_cell = (
                 '<span style="color:#3fb950">● WS + MCP ready</span>'
                 f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
-                f'{len(mcp_client.tools)} tools · {agent.status}</div>'
+                f"{len(mcp_client.tools)} tools · {agent.status}</div>"
             )
         elif ws_connected:
             conn_cell = (
                 '<span style="color:#d29922">◑ WS connected</span>'
                 f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
-                f'MCP pending · {agent.status}</div>'
+                f"MCP pending · {agent.status}</div>"
             )
         else:
             conn_cell = (
                 '<span style="color:#6e7681">○ offline</span>'
                 f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
-                f'{agent.status}</div>'
+                f"{agent.status}</div>"
             )
 
         # Latency cell
@@ -824,11 +864,11 @@ async def _render_agent_rows(store: RegistryStore) -> str:
             L, A = dev.last, dev.avg
             lat_cell = (
                 f'<div class="lat">ASR <span>{L.asr_ms}ms</span> / '
-                f'LLM <span>{L.llm_ms}ms</span> / '
-                f'TTS <span>{L.tts_ms}ms</span></div>'
+                f"LLM <span>{L.llm_ms}ms</span> / "
+                f"TTS <span>{L.tts_ms}ms</span></div>"
                 f'<div class="lat">avg <span>{A.asr_ms}</span>/'
-                f'<span>{A.llm_ms}</span>/<span>{A.tts_ms}</span>ms '
-                f'· {dev.turns} turns</div>'
+                f"<span>{A.llm_ms}</span>/<span>{A.tts_ms}</span>ms "
+                f"· {dev.turns} turns</div>"
             )
         else:
             lat_cell = '<span style="color:#6e7681">—</span>'
@@ -876,14 +916,16 @@ async def _fetch_openrouter_models(api_key: str) -> list[dict[str, Any]]:
             price_str = "—"
             free = False
         ctx = m.get("context_length", 0)
-        out.append({
-            "id": m.get("id", ""),
-            "name": m.get("name", ""),
-            "context_k": ctx // 1000 if ctx else "—",
-            "price_in": price_str,
-            "multimodal": multimodal,
-            "free": free,
-        })
+        out.append(
+            {
+                "id": m.get("id", ""),
+                "name": m.get("name", ""),
+                "context_k": ctx // 1000 if ctx else "—",
+                "price_in": price_str,
+                "multimodal": multimodal,
+                "free": free,
+            }
+        )
 
     out.sort(key=lambda x: (not x["multimodal"], x["id"]))
     return out

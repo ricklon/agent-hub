@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from agent_hub.config import Settings
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server.checkin import make_router as make_checkin_router
 from agent_hub.server.ws_session import make_router as make_ws_router
-
-from fastapi import FastAPI
 
 _TEST_CONFIG: dict = {}  # empty config; providers are not called in unit tests
 

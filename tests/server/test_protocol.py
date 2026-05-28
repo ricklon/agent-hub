@@ -6,15 +6,13 @@ from a real device check-in where possible (see tests/fixtures/).
 
 from __future__ import annotations
 
-import json
 import time
 
 from agent_hub.server.protocol import (
-    AudioParams,
+    SERVER_TTS_AUDIO_PARAMS,
     CheckinRequest,
     CheckinResponse,
     ClientHello,
-    SERVER_TTS_AUDIO_PARAMS,
     ServerWelcome,
 )
 

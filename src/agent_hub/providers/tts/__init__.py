@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import abc
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 
 class TTSProvider(abc.ABC):
@@ -26,9 +27,7 @@ class TTSProvider(abc.ABC):
             Audio file bytes (format is provider-specific: WAV or MP3).
         """
 
-    async def synthesize_pcm(
-        self, text: str, voice: str | None = None
-    ) -> tuple[bytes, int]:
+    async def synthesize_pcm(self, text: str, voice: str | None = None) -> tuple[bytes, int]:
         """Synthesize text and return raw PCM int16 bytes + sample rate.
 
         This is the method used by the audio pipeline to feed the Opus encoder.
@@ -51,9 +50,7 @@ class TTSProvider(abc.ABC):
         audio, sr = sf.read(io.BytesIO(wav_bytes), dtype="int16")
         return audio.tobytes(), int(sr)
 
-    async def synthesize_stream(
-        self, text: str, voice: str | None = None
-    ) -> AsyncIterator[bytes]:
+    async def synthesize_stream(self, text: str, voice: str | None = None) -> AsyncIterator[bytes]:
         """Yield audio chunks as they become available.
 
         Default calls synthesize() and yields one chunk. Override for

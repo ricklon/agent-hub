@@ -13,10 +13,11 @@ from __future__ import annotations
 import asyncio
 import importlib
 import pkgutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Union
+from typing import Any
 
-_Executor = Callable[[dict[str, Any]], Union[Awaitable[str], str]]
+_Executor = Callable[[dict[str, Any]], Awaitable[str] | str]
 
 _skills: dict[str, tuple[dict[str, Any], _Executor]] = {}
 
@@ -48,7 +49,8 @@ async def run(name: str, args: dict[str, Any]) -> str:
     _, executor = item
     result = executor(args)
     if asyncio.iscoroutine(result):
-        return await result
+        awaited = await result
+        return str(awaited)
     return str(result)
 
 

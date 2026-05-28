@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -34,9 +35,7 @@ class RegistryStore:
         """
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path}", echo=False
-        )
+        self._engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", echo=False)
         self._sessions = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def initialize(self) -> None:
@@ -57,15 +56,11 @@ class RegistryStore:
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
-                try:
+                with suppress(Exception):
                     await conn.execute(text(stmt))
-                except Exception:
-                    pass  # column already exists
 
     async def _ensure_default_persona(self, session: AsyncSession) -> None:
-        result = await session.execute(
-            select(Persona).where(Persona.name == _DEFAULT_PERSONA_NAME)
-        )
+        result = await session.execute(select(Persona).where(Persona.name == _DEFAULT_PERSONA_NAME))
         if result.scalar_one_or_none() is None:
             session.add(
                 Persona(
@@ -101,9 +96,7 @@ class RegistryStore:
             The Agent row, newly created or with last_seen updated.
         """
         async with self._sessions() as session:
-            result = await session.execute(
-                select(Agent).where(Agent.device_id == device_id)
-            )
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             agent = result.scalar_one_or_none()
 
             if agent is None:
@@ -140,9 +133,7 @@ class RegistryStore:
             status: New status value.
         """
         async with self._sessions() as session:
-            result = await session.execute(
-                select(Agent).where(Agent.device_id == device_id)
-            )
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             agent = result.scalar_one_or_none()
             if agent:
                 agent.status = status.value
@@ -195,9 +186,7 @@ class RegistryStore:
     async def update_persona_model(self, persona_name: str, model: str) -> bool:
         """Set the llm_model field on a persona. Returns True if found and updated."""
         async with self._sessions() as session:
-            result = await session.execute(
-                select(Persona).where(Persona.name == persona_name)
-            )
+            result = await session.execute(select(Persona).where(Persona.name == persona_name))
             persona = result.scalar_one_or_none()
             if persona is None:
                 return False
@@ -208,9 +197,7 @@ class RegistryStore:
     async def get_persona_by_name(self, name: str) -> Persona | None:
         """Return a persona by name, or None."""
         async with self._sessions() as session:
-            result = await session.execute(
-                select(Persona).where(Persona.name == name)
-            )
+            result = await session.execute(select(Persona).where(Persona.name == name))
             return result.scalar_one_or_none()
 
     async def find_best_persona_for_tools(self, tool_names: list[str]) -> Persona | None:
@@ -254,9 +241,7 @@ class RegistryStore:
     ) -> Persona | None:
         """Create a new persona. Returns None if the name is already taken."""
         async with self._sessions() as session:
-            existing = await session.execute(
-                select(Persona).where(Persona.name == name)
-            )
+            existing = await session.execute(select(Persona).where(Persona.name == name))
             if existing.scalar_one_or_none() is not None:
                 return None
             persona = Persona(
@@ -277,9 +262,7 @@ class RegistryStore:
     async def assign_persona(self, device_id: str, persona_name: str) -> bool:
         """Assign a persona to a device by name. Returns False if either not found."""
         async with self._sessions() as session:
-            agent_result = await session.execute(
-                select(Agent).where(Agent.device_id == device_id)
-            )
+            agent_result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             agent = agent_result.scalar_one_or_none()
             if agent is None:
                 return False
@@ -311,9 +294,7 @@ class RegistryStore:
     ) -> bool:
         """Update editable fields on a persona. Returns False if not found."""
         async with self._sessions() as session:
-            result = await session.execute(
-                select(Persona).where(Persona.name == persona_name)
-            )
+            result = await session.execute(select(Persona).where(Persona.name == persona_name))
             persona = result.scalar_one_or_none()
             if persona is None:
                 return False
@@ -338,9 +319,7 @@ class RegistryStore:
             await session.commit()
             return True
 
-    async def load_history(
-        self, device_id: str, limit: int = 40
-    ) -> list[dict[str, str]]:
+    async def load_history(self, device_id: str, limit: int = 40) -> list[dict[str, str]]:
         """Return the most recent messages for device_id, oldest first.
 
         Args:
@@ -364,9 +343,7 @@ class RegistryStore:
             for r in rows
         ]
 
-    async def append_history(
-        self, device_id: str, role: str, content: str
-    ) -> None:
+    async def append_history(self, device_id: str, role: str, content: str) -> None:
         """Append one message to the persisted conversation history."""
         async with self._sessions() as session:
             session.add(ConversationTurn(device_id=device_id, role=role, content=content))
@@ -375,6 +352,7 @@ class RegistryStore:
     async def clear_history(self, device_id: str) -> None:
         """Delete all conversation history for a device."""
         from sqlalchemy import delete
+
         async with self._sessions() as session:
             await session.execute(
                 delete(ConversationTurn).where(ConversationTurn.device_id == device_id)
@@ -392,7 +370,5 @@ class RegistryStore:
             Agent row or None.
         """
         async with self._sessions() as session:
-            result = await session.execute(
-                select(Agent).where(Agent.device_id == device_id)
-            )
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             return result.scalar_one_or_none()

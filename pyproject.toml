@@ -68,6 +68,10 @@ strict = true
 explicit_package_bases = true
 mypy_path = "src"
 
+[[tool.mypy.overrides]]
+module = ["onnxruntime", "opuslib_next", "serial", "soundfile"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

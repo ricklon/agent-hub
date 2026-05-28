@@ -36,7 +36,9 @@ class CheckinRequest:
     ip_address: str = ""
 
     @classmethod
-    def from_http(cls, headers: dict[str, str], body: dict[str, Any], client_host: str) -> "CheckinRequest":
+    def from_http(
+        cls, headers: dict[str, str], body: dict[str, Any], client_host: str
+    ) -> CheckinRequest:
         """Parse a check-in request from HTTP headers and body.
 
         Args:
@@ -121,7 +123,7 @@ class AudioParams:
     frame_duration: int = 60  # ms; 60 ms = 960 samples at 16 kHz (device default)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "AudioParams":
+    def from_json(cls, data: dict[str, Any]) -> AudioParams:
         """Parse from the audio_params sub-object in a hello message.
 
         Args:
@@ -170,7 +172,7 @@ class ClientHello:
     features: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "ClientHello":
+    def from_json(cls, data: dict[str, Any]) -> ClientHello:
         """Parse a client hello message.
 
         Args:
