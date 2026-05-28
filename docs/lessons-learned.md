@@ -190,6 +190,27 @@ firmware project.
 
 ---
 
+### Firmware 2.2.6 emits stray `)` in MCP initialize response — breaks all tool discovery
+
+**What happened:** Every device connected and said it supported MCP (`supports_mcp=True`),
+but `tools/list` was never sent and no tools were discovered. Server logged
+"MCP handshake timed out" every session.
+
+**Root cause:** The firmware's JSON serializer emits `)` instead of `}` to close the
+`features` object inside the MCP initialize response capabilities block. `json.loads`
+fails immediately at that character, so `handle_message` was never called, and the
+`tools/list` request was never sent.
+
+**Fix:** `_parse_ctrl()` in `ws_session.py` tries `json.loads` first; on failure it
+strips stray `)` characters that appear immediately before `,` or `}` (structural JSON
+positions) using `re.sub(r'\)([,}\]])', r'\1', text)`, then retries.
+
+**Watch for:** `"MCP handshake timed out"` with no preceding `"MCP server:"` line means
+the `initialize` response never parsed. Add `_parse_ctrl` debug logging to inspect the
+raw text if a new firmware version breaks this again.
+
+---
+
 ## Audio pipeline
 
 ### SenseVoice EMO_UNKNOWN was filtering out real speech
