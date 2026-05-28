@@ -374,6 +374,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     device_id,
                     on_ready=lambda tools: session_state.set_tools(device_id, tools),
                 )
+                session_state.register_mcp_client(device_id, mcp_client)
                 image_token = (config.get("server") or {}).get("image_token", "")
                 await mcp_client.initialize(
                     vision_url=_vision_url(config),

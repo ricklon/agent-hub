@@ -8,7 +8,7 @@ The dashboard reads this alongside the DB to show live metrics.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 
 @dataclass
@@ -38,6 +38,9 @@ _sessions: dict[str, tuple[
     Callable[[dict], Awaitable[None]],
 ]] = {}
 
+# Active MCP clients: device_id → MCPClient (any to avoid circular import)
+_mcp_clients: dict[str, Any] = {}
+
 
 def register_session(
     device_id: str,
@@ -49,6 +52,15 @@ def register_session(
 
 def unregister_session(device_id: str) -> None:
     _sessions.pop(device_id, None)
+    _mcp_clients.pop(device_id, None)
+
+
+def register_mcp_client(device_id: str, client: Any) -> None:
+    _mcp_clients[device_id] = client
+
+
+def get_mcp_client(device_id: str) -> Any | None:
+    return _mcp_clients.get(device_id)
 
 
 def get_speak(device_id: str) -> Callable[[str], Awaitable[None]] | None:

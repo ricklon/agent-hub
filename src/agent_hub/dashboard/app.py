@@ -201,12 +201,25 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         else:
             lat_html = '<p style="color:#6e7681">No turns recorded this session.</p>'
 
+        # Camera capture button (only for devices with the camera tool)
+        dev_tools = session_state.get_state(device_id).mcp_tools
+        has_camera = any("camera" in t or "photo" in t for t in dev_tools)
+        camera_btn = ""
+        if has_camera:
+            camera_btn = f"""\
+<form hx-post="/dashboard/agents/{device_id}/capture"
+      hx-target="#capture-result" hx-swap="innerHTML" style="display:inline">
+  <button type="submit" style="background:#1a4a6e">📷 Capture photo</button>
+</form>
+<div id="capture-result" style="margin-top:0.75rem"></div>"""
+
         # Reboot + send message
         speak_form = f"""\
 <form hx-post="/dashboard/agents/{device_id}/reboot"
       hx-target="#reboot-result" hx-swap="innerHTML" style="display:inline">
   <button type="submit" style="background:#6e3a1e">↺ Reboot device</button>
 </form>
+{camera_btn}
 <span id="reboot-result" style="margin-left:0.75rem"></span>
 <h3>Send message to device</h3>
 <form hx-post="/dashboard/agents/{device_id}/speak"
@@ -273,6 +286,28 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             return HTMLResponse(f'<p class="msg">↺ Reboot sent via {port}.</p>')
         except Exception as exc:
             return HTMLResponse(f'<p style="color:#f85149">Serial reboot failed: {exc}</p>')
+
+    @router.post("/dashboard/agents/{device_id}/capture", response_class=HTMLResponse)
+    async def agent_capture(device_id: str) -> HTMLResponse:
+        mcp_client = session_state.get_mcp_client(device_id)
+        if mcp_client is None or not mcp_client.ready:
+            return HTMLResponse('<p style="color:#f85149">Device not connected or MCP not ready.</p>')
+        if not any("camera" in t or "photo" in t for t in mcp_client.tools):
+            return HTMLResponse('<p style="color:#f85149">No camera tool available on this device.</p>')
+        try:
+            result = await mcp_client.call_tool(
+                "self_camera_take_photo",
+                {"question": "Describe what you see in detail."},
+                timeout=60.0,
+            )
+            if isinstance(result, str) and result.startswith("data:"):
+                return HTMLResponse(
+                    f'<img src="{result}" style="max-width:100%;border-radius:6px;margin-top:0.5rem">'
+                    f'<p style="color:#8b949e;font-size:0.8rem">Captured</p>'
+                )
+            return HTMLResponse(f'<p style="color:#c9d1d9">{result}</p>')
+        except Exception as exc:
+            return HTMLResponse(f'<p style="color:#f85149">Capture failed: {exc}</p>')
 
     @router.post("/dashboard/agents/{device_id}/clear_history", response_class=HTMLResponse)
     async def agent_clear_history(device_id: str) -> HTMLResponse:
