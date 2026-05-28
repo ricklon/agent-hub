@@ -518,6 +518,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             # 4. Main audio loop
             while True:
                 msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    raise WebSocketDisconnect()
 
                 if "bytes" in msg:
                     if vad.push(msg["bytes"]):
@@ -544,8 +546,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                             f"{device_id!r} ctrl: {msg['text'][:400]}"
                         )
 
-        except WebSocketDisconnect:
-            logger.bind(tag=_TAG).info(f"WS disconnected: {device_id!r}")
+        except (WebSocketDisconnect, RuntimeError) as exc:
+            if isinstance(exc, RuntimeError):
+                logger.bind(tag=_TAG).debug(f"WS disconnected (RuntimeError): {device_id!r}")
+            else:
+                logger.bind(tag=_TAG).info(f"WS disconnected: {device_id!r}")
         except Exception as exc:
             logger.bind(tag=_TAG).error(f"WS session error for {device_id!r}: {exc}")
         finally:
