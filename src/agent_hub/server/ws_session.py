@@ -597,7 +597,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     frame_duration_ms=hello.audio_params.frame_duration,
                 )
 
-            # 4. Main audio loop
+            # 4. Greeting — speak once before entering the audio loop so it
+            #    always precedes any voice turn regardless of device timing.
+            if not session_state.has_greeted(device_id):
+                session_state.mark_greeted(device_id)
+                await _speak(websocket, _GREETING, persona, config, session_id)
+
+            # 5. Main audio loop
             while True:
                 msg = await websocket.receive()
                 if msg.get("type") == "websocket.disconnect":
@@ -610,12 +616,6 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 elif "text" in msg:
                     ctrl = _parse_ctrl(msg["text"] or "")
                     ctrl_type = ctrl.get("type")
-                    if ctrl_type == "listen" and ctrl.get("state") == "start" \
-                            and not session_state.has_greeted(device_id):
-                        session_state.mark_greeted(device_id)
-                        asyncio.create_task(
-                            _speak(websocket, _GREETING, persona, config, session_id)
-                        )
                     if ctrl_type == "listen" and ctrl.get("state") == "stop":
                         frames = vad.take()
                         if frames:
