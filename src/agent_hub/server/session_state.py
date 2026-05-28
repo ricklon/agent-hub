@@ -47,6 +47,10 @@ _injectors: dict[str, Callable[[str], Awaitable[str]]] = {}
 # Latest captured image path per device
 _device_latest_image: dict[str, str] = {}
 
+# Live pipeline status per device: phase + current text snippet
+_pipeline_phase: dict[str, str] = {}   # "idle" | "transcribing" | "thinking" | "speaking"
+_pipeline_text: dict[str, str] = {}    # current transcript or reply snippet
+
 
 def register_session(
     device_id: str,
@@ -147,3 +151,17 @@ def has_greeted(device_id: str) -> bool:
 
 def mark_greeted(device_id: str) -> None:
     _greeted.add(device_id)
+
+
+# ── Live pipeline status ──────────────────────────────────────────────────────
+
+def set_pipeline_status(device_id: str, phase: str, text: str = "") -> None:
+    _pipeline_phase[device_id] = phase
+    _pipeline_text[device_id] = text
+
+
+def get_pipeline_status(device_id: str) -> tuple[str, str]:
+    return (
+        _pipeline_phase.get(device_id, "idle"),
+        _pipeline_text.get(device_id, ""),
+    )

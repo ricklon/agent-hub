@@ -184,6 +184,7 @@ async def _run_llm_turn(
     skill_tools = server_skills.get_definitions()
     tools = device_tools + skill_tools
 
+    session_state.set_pipeline_status(device_id, "thinking", transcript)
     t1 = time.monotonic()
     captured_images: list[str] = []
 
@@ -244,6 +245,7 @@ async def _run_llm_turn(
             }))
             tts_text = emotion_utils.strip_emoji(reply)
 
+    session_state.set_pipeline_status(device_id, "speaking", reply)
     t2 = time.monotonic()
     await _speak(websocket, tts_text, persona, config, session_id)
     tts_ms = int((time.monotonic() - t2) * 1000)
@@ -286,6 +288,7 @@ async def _run_voice_turn(
         f"ASR ({asr_ms}ms): {transcript!r} "
         f"[emotion={result.emotion} lang={result.language or '?'}]"
     )
+    session_state.set_pipeline_status(device_id, "thinking", transcript)
 
     await websocket.send_text(json.dumps({
         "type": "stt",
@@ -533,6 +536,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         }))
                     except Exception:
                         pass
+                session_state.set_pipeline_status(device_id, "transcribing")
                 prev_len = len(conversation)
                 async with pipeline_lock:
                     try:
@@ -555,6 +559,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                             f"Pipeline error for {device_id!r}: {exc}\n"
                             + _tb.format_exc()
                         )
+                session_state.set_pipeline_status(device_id, "idle")
                 new_msgs = conversation[prev_len:]
                 for msg in new_msgs:
                     await store.append_history(device_id, msg["role"], msg["content"])
@@ -670,6 +675,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 active_pipeline.cancel()
             if mcp_client is not None:
                 mcp_client.cancel_pending()
+            session_state.set_pipeline_status(device_id, "offline")
             session_state.unregister_session(device_id)
             await store.set_agent_status(device_id, AgentStatus.IDLE)
 

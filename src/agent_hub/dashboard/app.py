@@ -142,6 +142,22 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             f'<p style="color:#8b949e;font-size:0.8rem">{len(turns)} messages</p>'
         )
 
+    @router.get("/dashboard/agents/{device_id}/pipeline_status", response_class=HTMLResponse)
+    async def agent_pipeline_status(device_id: str) -> HTMLResponse:
+        phase, text = session_state.get_pipeline_status(device_id)
+        phase_styles = {
+            "idle":          ("color:#6e7681", "idle"),
+            "transcribing":  ("color:#d29922", "▶ transcribing…"),
+            "thinking":      ("color:#58a6ff", "🤔 thinking…"),
+            "speaking":      ("color:#3fb950", "🔊 speaking"),
+            "offline":       ("color:#6e7681", "offline"),
+        }
+        style, label = phase_styles.get(phase, ("color:#6e7681", phase))
+        snippet = f' <span style="color:#8b949e;font-size:0.8rem">{text[:80]}</span>' if text and phase not in ("idle", "offline", "speaking") else ""
+        return HTMLResponse(
+            f'<span style="{style}">{label}</span>{snippet}'
+        )
+
     @router.get("/dashboard/agents/{device_id}/status", response_class=HTMLResponse)
     async def agent_status_partial(device_id: str) -> HTMLResponse:
         ws_connected = session_state.is_connected(device_id)
@@ -297,8 +313,15 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 </form>
 <div id="speak-result"></div>
 <h3>Conversation history</h3>
+<div style="margin-bottom:0.4rem;font-size:0.85rem">
+  Pipeline:&nbsp;<span
+    hx-get="/dashboard/agents/{device_id}/pipeline_status"
+    hx-trigger="load, every 1s"
+    hx-swap="innerHTML"
+    id="pipeline-status">—</span>
+</div>
 <div hx-get="/dashboard/agents/{device_id}/history"
-     hx-trigger="load, every 5s"
+     hx-trigger="load, every 2s"
      hx-swap="innerHTML"
      id="history-view">Loading…</div>
 <form hx-post="/dashboard/agents/{device_id}/clear_history"
