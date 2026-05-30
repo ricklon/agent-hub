@@ -588,7 +588,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
       <span style="color:#6e7681"> — available: {", ".join(all_skills) or "none"}</span>
     </label>
     <input type="text" name="server_skills" value="{skills_val}" style="width:100%">
-    <label>Device MCP tool allowlist (comma-separated; blank = all allowed)</label>
+    <label>Device MCP tool allowlist (comma-separated)
+      <span style="color:#6e7681"> — blank = safe defaults (camera/photo/status
+      etc.; risky reboot/firmware/Wi-Fi/filesystem/exec tools excluded). List
+      tools explicitly to run an admin/custom set, including risky ones.</span>
+    </label>
     <input type="text" name="mcp_tools_allowlist" value="{tools_val}" style="width:100%">
   </div>
 

@@ -42,6 +42,7 @@ from agent_hub.server.audio import (
     pcm_to_wav,
 )
 from agent_hub.server.mcp_client import MCPClient
+from agent_hub.server import tool_policy
 from agent_hub.server.protocol import SERVER_TTS_AUDIO_PARAMS, ClientHello, ServerWelcome
 from agent_hub.server import session_state
 from agent_hub.server import transcript_log
@@ -159,13 +160,32 @@ async def _run_llm_turn(
         del history[:-window]
     llm = get_llm(persona.llm_provider, config, model_override=persona.llm_model or None)
 
+    # Permission gating. None/[] allowlist → safe defaults (risky device tools
+    # excluded); a non-empty list is an explicit admin/custom allowlist. The
+    # same policy is applied here (LLM tool list) and in _exec_tool (execution).
+    tool_allowlist = persona.mcp_tools_allowlist_list
+    enabled_skills = persona.server_skills_list  # None/[] → all skills enabled
+    allowed_device_names = set(
+        tool_policy.allowed_device_tools(
+            list(mcp_client.tools.keys()) if (mcp_client and mcp_client.ready) else [],
+            tool_allowlist,
+        )
+    )
+
+    def _skill_enabled(name: str) -> bool:
+        return not enabled_skills or name in enabled_skills
+
     base_prompt = persona.system_prompt or ""
     tool_lines: list[str] = []
     for defn in server_skills.get_definitions():
         fn = defn["function"]
+        if not _skill_enabled(fn["name"]):
+            continue
         tool_lines.append(f"- {fn['name']}: {fn['description']}")
     if mcp_client and mcp_client.ready:
         for name, data in mcp_client.tools.items():
+            if name not in allowed_device_names:
+                continue
             desc = data.get("description", "")
             extra = ""
             if "photo" in name or "camera" in name or "image" in name:
@@ -180,8 +200,11 @@ async def _run_llm_turn(
     else:
         system_prompt = base_prompt
 
-    device_tools = mcp_client.get_tool_definitions() if (mcp_client and mcp_client.ready) else []
-    skill_tools = server_skills.get_definitions()
+    device_tools = [
+        d for d in (mcp_client.get_tool_definitions() if (mcp_client and mcp_client.ready) else [])
+        if d["function"]["name"] in allowed_device_names
+    ]
+    skill_tools = [d for d in server_skills.get_definitions() if _skill_enabled(d["function"]["name"])]
     tools = device_tools + skill_tools
 
     session_state.set_pipeline_status(device_id, "thinking", transcript)
@@ -193,6 +216,12 @@ async def _run_llm_turn(
             logger.bind(tag=_TAG).info(f"Tool call: {name!r} args={args}")
             try:
                 if mcp_client and mcp_client.ready and name in mcp_client.tools:
+                    if not tool_policy.is_tool_allowed(name, tool_allowlist):
+                        logger.bind(tag=_TAG).warning(
+                            f"Blocked disallowed device tool {name!r} "
+                            f"(allowlist={tool_allowlist})"
+                        )
+                        return f"tool {name!r} is not permitted for this device"
                     if ("camera" in name or "photo" in name) and "question" not in args:
                         args = {**args, "question": "What do you see?"}
                     if "camera" in name or "photo" in name:
@@ -206,6 +235,11 @@ async def _run_llm_turn(
                         if img:
                             captured_images.append(img)
                 elif server_skills.has_skill(name):
+                    if not _skill_enabled(name):
+                        logger.bind(tag=_TAG).warning(
+                            f"Blocked disabled skill {name!r} (enabled={enabled_skills})"
+                        )
+                        return f"skill {name!r} is not enabled for this persona"
                     result = await server_skills.run(name, args)
                 else:
                     result = f"unknown tool: {name!r}"

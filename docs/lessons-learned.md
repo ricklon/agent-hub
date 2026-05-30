@@ -115,6 +115,43 @@ confirm the actual board identity before debugging capability issues.
 
 ## MCP (device tools)
 
+### Empty allowlists must not disable default MCP capabilities
+
+**What happened:** A local uncommitted `ws_session.py` change started
+enforcing persona `server_skills` and `mcp_tools_allowlist` as strict
+allowlists. The local `hub-default` persona had both fields stored as `[]`,
+so the default persona suddenly exposed no server skills and no device MCP
+tools. Camera/tool behavior appeared broken even though the device was still
+registering correctly.
+
+**Root cause:** The data model did not distinguish "use default safe device
+tools" from "disable all tools." Treating an empty list as a strict allowlist
+made a previously harmless persisted value destructive.
+
+**Decision:** Default personas should support safe discovered microcontroller
+MCP capabilities automatically. Camera/photo/image tools are part of the
+default supported capability set when a device exposes them. Risky
+device-management tools (reboot/reset, firmware/OTA/update, Wi-Fi/network
+configuration, filesystem writes/deletes, arbitrary command execution, and
+persistent config mutation) require an explicit admin/custom mode.
+
+**Watch for:** Any future allowlist implementation must be planned and tested
+before filtering tools in `ws_session.py`. Blank, `NULL`, and legacy `[]`
+states must not accidentally disable device tools. Enforcement must happen
+both when building the LLM's tool list and when executing a requested tool.
+
+**Resolved:** Implemented in `server/tool_policy.py`. Semantics:
+`None`/`[]` allowlist → safe default set (all discovered tools except risky
+device-management ones, classified by `RISKY_KEYWORDS`: reboot/reset, firmware/
+OTA, Wi-Fi/network, filesystem writes/deletes, exec, persistent config). A
+non-empty allowlist is an explicit admin/custom set, including risky tools.
+`ws_session._run_llm_turn` enforces it both when building the tool list/prompt
+and inside `_exec_tool`; `is_tool_allowed` mirrors `allowed_device_tools` so the
+two paths can't diverge. Server skills use the same None/`[]` = all convention.
+Covered by `tests/server/test_tool_policy.py`.
+
+---
+
 ### MCP handshake must complete before persona assignment
 
 **What happened:** Server was assigning a persona before MCP tools were
