@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, cast
 
 from openai import AsyncOpenAI
 
@@ -58,9 +59,10 @@ class OpenAILLMProvider(LLMProvider):
         Returns:
             Model response content string.
         """
-        resp = await self._client.chat.completions.create(
+        completions = cast(Any, self._client.chat.completions)
+        resp = await completions.create(
             model=self._model,
-            messages=self._build_messages(messages, system_prompt),  # type: ignore[arg-type]
+            messages=self._build_messages(messages, system_prompt),
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -72,15 +74,14 @@ class OpenAILLMProvider(LLMProvider):
         system_prompt: str = "",
         max_rounds: int = 5,
     ) -> str:
-        working: list[dict[str, Any]] = list(
-            self._build_messages(messages, system_prompt)  # type: ignore[arg-type]
-        )
+        working: list[dict[str, Any]] = list(self._build_messages(messages, system_prompt))
+        completions = cast(Any, self._client.chat.completions)
 
         for _ in range(max_rounds):
-            resp = await self._client.chat.completions.create(
+            resp = await completions.create(
                 model=self._model,
-                messages=working,  # type: ignore[arg-type]
-                tools=tools,  # type: ignore[arg-type]
+                messages=working,
+                tools=tools,
                 tool_choice="auto",
             )
             if not resp.choices:
@@ -102,16 +103,18 @@ class OpenAILLMProvider(LLMProvider):
                     content: Any = [{"type": "image_url", "image_url": {"url": result}}]
                 else:
                     content = result
-                working.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id or "",
-                    "content": content,
-                })
+                working.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id or "",
+                        "content": content,
+                    }
+                )
 
         # Exhausted rounds — final call without tools
-        resp = await self._client.chat.completions.create(
+        resp = await completions.create(
             model=self._model,
-            messages=working,  # type: ignore[arg-type]
+            messages=working,
         )
         if not resp.choices:
             return ""
@@ -131,12 +134,13 @@ class OpenAILLMProvider(LLMProvider):
         Yields:
             Text delta strings.
         """
-        async with await self._client.chat.completions.create(
+        completions = cast(Any, self._client.chat.completions)
+        stream = await completions.create(
             model=self._model,
-            messages=self._build_messages(messages, system_prompt),  # type: ignore[arg-type]
+            messages=self._build_messages(messages, system_prompt),
             stream=True,
-        ) as stream:
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    yield delta
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                yield delta

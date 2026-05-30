@@ -10,7 +10,7 @@ Written to data/transcripts.jsonl by default.
 from __future__ import annotations
 
 import json
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 _log_path: Path = Path("data/transcripts.jsonl")

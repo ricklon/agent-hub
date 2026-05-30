@@ -36,19 +36,51 @@ from __future__ import annotations
 # reconfigured by a model hallucination.
 RISKY_KEYWORDS: tuple[str, ...] = (
     # reboot / reset / power
-    "reboot", "reset", "restart", "shutdown", "poweroff", "power_off",
+    "reboot",
+    "reset",
+    "restart",
+    "shutdown",
+    "poweroff",
+    "power_off",
     # firmware / OTA / update
-    "firmware", "ota", "upgrade", "flash", "self_update", "selfupdate",
+    "firmware",
+    "ota",
+    "upgrade",
+    "flash",
+    "self_update",
+    "selfupdate",
     # Wi-Fi / network configuration
-    "wifi", "ssid", "provision", "set_network", "network_config",
-    "config_network", "set_ssid",
+    "wifi",
+    "ssid",
+    "provision",
+    "set_network",
+    "network_config",
+    "config_network",
+    "set_ssid",
     # filesystem writes / deletes
-    "delete", "erase", "format", "unlink", "rmdir", "remove_file",
-    "write_file", "writefile", "file_write", "fs_write", "filesystem",
+    "delete",
+    "erase",
+    "format",
+    "unlink",
+    "rmdir",
+    "remove_file",
+    "write_file",
+    "writefile",
+    "file_write",
+    "fs_write",
+    "filesystem",
     # arbitrary command execution
-    "exec", "shell", "run_command", "system_command", "eval",
+    "exec",
+    "shell",
+    "run_command",
+    "system_command",
+    "eval",
     # persistent config mutation
-    "factory", "set_config", "config_set", "write_config", "save_config",
+    "factory",
+    "set_config",
+    "config_set",
+    "write_config",
+    "save_config",
 )
 
 

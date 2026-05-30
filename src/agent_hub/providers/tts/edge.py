@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import edge_tts
 
 from agent_hub.providers.tts import TTSProvider
@@ -51,9 +53,7 @@ class EdgeTTSProvider(TTSProvider):
                 chunks.append(chunk["data"])
         return b"".join(chunks)
 
-    async def synthesize_pcm(
-        self, text: str, voice: str | None = None
-    ) -> tuple[bytes, int]:
+    async def synthesize_pcm(self, text: str, voice: str | None = None) -> tuple[bytes, int]:
         """Return PCM int16 bytes at 24 kHz by decoding Edge TTS MP3 via ffmpeg.
 
         Args:
@@ -69,9 +69,7 @@ class EdgeTTSProvider(TTSProvider):
         pcm = await mp3_to_pcm(mp3_bytes, sample_rate=_TTS_SAMPLE_RATE)
         return pcm, _TTS_SAMPLE_RATE
 
-    async def synthesize_stream(  # type: ignore[override]
-        self, text: str, voice: str | None = None
-    ):
+    async def synthesize_stream(self, text: str, voice: str | None = None) -> AsyncIterator[bytes]:
         """Stream MP3 audio chunks from Edge TTS as they arrive.
 
         Args:

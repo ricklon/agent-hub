@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import WebSocket
 from loguru import logger
-from typing import Callable
 
 _TAG = "mcp_client"
 
@@ -45,7 +45,7 @@ class MCPClient:
         self._device_id = device_id
         self._on_ready = on_ready
         self.tools: dict[str, dict[str, Any]] = {}  # sanitized_name → tool_data
-        self._name_map: dict[str, str] = {}          # sanitized → original
+        self._name_map: dict[str, str] = {}  # sanitized → original
         self.ready = False
         self._next_id = _MCP_CALL_ID_START
         self._pending: dict[int, asyncio.Future[Any]] = {}
@@ -69,19 +69,20 @@ class MCPClient:
             capabilities["vision"] = {"url": vision_url, "token": vision_token}
 
         logger.bind(tag=_TAG).debug(
-            f"{self._device_id!r} sending MCP initialize "
-            f"(vision_url={vision_url!r})"
+            f"{self._device_id!r} sending MCP initialize (vision_url={vision_url!r})"
         )
-        await self._send({
-            "jsonrpc": "2.0",
-            "id": _MCP_INIT_ID,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": capabilities,
-                "clientInfo": {"name": "agent-hub", "version": "0.1.0"},
-            },
-        })
+        await self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": _MCP_INIT_ID,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": capabilities,
+                    "clientInfo": {"name": "agent-hub", "version": "0.1.0"},
+                },
+            }
+        )
 
     async def _request_tools_list(self, cursor: str | None = None) -> None:
         payload: dict[str, Any] = {"jsonrpc": "2.0", "id": _MCP_LIST_ID, "method": "tools/list"}
@@ -103,21 +104,23 @@ class MCPClient:
             self._pending[call_id] = fut
 
         actual_name = self._name_map.get(tool_name, tool_name)
-        await self._send({
-            "jsonrpc": "2.0",
-            "id": call_id,
-            "method": "tools/call",
-            "params": {"name": actual_name, "arguments": arguments},
-        })
+        await self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": call_id,
+                "method": "tools/call",
+                "params": {"name": actual_name, "arguments": arguments},
+            }
+        )
         logger.bind(tag=_TAG).debug(
             f"{self._device_id!r} MCP call {actual_name!r} args={arguments}"
         )
 
         try:
             raw = await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError as exc:
             self._pending.pop(call_id, None)
-            raise TimeoutError(f"MCP tool {tool_name!r} timed out after {timeout}s")
+            raise TimeoutError(f"MCP tool {tool_name!r} timed out after {timeout}s") from exc
 
         if isinstance(raw, dict):
             if raw.get("isError"):
@@ -130,11 +133,11 @@ class MCPClient:
                     data = c.get("data") or c.get("image", "")
                     mime = c.get("mimeType", "image/jpeg")
                     if data:
-                        if data.startswith("data:"):
+                        if isinstance(data, str) and data.startswith("data:"):
                             return data
                         return f"data:{mime};base64,{data}"
                     return "[image: no data]"
-                return c.get("text", str(raw))
+                return str(c.get("text", str(raw)))
         return str(raw)
 
     # ── inbound dispatcher ───────────────────────────────────────────────────
@@ -166,13 +169,19 @@ class MCPClient:
                         continue
                     orig_name = tool.get("name", "")
                     san_name = _sanitize(orig_name)
-                    schema = tool.get("inputSchema", {}) if isinstance(tool.get("inputSchema"), dict) else {}
+                    schema = (
+                        tool.get("inputSchema", {})
+                        if isinstance(tool.get("inputSchema"), dict)
+                        else {}
+                    )
                     self.tools[san_name] = {
                         "description": tool.get("description", ""),
                         "inputSchema": {
                             "type": schema.get("type", "object"),
                             "properties": schema.get("properties", {}),
-                            "required": [s for s in schema.get("required", []) if isinstance(s, str)],
+                            "required": [
+                                s for s in schema.get("required", []) if isinstance(s, str)
+                            ],
                         },
                     }
                     self._name_map[san_name] = orig_name
@@ -184,15 +193,18 @@ class MCPClient:
                     self.ready = True
                     tool_names = list(self.tools.keys())
                     logger.bind(tag=_TAG).info(
-                        f"{self._device_id!r} MCP ready — "
-                        f"{len(tool_names)} tools: {tool_names}"
+                        f"{self._device_id!r} MCP ready — {len(tool_names)} tools: {tool_names}"
                     )
                     if self._on_ready:
                         self._on_ready(tool_names)
 
         elif "error" in payload:
             msg_id = int(payload.get("id", 0))
-            err = payload.get("error", {}).get("message", "unknown") if isinstance(payload.get("error"), dict) else "unknown"
+            err = (
+                payload.get("error", {}).get("message", "unknown")
+                if isinstance(payload.get("error"), dict)
+                else "unknown"
+            )
             logger.bind(tag=_TAG).error(f"{self._device_id!r} MCP error id={msg_id}: {err}")
             if msg_id in self._pending:
                 self._pending.pop(msg_id).set_exception(RuntimeError(f"MCP error: {err}"))

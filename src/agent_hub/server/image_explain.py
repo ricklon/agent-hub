@@ -18,7 +18,7 @@ Empty/missing token config disables auth entirely (dev mode).
 from __future__ import annotations
 
 import base64
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -86,9 +86,7 @@ def make_router(config: dict[str, Any]) -> APIRouter:
             )
 
         if not jpeg_bytes:
-            return JSONResponse(
-                {"error": "no image data"}, status_code=400, headers=_CORS_HEADERS
-            )
+            return JSONResponse({"error": "no image data"}, status_code=400, headers=_CORS_HEADERS)
 
         device_id = request.query_params.get("device_id", "")
         logger.bind(tag=_TAG).info(
@@ -142,11 +140,12 @@ def make_router(config: dict[str, Any]) -> APIRouter:
                 )
             body = resp.json()
             if not resp.is_success:
-                logger.bind(tag=_TAG).error(
-                    f"Vision API {resp.status_code}: {body}"
-                )
+                logger.bind(tag=_TAG).error(f"Vision API {resp.status_code}: {body}")
                 return JSONResponse(
-                    {"error": f"API error {resp.status_code}", "text": "I couldn't describe the image."},
+                    {
+                        "error": f"API error {resp.status_code}",
+                        "text": "I couldn't describe the image.",
+                    },
                     status_code=502,
                     headers=_CORS_HEADERS,
                 )

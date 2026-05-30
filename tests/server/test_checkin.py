@@ -5,8 +5,6 @@ Uses the FastAPI test client from conftest.py.
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestCheckinGet:
     async def test_get_returns_200(self, client):

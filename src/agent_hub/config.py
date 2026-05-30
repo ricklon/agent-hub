@@ -56,7 +56,7 @@ class Settings:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, config: dict[str, Any]) -> "Settings":
+    def from_dict(cls, config: dict[str, Any]) -> Settings:
         """Build Settings from a config dict (already env-overridden).
 
         Args:

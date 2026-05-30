@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from openai import AsyncOpenAI
 
 from agent_hub.providers.asr import ASRProvider, Transcript
@@ -29,7 +31,10 @@ class OpenAIWhisperASRProvider(ASRProvider):
 
     async def transcribe(self, audio_bytes: bytes, language: str | None = None) -> Transcript:
         lang = language or self._language
-        kwargs: dict = {"model": self._model, "file": ("audio.wav", audio_bytes, "audio/wav")}
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "file": ("audio.wav", audio_bytes, "audio/wav"),
+        }
         if lang:
             kwargs["language"] = lang
 

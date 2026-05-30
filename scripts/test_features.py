@@ -85,7 +85,7 @@ def device_mcp_tools(base: str) -> list[str]:
     except Exception:
         return []
     seen: list[str] = []
-    for t in re.findall(r'badge-tool[^>]*>([^<]+)<', html):
+    for t in re.findall(r"badge-tool[^>]*>([^<]+)<", html):
         if t not in seen:
             seen.append(t)
     return seen
@@ -116,12 +116,19 @@ def static_report() -> None:
     print(f"  server skills loaded ({len(names)}): {', '.join(names) or 'none'}")
     print("  tool-policy default classifies an empty/None allowlist as 'safe defaults':")
     sample = [
-        "self_camera_take_photo", "self_get_device_status",
-        "self_audio_speaker_set_volume", "self_system_reboot",
-        "self_ota_firmware_update", "self_wifi_set_config",
+        "self_camera_take_photo",
+        "self_get_device_status",
+        "self_audio_speaker_set_volume",
+        "self_system_reboot",
+        "self_ota_firmware_update",
+        "self_wifi_set_config",
     ]
     for t in sample:
-        verdict = "RISKY (needs explicit allowlist)" if tool_policy.is_risky_tool(t) else "safe (default-allowed)"
+        verdict = (
+            "RISKY (needs explicit allowlist)"
+            if tool_policy.is_risky_tool(t)
+            else "safe (default-allowed)"
+        )
         print(f"    - {t:<32} {verdict}")
 
 
@@ -168,8 +175,8 @@ def main() -> int:
         print(f"      reply: {reply[:200]}")
 
     print("\n" + "=" * 64)
-    fails = [l for l, s in results if s == "FAIL"]
-    warns = [l for l, s in results if s == "WARN"]
+    fails = [label for label, s in results if s == "FAIL"]
+    warns = [label for label, s in results if s == "WARN"]
     print(f"summary: {len(results)} run, {len(fails)} failed, {len(warns)} warned")
     if warns:
         print(f"  warned (may need an API key): {', '.join(warns)}")

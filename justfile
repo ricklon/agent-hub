@@ -15,16 +15,23 @@ download-models:
     echo "Models ready."
 
 lint:
-    ruff check src/ tests/ && ruff format --check src/ tests/
+    uv run --extra dev ruff check src/ tests/ && uv run --extra dev ruff format --check src/ tests/
 
 format:
     ruff format src/ tests/
 
 typecheck:
-    mypy --strict src/agent_hub/
+    uv run --extra dev mypy --strict src/agent_hub/
 
 test:
-    pytest -xvs
+    uv run --extra dev pytest -xvs
+
+smoke:
+    uv run python scripts/smoke.py
+
+# Drive every feature end-to-end against a live device (server must be running)
+test-features:
+    uv run python scripts/test_features.py
 
 test-watch:
     pytest-watch

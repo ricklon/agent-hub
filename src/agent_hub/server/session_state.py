@@ -8,8 +8,12 @@ The dashboard reads this alongside the DB to show live metrics.
 from __future__ import annotations
 
 import time as _time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
+
+JsonDict = dict[str, Any]
+SendJson = Callable[[JsonDict], Awaitable[None]]
 
 
 @dataclass
@@ -34,10 +38,13 @@ class DeviceState:
 _state: dict[str, DeviceState] = {}
 
 # Active WebSocket sessions: device_id → (speak_fn, send_json_fn)
-_sessions: dict[str, tuple[
-    Callable[[str], Awaitable[None]],
-    Callable[[dict], Awaitable[None]],
-]] = {}
+_sessions: dict[
+    str,
+    tuple[
+        Callable[[str], Awaitable[None]],
+        SendJson,
+    ],
+] = {}
 
 # Active MCP clients: device_id → MCPClient (any to avoid circular import)
 _mcp_clients: dict[str, Any] = {}
@@ -51,16 +58,16 @@ _injectors: dict[str, Callable[[str], Awaitable[tuple[str, str | None]]]] = {}
 _device_latest_image: dict[str, str] = {}
 
 # Live pipeline status per device: phase + current text snippet
-_pipeline_phase: dict[str, str] = {}   # "idle" | "transcribing" | "thinking" | "speaking"
-_pipeline_text: dict[str, str] = {}    # current transcript or reply snippet
-_pipeline_prev: dict[str, str] = {}    # phase before the current one
-_pipeline_since: dict[str, float] = {} # monotonic time of last phase change
+_pipeline_phase: dict[str, str] = {}  # "idle" | "transcribing" | "thinking" | "speaking"
+_pipeline_text: dict[str, str] = {}  # current transcript or reply snippet
+_pipeline_prev: dict[str, str] = {}  # phase before the current one
+_pipeline_since: dict[str, float] = {}  # monotonic time of last phase change
 
 
 def register_session(
     device_id: str,
     speak: Callable[[str], Awaitable[None]],
-    send_json: Callable[[dict], Awaitable[None]],
+    send_json: SendJson,
 ) -> None:
     _sessions[device_id] = (speak, send_json)
 
@@ -105,7 +112,7 @@ def get_speak(device_id: str) -> Callable[[str], Awaitable[None]] | None:
     return entry[0] if entry else None
 
 
-def get_send_json(device_id: str) -> Callable[[dict], Awaitable[None]] | None:
+def get_send_json(device_id: str) -> SendJson | None:
     entry = _sessions.get(device_id)
     return entry[1] if entry else None
 
@@ -161,6 +168,7 @@ def mark_greeted(device_id: str) -> None:
 
 
 # ── Live pipeline status ──────────────────────────────────────────────────────
+
 
 def set_pipeline_status(device_id: str, phase: str, text: str = "") -> None:
     old = _pipeline_phase.get(device_id, "idle")

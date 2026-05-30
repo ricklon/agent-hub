@@ -80,7 +80,9 @@ class TestIsToolAllowed:
         assert tool_policy.is_tool_allowed("self_system_reboot", ["self_system_reboot"]) is True
 
     def test_explicit_allowlist_blocks_unlisted(self):
-        assert tool_policy.is_tool_allowed("self_camera_take_photo", ["self_system_reboot"]) is False
+        assert (
+            tool_policy.is_tool_allowed("self_camera_take_photo", ["self_system_reboot"]) is False
+        )
 
     @pytest.mark.parametrize("name", SAFE + RISKY)
     def test_exec_agrees_with_build_filter(self, name):

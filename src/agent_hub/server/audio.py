@@ -20,7 +20,8 @@ import io
 import time
 import wave
 from collections import deque
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 import numpy as np
 import opuslib_next as opuslib
@@ -45,7 +46,7 @@ class OpusDecoder:
         Returns:
             PCM bytes: frame_samples * 2 bytes (int16 little-endian, mono).
         """
-        return self._dec.decode(packet, self._frame_sz)  # type: ignore[return-value]
+        return cast(bytes, self._dec.decode(packet, self._frame_sz))
 
 
 class OpusEncoder:
@@ -70,7 +71,7 @@ class OpusEncoder:
             frame = pcm_bytes[i : i + self._frame_bytes]
             if len(frame) < self._frame_bytes:
                 frame = frame + b"\x00" * (self._frame_bytes - len(frame))
-            packets.append(self._enc.encode(frame, self._frame_sz))  # type: ignore[arg-type]
+            packets.append(cast(bytes, self._enc.encode(frame, self._frame_sz)))
         return packets
 
 
@@ -127,11 +128,16 @@ async def mp3_to_pcm(mp3_bytes: bytes, sample_rate: int = 24000) -> bytes:
     """
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg",
-        "-loglevel", "quiet",
-        "-i", "pipe:0",
-        "-ar", str(sample_rate),
-        "-ac", "1",
-        "-f", "s16le",
+        "-loglevel",
+        "quiet",
+        "-i",
+        "pipe:0",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-f",
+        "s16le",
         "pipe:1",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -157,9 +163,24 @@ async def pcm_resample(pcm_bytes: bytes, from_rate: int, to_rate: int) -> bytes:
     if from_rate == to_rate:
         return pcm_bytes
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "quiet",
-        "-f", "s16le", "-ar", str(from_rate), "-ac", "1", "-i", "pipe:0",
-        "-ar", str(to_rate), "-ac", "1", "-f", "s16le", "pipe:1",
+        "ffmpeg",
+        "-loglevel",
+        "quiet",
+        "-f",
+        "s16le",
+        "-ar",
+        str(from_rate),
+        "-ac",
+        "1",
+        "-i",
+        "pipe:0",
+        "-ar",
+        str(to_rate),
+        "-ac",
+        "1",
+        "-f",
+        "s16le",
+        "pipe:1",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -209,7 +230,7 @@ class SileroVAD:
         opts = onnxruntime.SessionOptions()
         opts.inter_op_num_threads = 1
         opts.intra_op_num_threads = 1
-        self._session = onnxruntime.InferenceSession(
+        self._session: Any = onnxruntime.InferenceSession(
             model_path,
             providers=["CPUExecutionProvider"],
             sess_options=opts,
@@ -233,9 +254,9 @@ class SileroVAD:
         """Run one 512-sample chunk through Silero ONNX. Returns True if speech."""
         audio_int16 = np.frombuffer(samples_int16, dtype=np.int16)
         audio_f32 = audio_int16.astype(np.float32) / 32768.0
-        audio_input = np.concatenate(
-            [self._context, audio_f32.reshape(1, -1)], axis=1
-        ).astype(np.float32)
+        audio_input = np.concatenate([self._context, audio_f32.reshape(1, -1)], axis=1).astype(
+            np.float32
+        )
 
         out, new_state = self._session.run(
             None,
@@ -425,8 +446,7 @@ class SilenceVAD:
             self._silent_count += 1
 
         return self._has_speech and (
-            self._silent_count >= self.SILENCE_FRAMES
-            or len(self._frames) >= self.MAX_FRAMES
+            self._silent_count >= self.SILENCE_FRAMES or len(self._frames) >= self.MAX_FRAMES
         )
 
     def take(self) -> list[bytes]:

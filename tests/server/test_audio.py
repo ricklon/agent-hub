@@ -25,7 +25,9 @@ def _silence_pcm(samples: int = 320) -> bytes:
     return b"\x00" * (samples * 2)
 
 
-def _tone_pcm(samples: int = 320, amplitude: int = 8000, freq: int = 440, rate: int = 16000) -> bytes:
+def _tone_pcm(
+    samples: int = 320, amplitude: int = 8000, freq: int = 440, rate: int = 16000
+) -> bytes:
     t = np.arange(samples, dtype=np.float32) / rate
     wave_data = (np.sin(2 * np.pi * freq * t) * amplitude).astype(np.int16)
     return wave_data.tobytes()
