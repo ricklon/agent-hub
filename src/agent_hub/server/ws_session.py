@@ -619,12 +619,12 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 send_json=lambda payload: websocket.send_text(json.dumps(payload)),
             )
 
-            async def _dispatch_text_pipeline(transcript: str) -> str:
+            async def _dispatch_text_pipeline(transcript: str) -> tuple[str, str | None]:
                 if pipeline_lock.locked():
                     logger.bind(tag=_TAG).debug(
                         f"{device_id!r} pipeline busy — dropping injected turn"
                     )
-                    return ""
+                    return "", None
                 reply = ""
                 prev_len = len(conversation)
                 async with pipeline_lock:
@@ -643,7 +643,15 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 new_msgs = conversation[prev_len:]
                 for m in new_msgs:
                     await store.append_history(device_id, m["role"], m["content"])
-                return reply
+                # Only report an image captured *during this turn* (embedded as an
+                # [image:PATH] marker by _run_llm_turn), not the stale latest-image
+                # cache — otherwise a non-camera reply renders a prior photo.
+                fresh_image: str | None = None
+                for m in new_msgs:
+                    match = _re.search(r"\[image:([^\]]+)\]", m.get("content", ""))
+                    if match:
+                        fresh_image = match.group(1)
+                return reply, fresh_image
 
             session_state.register_injector(device_id, _dispatch_text_pipeline)
 

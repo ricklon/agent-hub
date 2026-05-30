@@ -42,8 +42,10 @@ _sessions: dict[str, tuple[
 # Active MCP clients: device_id → MCPClient (any to avoid circular import)
 _mcp_clients: dict[str, Any] = {}
 
-# Text injectors: device_id → async callable(text: str) → reply str
-_injectors: dict[str, Callable[[str], Awaitable[str]]] = {}
+# Text injectors: device_id → async callable(text) → (reply, fresh_image_path|None).
+# The image path is the capture made *during this turn* (None if none), so callers
+# don't fall back to the stale per-device latest-image cache.
+_injectors: dict[str, Callable[[str], Awaitable[tuple[str, str | None]]]] = {}
 
 # Latest captured image path per device
 _device_latest_image: dict[str, str] = {}
@@ -79,12 +81,14 @@ def get_mcp_client(device_id: str) -> Any | None:
 
 def register_injector(
     device_id: str,
-    fn: Callable[[str], Awaitable[str]],
+    fn: Callable[[str], Awaitable[tuple[str, str | None]]],
 ) -> None:
     _injectors[device_id] = fn
 
 
-def get_injector(device_id: str) -> Callable[[str], Awaitable[str]] | None:
+def get_injector(
+    device_id: str,
+) -> Callable[[str], Awaitable[tuple[str, str | None]]] | None:
     return _injectors.get(device_id)
 
 

@@ -151,8 +151,8 @@ def main() -> int:
     print(f"  discovered device MCP tools ({len(mcp_tools)}): {', '.join(mcp_tools) or 'none'}")
 
     print("\n[3] Feature battery (each drives a full pipeline turn)")
-    print("    note: camera correctness = eyeball the scene description; the inject")
-    print("    image is the last cached capture and can't prove a fresh photo over HTTP.")
+    print("    note: '[image attached]' now means the camera tool succeeded *this*")
+    print("    turn; eyeball the scene description for correctness.")
     results: list[tuple[str, str]] = []
     for label, utterance, needs_key in _BATTERY:
         if args.skip_camera and "camera" in label:
