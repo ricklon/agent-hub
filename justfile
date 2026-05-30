@@ -29,6 +29,10 @@ test:
 smoke:
     uv run python scripts/smoke.py
 
+# Drive every feature end-to-end against a live device (server must be running)
+test-features:
+    uv run python scripts/test_features.py
+
 test-watch:
     pytest-watch
 

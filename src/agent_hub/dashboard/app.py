@@ -458,15 +458,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         if injector is None:
             return HTMLResponse('<p style="color:#f85149">Device not connected.</p>')
         try:
-            reply = await asyncio.wait_for(injector(text.strip()), timeout=90.0)
+            reply, img_path = await asyncio.wait_for(injector(text.strip()), timeout=90.0)
         except TimeoutError:
             return HTMLResponse('<p style="color:#f85149">Timed out waiting for reply (>90s).</p>')
         except Exception as exc:
             return HTMLResponse(f'<p style="color:#f85149">Pipeline error: {exc}</p>')
         if not reply:
             return HTMLResponse('<p style="color:#6e7681">Pipeline ran but produced no reply.</p>')
-        # Show reply + latest captured image (if this turn triggered a capture)
-        img_path = session_state.get_latest_image(device_id)
+        # Show reply + the image captured *during this turn* only (img_path is None
+        # unless this turn actually triggered a capture), so non-camera replies no
+        # longer render a stale photo from an earlier turn.
         img_html = ""
         if img_path:
             import urllib.parse as _up
@@ -632,7 +633,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
       <span style="color:#6e7681"> — available: {", ".join(all_skills) or "none"}</span>
     </label>
     <input type="text" name="server_skills" value="{skills_val}" style="width:100%">
-    <label>Device MCP tool allowlist (comma-separated; blank = all allowed)</label>
+    <label>Device MCP tool allowlist (comma-separated)
+      <span style="color:#6e7681"> — blank = safe defaults (camera/photo/status
+      etc.; risky reboot/firmware/Wi-Fi/filesystem/exec tools excluded). List
+      tools explicitly to run an admin/custom set, including risky ones.</span>
+    </label>
     <input type="text" name="mcp_tools_allowlist" value="{tools_val}" style="width:100%">
   </div>
 

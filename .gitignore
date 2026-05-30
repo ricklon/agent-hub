@@ -37,6 +37,9 @@ data/*.sqlite
 data/*.sqlite-journal
 data/*.jsonl
 
+# Runtime device captures
+data/images/
+
 # Claude Code local session state
 .claude/
 
