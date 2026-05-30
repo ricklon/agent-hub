@@ -26,6 +26,9 @@ typecheck:
 test:
     uv run --extra dev pytest -xvs
 
+smoke:
+    uv run python scripts/smoke.py
+
 test-watch:
     pytest-watch
 
