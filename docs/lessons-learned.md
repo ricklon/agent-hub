@@ -227,6 +227,46 @@ firmware project.
 
 ---
 
+### Camera tool result synchronously coupled to vision inference — device times out while server succeeds
+
+**What happened:** A camera turn failed with the device reporting
+`MCP error: Failed to upload photo`, yet the server log showed it had received
+the image *and* produced a description. Timeline:
+
+```
+17:28:04  Tool call: self_camera_take_photo
+17:28:08  Image explain: 4679 bytes        ← server RECEIVED the photo
+17:28:47  Vision result: "...blurry..."     ← 39s later, vision finished
+17:28:47  Tool failed: MCP error: Failed to upload photo
+```
+
+**Root cause:** The device's photo-upload HTTP POST to the vision endpoint
+(`image_explain`) is the *same* request that runs the vision model. The board
+blocks for the entire inference (~40s here, and vision/LLM latency varies
+wildly — 16s vs 41s for the same weather query in other turns). When that
+exceeds the firmware's socket timeout, the device gives up and returns
+`Failed to upload photo` as the MCP tool result — even though the upload
+succeeded and the server kept processing. The result the server produced is
+never delivered, and the LLM apologizes for a failure that didn't happen.
+
+**Two problems in one:** (1) the board is held hostage for the full vision
+inference; (2) success/failure desync — server thinks it worked, device thinks
+it failed, and the error message ("upload failed") is itself wrong (the *wait*
+failed, not the upload).
+
+**Fix direction (server):** decouple receipt from inference. `image_explain`
+should ack the upload immediately (fast 200), run vision asynchronously, and
+deliver the description back over the MCP channel (or a push) so the device's
+HTTP call returns in ~1s instead of ~40s. **Firmware** should then stop waiting
+synchronously for the vision result, and capture at a smaller frame size to cut
+upload time and PSRAM pressure (see OOM entry above). Tracked as GitHub issues.
+
+**Watch for:** `MCP error: Failed to upload photo` *with* a preceding
+`Image explain: N bytes` line means the upload worked and the device timed out
+waiting — not an actual upload failure.
+
+---
+
 ### Firmware 2.2.6 emits stray `)` in MCP initialize response — breaks all tool discovery
 
 **What happened:** Every device connected and said it supported MCP (`supports_mcp=True`),
@@ -378,6 +418,57 @@ before any camera/photo tool call. The TTS plays immediately on the device
 so the user knows something is in progress even before the tool result
 returns.
 
+**Follow-up:** The placeholder is camera-specific, but *any* turn can stall —
+measured turns: weather 16s then 41s for the *same* query, web search ~33s,
+LLM up to 59s. Slow latency is dominated by the model/tool and is
+non-deterministic, so the "working on it" cue should fire for any turn that
+exceeds a few seconds, not just camera. Tracked as a GitHub issue.
+
+---
+
+## Observability & tooling
+
+### Live device state is only exposed as scraped HTML, not JSON
+
+**What happened:** Writing `scripts/test_features.py` required scraping the
+dashboard's HTML partials to learn a device's discovered MCP tools — and that
+state only renders on the agents *list* page, not the per-device `/status`
+partial, so the first version of the script reported "0 tools." Tests and
+monitoring shouldn't depend on parsing presentation HTML.
+
+**Lesson:** Add a small JSON status/capability API (device → discovered tools,
+persona, allowlist, connection state). It would make the smoke test, future
+monitoring, and the dashboard itself all read from one structured source.
+Tracked as a GitHub issue.
+
+---
+
+### Skills return free text, so a polite failure looks like success
+
+**What happened:** When the weather backend was down the skill replied
+"I'm having trouble getting the weather right now." The smoke test marked it
+PASS because the reply was non-empty and matched no error sentinel. There is no
+machine-readable way to tell a real answer from an apology.
+
+**Lesson:** Skills (and tool results) should carry a structured success/failure
+status alongside the text, so the dashboard and tests can distinguish a genuine
+result from a graceful failure.
+
+---
+
+### Global per-device caches go stale across turns
+
+**What happened:** The dashboard `/inject` view rendered
+`session_state.get_latest_image()` — a global per-device cache — so a
+non-camera reply (e.g. "what time is it?") showed a leftover photo from an
+earlier camera turn. Fixed by having the injector return the image captured
+*during this turn* instead of reading the global cache.
+
+**Lesson:** A global mutable `_device_*` cache read at a later, unrelated point
+is a staleness trap. Prefer returning per-turn data through the call path.
+Worth auditing the other `_device_*` globals in `session_state.py` for the same
+pattern.
+
 ---
 
 ## LLM provider
@@ -421,4 +512,4 @@ via `-DSDKCONFIG=$bdir/sdkconfig`. Switching boards is now safe and fast
 
 ---
 
-*Last updated: 2026-05-28*
+*Last updated: 2026-05-30*
