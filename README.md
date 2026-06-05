@@ -191,6 +191,12 @@ just docker-up      # start the container
 The container reads your `.env` file and mounts `./data` so the device
 registry and transcripts persist between restarts.
 
+For always-on or remote access deployments, read
+[`docs/deployment.md`](docs/deployment.md) before exposing any ports. The
+dashboard supports optional HTTP Basic auth via
+`AGENT_HUB_SERVER_DASHBOARD_PASSWORD`; leave it empty only for trusted LAN
+development.
+
 ### Configuration reference
 
 All settings can be set via environment variables using the pattern
@@ -208,6 +214,11 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_DASHBOARD_PORT` | `8001` | Dashboard UI port |
 | `AGENT_HUB_SERVER_TIMEZONE` | unset | IANA timezone used for DST-aware device clock offset |
 | `AGENT_HUB_SERVER_TIMEZONE_OFFSET` | `-8` | Fallback fixed UTC offset in hours |
+| `AGENT_HUB_SERVER_DASHBOARD_USERNAME` | `admin` | Dashboard Basic auth username |
+| `AGENT_HUB_SERVER_DASHBOARD_PASSWORD` | — | Dashboard Basic auth password; empty disables dashboard auth |
+| `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` | — | Optional shared check-in secret; empty allows LAN/classroom auto-registration |
+| `AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT` | `data/images` | Directory the dashboard may serve captured images from |
+| `AGENT_HUB_SERVER_IMAGE_TOKEN` | — | Bearer token devices must send to the image upload/explain endpoint |
 
 See `.env.example` for the full list with comments.
 
@@ -278,13 +289,10 @@ working end-to-end. See `AGENTS.md` for contribution conventions.
 
 ## Deployment target
 
-Designed to run as a single Docker container on the existing
-`xiaozhi.local` LXC (CT 107 on edge.local, 192.168.5.6) with a Tailscale
-sidecar for the dashboard at `agent-hub.panthera-hamlet.ts.net`.
-
-For public exposure (FUBAR demos, 4-H families testing from home), swap
-the Tailscale sidecar for a Cloudflare Tunnel at `agent-hub.foofab.net`.
-The compose file is the same; only the sidecar changes.
+Designed to run as a single Docker container on a trusted LAN or homelab
+host. Remote administration should go through Tailscale or an authenticated
+HTTPS reverse proxy; do not expose the raw dashboard port directly to the
+public internet. See [`docs/deployment.md`](docs/deployment.md).
 
 ## License
 
@@ -295,6 +303,7 @@ TBD.
 - [`docs/demo-quickstart.md`](docs/demo-quickstart.md) — pre-event checklist + fast setup for demos and study groups
 - [`docs/concepts.md`](docs/concepts.md) — plain-English explanation of how everything works
 - [`docs/device-setup.md`](docs/device-setup.md) — how to configure an ESP32 device to connect
+- [`docs/deployment.md`](docs/deployment.md) — secure LAN, Tailscale, and HTTPS proxy deployment guidance
 - [`docs/lessons-learned.md`](docs/lessons-learned.md) — non-obvious bugs, root causes, and fixes
 - `AGENTS.md` — coding-agent instructions and skill catalogue
 - Firmware fork (use this): https://github.com/ricklon/xiaozhi-esp32

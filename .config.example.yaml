@@ -3,6 +3,15 @@ server:
   ws_port: 8000
   http_port: 8003
   dashboard_port: 8001
+  # Optional HTTP Basic auth for /dashboard/*.
+  # Leave password empty for local/LAN-only development.
+  dashboard_username: "admin"
+  dashboard_password: ""
+  # Optional shared secret required during device check-in.
+  # Leave empty for trusted LAN/classroom auto-registration.
+  enrollment_token: ""
+  # Directory the dashboard may read captured device images from.
+  dashboard_image_root: "data/images"
   # Override the WebSocket URL sent to devices on check-in.
   # Leave empty to auto-detect from the server's LAN IP.
   websocket: ""
