@@ -11,6 +11,7 @@ the hub-default persona and are functional immediately.
 
 from __future__ import annotations
 
+import secrets
 import socket
 from contextlib import suppress
 from typing import Any
@@ -99,12 +100,28 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
         client_host = request.client.host if request.client else ""
 
         try:
-            req = CheckinRequest.from_http(headers, body, client_host)
+            req = CheckinRequest.from_http(
+                headers,
+                body,
+                client_host,
+                dict(request.query_params),
+            )
         except ValueError as exc:
             logger.bind(tag=_TAG).warning(f"Bad check-in: {exc}")
             return JSONResponse(
                 {"success": False, "message": str(exc)},
                 status_code=400,
+                headers=_CORS_HEADERS,
+            )
+
+        enrollment_token = str((settings.raw.get("server") or {}).get("enrollment_token", ""))
+        if enrollment_token and not secrets.compare_digest(req.enrollment_token, enrollment_token):
+            logger.bind(tag=_TAG).warning(
+                f"Rejected check-in from {req.device_id!r}: invalid enrollment token"
+            )
+            return JSONResponse(
+                {"success": False, "message": "invalid enrollment token"},
+                status_code=401,
                 headers=_CORS_HEADERS,
             )
 
@@ -118,12 +135,16 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
             ip_address=req.ip_address,
             firmware_version=req.application_version,
         )
+        websocket_token = (
+            await store.issue_websocket_token(req.device_id) if enrollment_token else ""
+        )
 
         image_token = (settings.raw.get("server") or {}).get("image_token", "")
         resp = CheckinResponse(
             websocket_url=_ws_url(settings),
             firmware_version=req.application_version,
             timezone_offset_minutes=settings.server.timezone_offset * 60,
+            token=websocket_token,
             image_url=_image_url(settings),
             image_token=image_token,
         )

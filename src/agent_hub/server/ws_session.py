@@ -481,6 +481,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         FastAPI router exposing ws://.../xiaozhi/v1/.
     """
     router = APIRouter()
+    enrollment_required = bool((config.get("server") or {}).get("enrollment_token", ""))
+
+    def _websocket_token(websocket: WebSocket) -> str:
+        auth = websocket.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        return websocket.query_params.get("token", "").strip()
 
     @router.websocket("/xiaozhi/v1/")
     async def voice_session(websocket: WebSocket) -> None:
@@ -488,6 +495,12 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         device_id = websocket.headers.get("device-id") or websocket.query_params.get("device-id")
         if not device_id:
             await websocket.close(code=1008, reason="missing device-id")
+            return
+        if enrollment_required and not await store.validate_websocket_token(
+            device_id,
+            _websocket_token(websocket),
+        ):
+            await websocket.close(code=1008, reason="invalid token")
             return
 
         await websocket.accept()

@@ -95,6 +95,7 @@ class Agent(Base):
     persona_id: Mapped[int] = mapped_column(ForeignKey("personas.id"))
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     firmware_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    websocket_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
     last_seen: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

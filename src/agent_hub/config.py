@@ -17,14 +17,23 @@ _ENV_PREFIX = "AGENT_HUB_"
 def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     """Apply AGENT_HUB_<SECTION>_<KEY> environment variables onto config dict.
 
-    Uses maxsplit=2 so that leaf keys with underscores (e.g. api_key) survive
-    intact. Supports two-level nesting: AGENT_HUB_SERVER_HOST → server.host,
-    and three-level: AGENT_HUB_LLM_OPENAI_API_KEY → llm.openai.api_key.
+    Server and registry keys are flat, so AGENT_HUB_SERVER_WS_PORT maps to
+    server.ws_port. Provider sections remain three-level, so
+    AGENT_HUB_LLM_OPENAI_API_KEY maps to llm.openai.api_key.
     """
     for env_key, value in os.environ.items():
         if not env_key.startswith(_ENV_PREFIX):
             continue
-        parts = env_key[len(_ENV_PREFIX) :].lower().split("_", 2)
+        parts = env_key[len(_ENV_PREFIX) :].lower().split("_")
+        if len(parts) < 2:
+            continue
+        if parts[0] in {"server", "registry"}:
+            config.setdefault(parts[0], {})["_".join(parts[1:])] = value
+            continue
+        if len(parts) == 2:
+            config.setdefault(parts[0], {})[parts[1]] = value
+            continue
+        parts = [parts[0], parts[1], "_".join(parts[2:])]
         target: dict[str, Any] = config
         for part in parts[:-1]:
             target = target.setdefault(part, {})

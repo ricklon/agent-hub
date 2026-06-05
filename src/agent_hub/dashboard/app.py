@@ -6,11 +6,14 @@ Server-rendered with HTMX — no SPA build step.
 from __future__ import annotations
 
 import asyncio
+import html
 import re
+import secrets
+from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
@@ -82,7 +85,56 @@ _PAGE = """\
 
 
 def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
-    router = APIRouter()
+    server_config = config.get("server") or {}
+    dashboard_username = str(server_config.get("dashboard_username") or "admin")
+    dashboard_password = str(server_config.get("dashboard_password") or "")
+    image_root = Path(str(server_config.get("dashboard_image_root") or "data/images")).resolve()
+
+    async def _require_dashboard_auth(request: Request) -> None:
+        """Require HTTP Basic auth when a dashboard password is configured."""
+        if not dashboard_password:
+            return
+
+        auth = request.headers.get("authorization", "")
+        scheme, _, encoded = auth.partition(" ")
+        if scheme.lower() != "basic" or not encoded:
+            raise _auth_error()
+
+        import base64
+        import binascii
+
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            raise _auth_error() from None
+
+        username, sep, password = decoded.partition(":")
+        if not sep or not (
+            secrets.compare_digest(username, dashboard_username)
+            and secrets.compare_digest(password, dashboard_password)
+        ):
+            raise _auth_error()
+
+    def _auth_error() -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Dashboard authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    def _dashboard_image_path(raw_path: str) -> Path | None:
+        requested = Path(raw_path)
+        candidates = (
+            [requested.resolve()]
+            if requested.is_absolute()
+            else [(Path.cwd() / requested).resolve(), (image_root / requested).resolve()]
+        )
+        for candidate in candidates:
+            if candidate.is_relative_to(image_root):
+                return candidate
+        return None
+
+    router = APIRouter(dependencies=[Depends(_require_dashboard_auth)])
     api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
 
     # ── Static image serving ──────────────────────────────────────────────────
@@ -90,12 +142,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.get("/dashboard/image")
     async def serve_image(path: str) -> Response:
         """Serve a saved device capture JPEG by filesystem path."""
-        from pathlib import Path as _Path
-
-        p = _Path(path)
-        if not p.exists() or p.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+        p = _dashboard_image_path(path)
+        if p is None or not p.exists() or p.suffix.lower() not in (".jpg", ".jpeg", ".png"):
             return Response(status_code=404)
-        return Response(content=p.read_bytes(), media_type="image/jpeg")
+        media_type = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
+        return Response(content=p.read_bytes(), media_type=media_type)
 
     # ── Agents ───────────────────────────────────────────────────────────────
 
@@ -120,17 +171,18 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
         def _render_content(raw: str) -> str:
             """Replace [image:path] markers with inline <img> tags."""
-
-            def _img(m: re.Match[str]) -> str:
-                enc = _up.quote(m.group(1), safe="")
-                return (
+            parts: list[str] = []
+            last = 0
+            for match in re.finditer(r"\[image:([^\]]+)\]", raw):
+                parts.append(html.escape(raw[last : match.start()]))
+                enc = _up.quote(match.group(1), safe="")
+                parts.append(
                     f'<br><img src="/dashboard/image?path={enc}" '
                     f'style="max-width:320px;border-radius:6px;margin-top:0.4rem;display:block">'
                 )
-
-            text = re.sub(r"\[image:([^\]]+)\]", _img, raw)
-            # Escape any remaining HTML in the text portion only
-            return text
+                last = match.end()
+            parts.append(html.escape(raw[last:]))
+            return "".join(parts)
 
         turns = await store.load_history(device_id, limit=60)
         if not turns:

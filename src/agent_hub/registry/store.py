@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +54,7 @@ class RegistryStore:
             "ALTER TABLE personas ADD COLUMN server_skills TEXT",
             "ALTER TABLE personas ADD COLUMN mcp_tools_allowlist TEXT",
             "ALTER TABLE personas ADD COLUMN memory_window INTEGER DEFAULT 20 NOT NULL",
+            "ALTER TABLE agents ADD COLUMN websocket_token VARCHAR(128)",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
@@ -124,6 +126,45 @@ class RegistryStore:
 
             await session.commit()
             return agent
+
+    async def issue_websocket_token(self, device_id: str) -> str:
+        """Create or replace the WebSocket bearer token for device_id.
+
+        Args:
+            device_id: Registered device receiving the token.
+
+        Returns:
+            Newly issued opaque token, or an empty string when the device is unknown.
+        """
+        token = secrets.token_urlsafe(32)
+        async with self._sessions() as session:
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
+            agent = result.scalar_one_or_none()
+            if agent is None:
+                return ""
+            agent.websocket_token = token
+            agent.last_seen = datetime.now(UTC)
+            await session.commit()
+            return token
+
+    async def validate_websocket_token(self, device_id: str, token: str) -> bool:
+        """Return True when token matches the device's current WebSocket token.
+
+        Args:
+            device_id: Device attempting to open a WebSocket session.
+            token: Bearer token supplied by the device.
+
+        Returns:
+            True if the token matches the current registry row.
+        """
+        if not token:
+            return False
+        async with self._sessions() as session:
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
+            agent = result.scalar_one_or_none()
+            if agent is None or not agent.websocket_token:
+                return False
+            return secrets.compare_digest(agent.websocket_token, token)
 
     async def set_agent_status(self, device_id: str, status: AgentStatus) -> None:
         """Update the lifecycle status of an agent.
