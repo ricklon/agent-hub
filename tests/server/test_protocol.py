@@ -39,6 +39,27 @@ class TestCheckinRequest:
         assert req.application_version == "3.5.0"
         assert req.board_type == "esp32s3"
 
+    def test_parse_enrollment_token_from_header(self):
+        req = CheckinRequest.from_http(
+            headers={
+                "device-id": "AA:BB:CC:DD:EE:FF",
+                "client-id": "c",
+                "x-agent-hub-enrollment-token": "enroll-secret",
+            },
+            body={},
+            client_host="10.0.0.1",
+        )
+        assert req.enrollment_token == "enroll-secret"
+
+    def test_parse_enrollment_token_from_query(self):
+        req = CheckinRequest.from_http(
+            headers={"device-id": "AA:BB:CC:DD:EE:FF", "client-id": "c"},
+            body={},
+            client_host="10.0.0.1",
+            query_params={"enrollment_token": "query-secret"},
+        )
+        assert req.enrollment_token == "query-secret"
+
     def test_missing_device_id_raises(self):
         import pytest
 
@@ -79,6 +100,11 @@ class TestCheckinResponse:
         assert set(data["server_time"].keys()) >= {"timestamp", "timezone_offset"}
         assert set(data["firmware"].keys()) >= {"version", "url"}
         assert set(data["websocket"].keys()) >= {"url", "token"}
+
+    def test_websocket_token_is_serialized(self):
+        resp = CheckinResponse(websocket_url="ws://x/", token="session-secret")
+        data = resp.to_json()
+        assert data["websocket"]["token"] == "session-secret"
 
 
 class TestClientHello:
