@@ -20,6 +20,7 @@ import re as _re
 import socket
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -50,10 +51,58 @@ from agent_hub.server.protocol import SERVER_TTS_AUDIO_PARAMS, ClientHello, Serv
 _TAG = "ws_session"
 
 _GREETING = "Agent hub connected. Ready."
+_SLOW_TURN_CUE_SECONDS = 4.0
+_SLOW_TURN_CUE_TEXT = "I'm still working on that."
 
 
 JsonDict = dict[str, Any]
 _SENTENCE_END_RE = _re.compile(r"([.!?]+)([\"')\]]*)(\s+|$)")
+
+
+class _DelayedTurnCue:
+    """Speak a filler cue only if a turn stays silent past a delay."""
+
+    def __init__(self, delay_s: float, speak_cue: Callable[[], Awaitable[None]]) -> None:
+        self._delay_s = delay_s
+        self._speak_cue = speak_cue
+        self._task: asyncio.Task[None] | None = None
+        self._started = False
+        self._handled = False
+
+    def start(self) -> None:
+        """Start the delayed cue timer."""
+        if self._task is None:
+            self._task = asyncio.create_task(self._run())
+
+    def mark_handled(self) -> None:
+        """Prevent the generic cue because a more specific cue was spoken."""
+        self._handled = True
+
+    async def settle_before_reply(self) -> None:
+        """Cancel an unstarted cue, or wait for an already-started cue to finish."""
+        if self._task is None:
+            return
+        if self._started:
+            await self._task
+            return
+        self._task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._task
+
+    async def close(self) -> None:
+        """Stop the cue task before leaving the turn."""
+        await self.settle_before_reply()
+
+    async def _run(self) -> None:
+        await asyncio.sleep(self._delay_s)
+        if self._handled:
+            return
+        self._started = True
+        self._handled = True
+        try:
+            await self._speak_cue()
+        except Exception as exc:
+            logger.bind(tag=_TAG).warning(f"Slow-turn cue failed: {exc}")
 
 
 def _parse_ctrl(text: str) -> JsonDict:
@@ -188,12 +237,14 @@ async def _stream_reply_to_speech(
     persona: Persona,
     config: dict[str, Any],
     session_id: str,
+    on_first_delta: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[str, int]:
     """Consume LLM deltas and speak complete sentence chunks as soon as possible."""
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     reply_parts: list[str] = []
     tts_ms = 0
     spoke = False
+    saw_delta = False
 
     async def _tts_worker() -> None:
         nonlocal tts_ms, spoke
@@ -222,6 +273,10 @@ async def _stream_reply_to_speech(
         async for delta in deltas:
             if not delta:
                 continue
+            if not saw_delta:
+                saw_delta = True
+                if on_first_delta:
+                    await on_first_delta()
             reply_parts.append(delta)
             buffer += delta
             chunks, buffer = _take_speakable_chunks(buffer)
@@ -322,6 +377,11 @@ async def _run_llm_turn(
     session_state.set_pipeline_status(device_id, "thinking", transcript)
     t1 = time.monotonic()
     captured_images: list[str] = []
+    slow_cue = _DelayedTurnCue(
+        _SLOW_TURN_CUE_SECONDS,
+        lambda: _speak(websocket, _SLOW_TURN_CUE_TEXT, persona, config, session_id),
+    )
+    slow_cue.start()
 
     if tools:
 
@@ -337,6 +397,7 @@ async def _run_llm_turn(
                     if ("camera" in name or "photo" in name) and "question" not in args:
                         args = {**args, "question": "What do you see?"}
                     if "camera" in name or "photo" in name:
+                        slow_cue.mark_handled()
                         await _speak(
                             websocket, "Hold on, let me take a look.", persona, config, session_id
                         )
@@ -376,13 +437,17 @@ async def _run_llm_turn(
 
     session_state.set_pipeline_status(device_id, "speaking", transcript)
     t2 = time.monotonic()
-    reply, tts_ms = await _stream_reply_to_speech(
-        websocket,
-        deltas,
-        persona,
-        config,
-        session_id,
-    )
+    try:
+        reply, tts_ms = await _stream_reply_to_speech(
+            websocket,
+            deltas,
+            persona,
+            config,
+            session_id,
+            on_first_delta=slow_cue.settle_before_reply,
+        )
+    finally:
+        await slow_cue.close()
     llm_ms = int((time.monotonic() - t1) * 1000)
     tts_ms = max(tts_ms, int((time.monotonic() - t2) * 1000))
 
