@@ -6,7 +6,12 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from agent_hub.providers.llm import LLMProvider
-from agent_hub.server.ws_session import _DelayedTurnCue, _take_speakable_chunks
+from agent_hub.server.ws_session import (
+    _DelayedTurnCue,
+    _history_for_llm,
+    _strip_history_markers,
+    _take_speakable_chunks,
+)
 
 
 class _FallbackLLM(LLMProvider):
@@ -83,3 +88,25 @@ async def test_delayed_turn_cue_respects_specific_cue() -> None:
     await cue.close()
 
     assert calls == []
+
+
+def test_history_for_llm_skips_volatile_assistant_answers() -> None:
+    history = [
+        {"role": "user", "content": "what time is it?"},
+        {
+            "role": "assistant",
+            "content": "It is 5:27 PM.\n[volatile-tools:get_current_time]",
+        },
+        {"role": "user", "content": "thanks"},
+    ]
+
+    assert _history_for_llm(history) == [
+        {"role": "user", "content": "what time is it?"},
+        {"role": "user", "content": "thanks"},
+    ]
+
+
+def test_strip_history_markers_removes_internal_metadata() -> None:
+    assert (
+        _strip_history_markers("It is raining.\n[volatile-tools:get_weather]") == "It is raining."
+    )

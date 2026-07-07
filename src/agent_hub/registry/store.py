@@ -15,6 +15,14 @@ from agent_hub.registry.models import Agent, AgentKind, AgentStatus, Base, Conve
 _DEFAULT_PERSONA_NAME = "hub-default"
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful voice assistant. "
+    "Keep responses concise and conversational — two sentences or fewer. "
+    "For anything that can change, including date, time, weather, and live facts, "
+    "always call the matching tool and answer only from the fresh tool result. "
+    "Never reuse changing values from earlier conversation history, and never claim "
+    "you used a tool unless a tool was actually called in the current turn."
+)
+_LEGACY_DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful voice assistant. "
     "Keep responses concise and conversational — two sentences or fewer."
 )
 
@@ -61,7 +69,8 @@ class RegistryStore:
 
     async def _ensure_default_persona(self, session: AsyncSession) -> None:
         result = await session.execute(select(Persona).where(Persona.name == _DEFAULT_PERSONA_NAME))
-        if result.scalar_one_or_none() is None:
+        persona = result.scalar_one_or_none()
+        if persona is None:
             session.add(
                 Persona(
                     name=_DEFAULT_PERSONA_NAME,
@@ -73,6 +82,10 @@ class RegistryStore:
             )
             await session.commit()
             logger.info(f"Seeded persona '{_DEFAULT_PERSONA_NAME}'")
+        elif persona.system_prompt == _LEGACY_DEFAULT_SYSTEM_PROMPT:
+            persona.system_prompt = _DEFAULT_SYSTEM_PROMPT
+            await session.commit()
+            logger.info(f"Updated persona '{_DEFAULT_PERSONA_NAME}' prompt")
 
     async def get_or_create_agent(
         self,

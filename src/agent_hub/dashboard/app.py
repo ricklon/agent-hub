@@ -128,7 +128,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     f'style="max-width:320px;border-radius:6px;margin-top:0.4rem;display:block">'
                 )
 
-            text = re.sub(r"\[image:([^\]]+)\]", _img, raw)
+            without_internal = re.sub(r"\n?\[volatile-tools:[^\]]+\]", "", raw).strip()
+            text = re.sub(r"\[image:([^\]]+)\]", _img, without_internal)
             # Escape any remaining HTML in the text portion only
             return text
 
