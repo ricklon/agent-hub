@@ -26,6 +26,13 @@ class TestCheckinGet:
 
 
 class TestCheckinPost:
+    async def test_default_persona_prompt_requires_fresh_live_tools(self, store):
+        persona = await store.get_persona_by_name("hub-default")
+
+        assert persona is not None
+        assert "always call the matching tool" in persona.system_prompt
+        assert "Never reuse changing values" in persona.system_prompt
+
     async def test_post_minimal_headers(self, client):
         resp = await client.post(
             "/xiaozhi/ota/",

@@ -53,6 +53,8 @@ _TAG = "ws_session"
 _GREETING = "Agent hub connected. Ready."
 _SLOW_TURN_CUE_SECONDS = 4.0
 _SLOW_TURN_CUE_TEXT = "I'm still working on that."
+_VOLATILE_TOOLS = frozenset({"get_current_time", "get_weather", "web_search"})
+_VOLATILE_HISTORY_RE = _re.compile(r"\n?\[volatile-tools:[^\]]+\]")
 
 
 JsonDict = dict[str, Any]
@@ -231,6 +233,20 @@ def _take_speakable_chunks(buffer: str) -> tuple[list[str], str]:
     return chunks, buffer[start:]
 
 
+def _history_for_llm(history: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Return conversation messages safe to pass back to the LLM."""
+    return [
+        msg
+        for msg in history
+        if not (msg.get("role") == "assistant" and _VOLATILE_HISTORY_RE.search(msg["content"]))
+    ]
+
+
+def _strip_history_markers(content: str) -> str:
+    """Remove internal metadata markers from persisted conversation text."""
+    return _VOLATILE_HISTORY_RE.sub("", content).strip()
+
+
 async def _stream_reply_to_speech(
     websocket: WebSocket,
     deltas: Any,
@@ -322,6 +338,7 @@ async def _run_llm_turn(
     window = (persona.memory_window or 20) * 2
     if len(history) > window:
         del history[:-window]
+    llm_history = _history_for_llm(history)
     llm = get_llm(persona.llm_provider, config, model_override=persona.llm_model or None)
 
     # Permission gating. None/[] allowlist → safe defaults (risky device tools
@@ -379,6 +396,7 @@ async def _run_llm_turn(
         session_state.clear_tool_results(device_id)
     t1 = time.monotonic()
     captured_images: list[str] = []
+    used_tools: list[str] = []
     slow_cue = _DelayedTurnCue(
         _SLOW_TURN_CUE_SECONDS,
         lambda: _speak(websocket, _SLOW_TURN_CUE_TEXT, persona, config, session_id),
@@ -389,6 +407,7 @@ async def _run_llm_turn(
 
         async def _exec_tool(name: str, args: JsonDict) -> str:
             logger.bind(tag=_TAG).info(f"Tool call: {name!r} args={args}")
+            used_tools.append(name)
             result = ""
             ok = True
             error: str | None = None
@@ -454,13 +473,13 @@ async def _run_llm_turn(
                     )
 
         deltas = llm.stream_with_tools(
-            history,
+            llm_history,
             tools,
             _exec_tool,
             system_prompt=system_prompt,
         )
     else:
-        deltas = llm.stream(history, system_prompt=system_prompt)
+        deltas = llm.stream(llm_history, system_prompt=system_prompt)
     llm_ms = int((time.monotonic() - t1) * 1000)
 
     session_state.set_pipeline_status(device_id, "speaking", transcript)
@@ -486,6 +505,9 @@ async def _run_llm_turn(
     history_content = reply
     if captured_images:
         history_content = f"{reply}\n[image:{captured_images[0]}]"
+    volatile_used = sorted(set(used_tools) & _VOLATILE_TOOLS)
+    if volatile_used:
+        history_content = f"{history_content}\n[volatile-tools:{','.join(volatile_used)}]"
     history.append({"role": "assistant", "content": history_content})
     logger.bind(tag=_TAG).info(f"LLM stream ({llm_ms}ms): {reply!r}")
 
