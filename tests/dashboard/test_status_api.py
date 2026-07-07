@@ -42,6 +42,13 @@ async def test_status_json_reports_capabilities_and_safe_effective_tools(
     await store.get_or_create_agent(device_id, ip_address="192.0.2.5", firmware_version="3.5.0")
     session_state.register_session(device_id, _noop_speak, _noop_send_json)
     session_state.register_mcp_client(device_id, _FakeMCPClient())
+    session_state.record_tool_result(
+        device_id,
+        name="get_weather",
+        ok=False,
+        text="Could not get weather.",
+        error="backend unavailable",
+    )
     session_state.record_turn(device_id, asr_ms=10, llm_ms=20, tts_ms=30)
 
     app = FastAPI()
@@ -67,6 +74,14 @@ async def test_status_json_reports_capabilities_and_safe_effective_tools(
         "self_system_reboot",
     ]
     assert data["effective_tool_allowlist"] == ["self_camera_take_photo"]
+    assert data["last_tool_results"] == [
+        {
+            "name": "get_weather",
+            "ok": False,
+            "text": "Could not get weather.",
+            "error": "backend unavailable",
+        }
+    ]
     assert data["latency"]["last"]["total_ms"] == 60
 
 

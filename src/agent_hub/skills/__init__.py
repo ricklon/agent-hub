@@ -14,10 +14,32 @@ import asyncio
 import importlib
 import pkgutil
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-_Executor = Callable[[dict[str, Any]], Awaitable[str] | str]
+
+@dataclass(frozen=True)
+class SkillResult:
+    """Structured result returned by a server-side skill."""
+
+    ok: bool
+    text: str
+    error: str | None = None
+
+    @classmethod
+    def success(cls, text: str) -> SkillResult:
+        """Build a successful skill result."""
+        return cls(ok=True, text=text)
+
+    @classmethod
+    def failure(cls, text: str, error: str | None = None) -> SkillResult:
+        """Build a failed skill result with user-facing text."""
+        return cls(ok=False, text=text, error=error or text)
+
+
+_ExecutorResult = Awaitable[SkillResult | str] | SkillResult | str
+_Executor = Callable[[dict[str, Any]], _ExecutorResult]
 
 _skills: dict[str, tuple[dict[str, Any], _Executor]] = {}
 
@@ -42,16 +64,25 @@ def get_definitions() -> list[dict[str, Any]]:
 
 
 async def run(name: str, args: dict[str, Any]) -> str:
-    """Execute a skill by name. Returns an error string if not found."""
+    """Execute a skill by name and return only user-facing text."""
+    return (await run_result(name, args)).text
+
+
+async def run_result(name: str, args: dict[str, Any]) -> SkillResult:
+    """Execute a skill by name and return structured success/failure state."""
     item = _skills.get(name)
     if item is None:
-        return f"unknown skill: {name!r}"
+        return SkillResult.failure(f"unknown skill: {name!r}")
     _, executor = item
-    result = executor(args)
-    if asyncio.iscoroutine(result):
-        awaited = await result
-        return str(awaited)
-    return str(result)
+    try:
+        result = executor(args)
+        if asyncio.iscoroutine(result):
+            result = await result
+    except Exception as exc:
+        return SkillResult.failure(f"skill {name!r} failed: {exc}", error=str(exc))
+    if isinstance(result, SkillResult):
+        return result
+    return SkillResult.success(str(result))
 
 
 def has_skill(name: str) -> bool:

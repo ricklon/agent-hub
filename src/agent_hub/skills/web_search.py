@@ -4,6 +4,8 @@ from typing import Any
 
 import httpx
 
+from agent_hub.skills import SkillResult
+
 DEFINITION = {
     "type": "function",
     "function": {
@@ -27,10 +29,10 @@ DEFINITION = {
 }
 
 
-async def execute(args: dict[str, Any]) -> str:
+async def execute(args: dict[str, Any]) -> SkillResult:
     query = args.get("query", "").strip()
     if not query:
-        return "Query required."
+        return SkillResult.failure("Query required.")
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             resp = await client.get(
@@ -58,7 +60,7 @@ async def execute(args: dict[str, Any]) -> str:
                     parts.append(topic["Text"])
 
         if parts:
-            return " ".join(parts)[:800]
-        return f"No results found for: {query!r}"
+            return SkillResult.success(" ".join(parts)[:800])
+        return SkillResult.failure(f"No results found for: {query!r}")
     except Exception as exc:
-        return f"Search failed: {exc}"
+        return SkillResult.failure(f"Search failed: {exc}", error=str(exc))

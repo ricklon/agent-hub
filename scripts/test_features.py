@@ -108,6 +108,22 @@ def effective_tool_names(status: dict[str, object]) -> list[str]:
     return [tool for tool in tools if isinstance(tool, str)]
 
 
+def failed_tool_results(status: dict[str, object]) -> list[str]:
+    """Return names of tools that reported structured failure."""
+    results = status.get("last_tool_results", [])
+    if not isinstance(results, list):
+        return []
+    failed: list[str] = []
+    for result in results:
+        if not isinstance(result, dict) or result.get("ok") is not False:
+            continue
+        name = result.get("name")
+        text = result.get("text") or result.get("error") or ""
+        if isinstance(name, str):
+            failed.append(f"{name}: {text}")
+    return failed
+
+
 def inject(base: str, dev_enc: str, text: str) -> tuple[bool, str, bool]:
     """POST an utterance. Returns (ok, reply_text, has_image)."""
     body = urllib.parse.urlencode({"text": text}).encode()
@@ -192,9 +208,14 @@ def main() -> int:
         t0 = time.monotonic()
         ok, reply, has_image = inject(base, dev_enc, utterance)
         dt = time.monotonic() - t0
-        status = "PASS" if ok else ("WARN" if needs_key else "FAIL")
-        results.append((label, status))
-        print(f"      {status} ({dt:.1f}s){' [image attached]' if has_image else ''}")
+        turn_status = device_status(base, device)
+        failed_tools = failed_tool_results(turn_status)
+        ok = ok and not failed_tools
+        result_status = "PASS" if ok else ("WARN" if needs_key else "FAIL")
+        results.append((label, result_status))
+        print(f"      {result_status} ({dt:.1f}s){' [image attached]' if has_image else ''}")
+        if failed_tools:
+            print(f"      tool failure: {'; '.join(failed_tools)[:200]}")
         print(f"      reply: {reply[:200]}")
 
     print("\n" + "=" * 64)

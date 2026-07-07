@@ -248,6 +248,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 "tools": discovered_tools,
             },
             "effective_tool_allowlist": effective_tools,
+            "last_tool_results": dev.last_tool_results,
             "pipeline": {
                 "phase": pipeline_phase,
                 "previous_phase": session_state.get_prev_pipeline_phase(device_id),
