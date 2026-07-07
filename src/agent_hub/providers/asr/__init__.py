@@ -58,11 +58,22 @@ def get_provider(name: str, config: dict[str, Any]) -> ASRProvider:
         return _cache[name]
 
     asr_cfg: dict[str, Any] = config.get("asr", {})
-    if name in ("funasr", "fun_local"):
+    provider: ASRProvider
+    if name in ("funasr_onnx", "fun_local_onnx"):
+        from agent_hub.providers.asr.funasr_onnx_provider import FunASRONNXProvider
+
+        cfg = asr_cfg.get("funasr_onnx", asr_cfg.get("funasr", {}))
+        provider = FunASRONNXProvider(
+            model_dir=str(cfg.get("model_dir", "models/SenseVoiceSmall-onnx")),
+            language=str(cfg.get("language", "en")),
+            intra_op_num_threads=int(cfg.get("intra_op_num_threads", 4)),
+            quantize=bool(cfg.get("quantize", True)),
+        )
+    elif name in ("funasr", "fun_local"):
         from agent_hub.providers.asr.funasr_provider import FunASRProvider
 
         cfg = asr_cfg.get("funasr", {})
-        provider: ASRProvider = FunASRProvider(
+        provider = FunASRProvider(
             model_dir=str(cfg.get("model_dir", "models/SenseVoiceSmall")),
             language=str(cfg.get("language", "en")),
         )
