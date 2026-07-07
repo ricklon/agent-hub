@@ -22,6 +22,7 @@ Exit code is non-zero if any non-skipped feature fails, so it doubles as a CI
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import time
@@ -74,21 +75,37 @@ def discover_device(base: str) -> str | None:
     return seen[0] if seen else None
 
 
-def device_mcp_tools(base: str) -> list[str]:
-    """Return discovered device tool names scraped from the agents page badges.
-
-    Device MCP tools render as ``badge-tool`` spans (server skills are
-    ``badge-skill``); we want only the former. Assumes a single device.
-    """
+def device_status(base: str, device: str) -> dict[str, object]:
+    """Return dashboard JSON status for a device, or an empty dict."""
+    dev_enc = urllib.parse.quote(device, safe="")
     try:
-        html = _http(f"{base}/dashboard/agents")
+        raw = _http(f"{base}/dashboard/agents/{dev_enc}/status.json")
     except Exception:
-        return []
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+
+def device_mcp_tool_names(status: dict[str, object]) -> list[str]:
+    """Return discovered MCP tool names for one device."""
+    mcp = status.get("mcp", {})
+    tools = mcp.get("tools", []) if isinstance(mcp, dict) else []
     seen: list[str] = []
-    for t in re.findall(r"badge-tool[^>]*>([^<]+)<", html):
-        if t not in seen:
-            seen.append(t)
+    for tool in tools:
+        name = tool.get("name") if isinstance(tool, dict) else None
+        if isinstance(name, str) and name not in seen:
+            seen.append(name)
     return seen
+
+
+def effective_tool_names(status: dict[str, object]) -> list[str]:
+    """Return the persona-filtered MCP tool names for one device."""
+    tools = status.get("effective_tool_allowlist", [])
+    if not isinstance(tools, list):
+        return []
+    return [tool for tool in tools if isinstance(tool, str)]
 
 
 def inject(base: str, dev_enc: str, text: str) -> tuple[bool, str, bool]:
@@ -153,9 +170,15 @@ def main() -> int:
         print("  ! no device found. Is the server up and a board connected?")
         return 2
     dev_enc = urllib.parse.quote(device, safe="")
-    mcp_tools = device_mcp_tools(base)
+    status = device_status(base, device)
+    mcp_tools = device_mcp_tool_names(status)
+    effective_tools = effective_tool_names(status)
     print(f"  device: {device}")
     print(f"  discovered device MCP tools ({len(mcp_tools)}): {', '.join(mcp_tools) or 'none'}")
+    print(
+        f"  effective tool allowlist ({len(effective_tools)}): "
+        f"{', '.join(effective_tools) or 'none'}"
+    )
 
     print("\n[3] Feature battery (each drives a full pipeline turn)")
     print("    note: '[image attached]' now means the camera tool succeeded *this*")

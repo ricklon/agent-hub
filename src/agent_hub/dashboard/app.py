@@ -10,12 +10,12 @@ import re
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
 from agent_hub.registry.store import RegistryStore
-from agent_hub.server import session_state
+from agent_hub.server import session_state, tool_policy
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
@@ -212,6 +212,54 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
   <tr><th>MCP</th><td>{mcp_html}</td></tr>
   <tr><th>Agent status</th><td><span style="color:{status_color}">{db_status}</span></td></tr>
 </table>""")
+
+    @router.get("/dashboard/agents/{device_id}/status.json")
+    async def agent_status_json(device_id: str) -> dict[str, Any]:
+        """Return live status and capability data for one registered device."""
+        agent = await store.get_agent(device_id)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        persona = await store.get_persona_for_device(device_id)
+        dev = session_state.get_state(device_id)
+        mcp_client = session_state.get_mcp_client(device_id)
+        discovered_tools = _discovered_mcp_tools(mcp_client, dev.mcp_tools)
+        discovered_tool_names = [tool["name"] for tool in discovered_tools]
+        persona_allowlist = persona.mcp_tools_allowlist_list if persona else None
+        effective_tools = tool_policy.allowed_device_tools(
+            discovered_tool_names,
+            persona_allowlist,
+        )
+        pipeline_phase, pipeline_text = session_state.get_pipeline_status(device_id)
+
+        return {
+            "device_id": agent.device_id,
+            "kind": agent.kind,
+            "status": agent.status,
+            "connected": session_state.is_connected(device_id),
+            "ip_address": agent.ip_address,
+            "firmware_version": agent.firmware_version,
+            "last_seen": agent.last_seen.isoformat() if agent.last_seen else None,
+            "persona": _persona_status(persona),
+            "mcp": {
+                "connected": mcp_client is not None,
+                "ready": bool(mcp_client and mcp_client.ready),
+                "tool_count": len(discovered_tools),
+                "tools": discovered_tools,
+            },
+            "effective_tool_allowlist": effective_tools,
+            "pipeline": {
+                "phase": pipeline_phase,
+                "previous_phase": session_state.get_prev_pipeline_phase(device_id),
+                "text": pipeline_text,
+                "age_seconds": round(session_state.get_pipeline_age(device_id), 3),
+            },
+            "latency": {
+                "turns": dev.turns,
+                "last": _latency_status(dev.last),
+                "avg": _latency_status(dev.avg),
+            },
+        }
 
     @router.post("/dashboard/agents/{device_id}/assign_persona", response_class=HTMLResponse)
     async def agent_assign_persona(device_id: str, persona_name: str = Form(...)) -> HTMLResponse:
@@ -890,6 +938,50 @@ async def _render_agent_rows(store: RegistryStore) -> str:
   <td>{last_seen}</td>
 </tr>""")
     return "".join(rows)
+
+
+def _discovered_mcp_tools(
+    mcp_client: Any | None,
+    fallback_names: list[str],
+) -> list[dict[str, Any]]:
+    """Return discovered MCP tools with descriptions when a live client has them."""
+    if mcp_client is not None and getattr(mcp_client, "tools", None):
+        return [
+            {
+                "name": name,
+                "description": data.get("description", "") if isinstance(data, dict) else "",
+                "inputSchema": data.get("inputSchema", {}) if isinstance(data, dict) else {},
+            }
+            for name, data in mcp_client.tools.items()
+        ]
+    return [{"name": name, "description": "", "inputSchema": {}} for name in fallback_names]
+
+
+def _latency_status(latency: session_state.TurnLatency) -> dict[str, int]:
+    """Serialize a turn latency sample for the status API."""
+    return {
+        "asr_ms": latency.asr_ms,
+        "llm_ms": latency.llm_ms,
+        "tts_ms": latency.tts_ms,
+        "total_ms": latency.total_ms,
+    }
+
+
+def _persona_status(persona: Any | None) -> dict[str, Any] | None:
+    """Serialize persona settings relevant to device capability decisions."""
+    if persona is None:
+        return None
+    return {
+        "name": persona.name,
+        "llm_provider": persona.llm_provider,
+        "llm_model": persona.llm_model,
+        "tts_provider": persona.tts_provider,
+        "tts_voice": persona.tts_voice,
+        "asr_provider": persona.asr_provider,
+        "server_skills": persona.server_skills_list,
+        "mcp_tools_allowlist": persona.mcp_tools_allowlist_list,
+        "memory_window": persona.memory_window,
+    }
 
 
 async def _fetch_openrouter_models(api_key: str) -> list[dict[str, Any]]:
