@@ -53,6 +53,7 @@ _GREETING = "Agent hub connected. Ready."
 
 
 JsonDict = dict[str, Any]
+_SENTENCE_END_RE = _re.compile(r"([.!?]+)([\"')\]]*)(\s+|$)")
 
 
 def _parse_ctrl(text: str) -> JsonDict:
@@ -106,22 +107,40 @@ async def _speak(
     session_id: str,
 ) -> None:
     """Synthesise text to speech and stream it to the device."""
+    await _speak_segment(websocket, text, persona, config, session_id)
+
+
+async def _speak_segment(
+    websocket: WebSocket,
+    text: str,
+    persona: Persona,
+    config: dict[str, Any],
+    session_id: str,
+    *,
+    send_start: bool = True,
+    send_stop: bool = True,
+) -> None:
+    """Synthesise one text segment and stream it to the device."""
+    text = text.strip()
+    if not text:
+        return
     tts = get_tts(persona.tts_provider, config)
     pcm_bytes, tts_rate = await tts.synthesize_pcm(text, voice=persona.tts_voice)
     target_rate = SERVER_TTS_AUDIO_PARAMS.sample_rate
     if tts_rate != target_rate:
         pcm_bytes = await pcm_resample(pcm_bytes, tts_rate, target_rate)
 
-    await websocket.send_text(
-        json.dumps(
-            {
-                "type": "tts",
-                "session_id": session_id,
-                "state": "start",
-                "text": text,
-            }
+    if send_start:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "tts",
+                    "session_id": session_id,
+                    "state": "start",
+                    "text": text,
+                }
+            )
         )
-    )
 
     encoder = OpusEncoder(target_rate, frame_duration_ms=SERVER_TTS_AUDIO_PARAMS.frame_duration)
     rate_ctrl = AudioRateController(frame_duration_ms=SERVER_TTS_AUDIO_PARAMS.frame_duration)
@@ -138,15 +157,97 @@ async def _speak(
         await rate_ctrl.wait_until_done()
         rate_ctrl.stop()
 
-    await websocket.send_text(
-        json.dumps(
-            {
-                "type": "tts",
-                "session_id": session_id,
-                "state": "stop",
-            }
+    if send_stop:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "tts",
+                    "session_id": session_id,
+                    "state": "stop",
+                }
+            )
         )
-    )
+
+
+def _take_speakable_chunks(buffer: str) -> tuple[list[str], str]:
+    """Split complete sentence-sized chunks from a streaming text buffer."""
+    chunks: list[str] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(buffer):
+        end = match.end()
+        chunk = buffer[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end
+    return chunks, buffer[start:]
+
+
+async def _stream_reply_to_speech(
+    websocket: WebSocket,
+    deltas: Any,
+    persona: Persona,
+    config: dict[str, Any],
+    session_id: str,
+) -> tuple[str, int]:
+    """Consume LLM deltas and speak complete sentence chunks as soon as possible."""
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    reply_parts: list[str] = []
+    tts_ms = 0
+    spoke = False
+
+    async def _tts_worker() -> None:
+        nonlocal tts_ms, spoke
+        first = True
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            t0 = time.monotonic()
+            await _speak_segment(
+                websocket,
+                emotion_utils.strip_emoji(chunk),
+                persona,
+                config,
+                session_id,
+                send_start=first,
+                send_stop=False,
+            )
+            tts_ms += int((time.monotonic() - t0) * 1000)
+            spoke = True
+            first = False
+
+    worker = asyncio.create_task(_tts_worker())
+    buffer = ""
+    try:
+        async for delta in deltas:
+            if not delta:
+                continue
+            reply_parts.append(delta)
+            buffer += delta
+            chunks, buffer = _take_speakable_chunks(buffer)
+            for chunk in chunks:
+                await queue.put(chunk)
+        if buffer.strip():
+            await queue.put(buffer.strip())
+        await queue.put(None)
+        await worker
+    except Exception:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
+        raise
+
+    if spoke:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "tts",
+                    "session_id": session_id,
+                    "state": "stop",
+                }
+            )
+        )
+    return "".join(reply_parts).strip(), tts_ms
 
 
 async def _run_llm_turn(
@@ -263,15 +364,27 @@ async def _run_llm_turn(
                 logger.bind(tag=_TAG).error(f"Tool {name!r} failed: {exc}")
                 return f"error: {exc}"
 
-        reply = await llm.complete_with_tools(
+        deltas = llm.stream_with_tools(
             history,
             tools,
             _exec_tool,
             system_prompt=system_prompt,
         )
     else:
-        reply = await llm.complete(history, system_prompt=system_prompt)
+        deltas = llm.stream(history, system_prompt=system_prompt)
     llm_ms = int((time.monotonic() - t1) * 1000)
+
+    session_state.set_pipeline_status(device_id, "speaking", transcript)
+    t2 = time.monotonic()
+    reply, tts_ms = await _stream_reply_to_speech(
+        websocket,
+        deltas,
+        persona,
+        config,
+        session_id,
+    )
+    llm_ms = int((time.monotonic() - t1) * 1000)
+    tts_ms = max(tts_ms, int((time.monotonic() - t2) * 1000))
 
     if not reply:
         history.pop()
@@ -281,9 +394,8 @@ async def _run_llm_turn(
     if captured_images:
         history_content = f"{reply}\n[image:{captured_images[0]}]"
     history.append({"role": "assistant", "content": history_content})
-    logger.bind(tag=_TAG).info(f"LLM ({llm_ms}ms): {reply!r}")
+    logger.bind(tag=_TAG).info(f"LLM stream ({llm_ms}ms): {reply!r}")
 
-    tts_text = reply
     if supports_emoji:
         face = emotion_utils.extract_reply_emotion(reply)
         if face:
@@ -298,12 +410,6 @@ async def _run_llm_turn(
                     }
                 )
             )
-            tts_text = emotion_utils.strip_emoji(reply)
-
-    session_state.set_pipeline_status(device_id, "speaking", reply)
-    t2 = time.monotonic()
-    await _speak(websocket, tts_text, persona, config, session_id)
-    tts_ms = int((time.monotonic() - t2) * 1000)
 
     return llm_ms, tts_ms, reply
 
