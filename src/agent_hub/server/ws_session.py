@@ -55,6 +55,7 @@ _SLOW_TURN_CUE_SECONDS = 4.0
 _SLOW_TURN_CUE_TEXT = "I'm still working on that."
 _VOLATILE_TOOLS = frozenset({"get_current_time", "get_weather", "web_search"})
 _VOLATILE_HISTORY_RE = _re.compile(r"\n?\[volatile-tools:[^\]]+\]")
+_MAX_ASR_REALTIME_FACTOR = 1.0
 
 
 JsonDict = dict[str, Any]
@@ -245,6 +246,12 @@ def _history_for_llm(history: list[dict[str, str]]) -> list[dict[str, str]]:
 def _strip_history_markers(content: str) -> str:
     """Remove internal metadata markers from persisted conversation text."""
     return _VOLATILE_HISTORY_RE.sub("", content).strip()
+
+
+def _asr_realtime_factor(asr_ms: int, frame_count: int, frame_duration_ms: int) -> float:
+    """Return ASR elapsed time divided by captured audio duration."""
+    audio_ms = max(frame_count * frame_duration_ms, 1)
+    return asr_ms / audio_ms
 
 
 async def _stream_reply_to_speech(
@@ -553,6 +560,18 @@ async def _run_voice_turn(
     asr = get_asr(persona.asr_provider, config)
     result = await asr.transcribe(wav_bytes)
     asr_ms = int((time.monotonic() - t0) * 1000)
+    rtf = _asr_realtime_factor(asr_ms, len(opus_frames), audio_params_frame_duration)
+    if rtf > _MAX_ASR_REALTIME_FACTOR:
+        logger.bind(tag=_TAG).warning(
+            f"ASR overloaded for {device_id!r}: {asr_ms}ms for "
+            f"{len(opus_frames) * audio_params_frame_duration}ms audio (rtf={rtf:.2f})"
+        )
+        session_state.set_pipeline_status(
+            device_id,
+            "overloaded",
+            f"ASR overloaded: rtf={rtf:.2f}; dropped stale audio",
+        )
+        return
     if not result.is_speech:
         logger.bind(tag=_TAG).debug("Non-speech event, skipping turn")
         return
@@ -812,10 +831,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     f"{device_id!r} resumed {len(conversation)} messages from history"
                 )
 
-            pending_frames: list[bytes] | None = None
-
             async def _dispatch_pipeline(frames: list[bytes]) -> None:
-                nonlocal pending_frames
                 if pipeline_lock.locked():
                     logger.bind(tag=_TAG).debug(
                         f"{device_id!r} pipeline busy — dropping {len(frames)} frames"
@@ -857,23 +873,24 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         logger.bind(tag=_TAG).error(
                             f"Pipeline error for {device_id!r}: {exc}\n" + _tb.format_exc()
                         )
-                session_state.set_pipeline_status(device_id, "idle")
+                phase, _ = session_state.get_pipeline_status(device_id)
+                if phase != "overloaded":
+                    session_state.set_pipeline_status(device_id, "idle")
                 new_msgs = conversation[prev_len:]
                 for msg in new_msgs:
                     await store.append_history(device_id, msg["role"], msg["content"])
-                # Run the most recent turn that arrived while we were busy
-                if pending_frames is not None:
-                    queued = pending_frames
-                    pending_frames = None
-                    _fire_pipeline(queued)
 
             def _fire_pipeline(frames: list[bytes]) -> None:
-                nonlocal active_pipeline, pending_frames
+                nonlocal active_pipeline
                 if active_pipeline and not active_pipeline.done():
-                    logger.bind(tag=_TAG).debug(
-                        f"{device_id!r} pipeline busy — queuing {len(frames)} frames"
+                    logger.bind(tag=_TAG).warning(
+                        f"{device_id!r} pipeline busy — dropping {len(frames)} stale frames"
                     )
-                    pending_frames = frames
+                    session_state.set_pipeline_status(
+                        device_id,
+                        "overloaded",
+                        "Pipeline busy; dropped stale audio",
+                    )
                     return
                 active_pipeline = asyncio.create_task(_dispatch_pipeline(frames))
 
