@@ -8,10 +8,14 @@ RUN apt-get update \
 
 RUN pip install uv --no-cache-dir
 
-COPY pyproject.toml .
+COPY pyproject.toml uv.lock ./
 COPY src/ src/
+COPY scripts/ scripts/
 
-RUN uv sync --no-dev
+RUN uv sync --frozen --no-dev \
+    && mkdir -p models/SenseVoiceSmall \
+    && uv run python scripts/copy_silero.py \
+    && uv run python scripts/download_models.py
 
 EXPOSE 8000 8001 8003
 

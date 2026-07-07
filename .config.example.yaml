@@ -6,7 +6,10 @@ server:
   # Override the WebSocket URL sent to devices on check-in.
   # Leave empty to auto-detect from the server's LAN IP.
   websocket: ""
-  # Hours from UTC (e.g. -8 for PST, 8 for CST/Beijing)
+  # Preferred: IANA timezone name so daylight saving time is handled.
+  # Leave empty to use timezone_offset below.
+  timezone: "America/New_York"
+  # Fallback hours from UTC (e.g. -8 for PST, 8 for CST/Beijing)
   timezone_offset: -8
   # Shared secret for the image explain endpoint (sent to devices on check-in).
   # Leave empty to disable auth (fine for LAN-only deployments).

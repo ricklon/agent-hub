@@ -1,12 +1,12 @@
 """Download FunASR SenseVoiceSmall model into models/SenseVoiceSmall."""
 
-import os
+from pathlib import Path
 
-from modelscope import snapshot_download  # type: ignore[import-untyped]
+from huggingface_hub import snapshot_download
 
-dest = os.path.abspath("models/SenseVoiceSmall")
-os.makedirs(dest, exist_ok=True)
+dest = Path("models/SenseVoiceSmall").resolve()
+dest.mkdir(parents=True, exist_ok=True)
 
-print("Downloading iic/SenseVoiceSmall from ModelScope...")
-snapshot_download("iic/SenseVoiceSmall", local_dir=dest)
+print("Downloading FunAudioLLM/SenseVoiceSmall from Hugging Face...")
+snapshot_download("FunAudioLLM/SenseVoiceSmall", local_dir=dest)
 print(f"SenseVoiceSmall ready at {dest}")

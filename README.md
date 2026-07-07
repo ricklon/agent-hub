@@ -155,7 +155,8 @@ just download-models
 uv run python scripts/download_models.py
 ```
 
-This downloads to the `models/` folder and only needs to run once.
+This downloads to the `models/` folder and only needs to run once. Docker
+builds provision the same local model files into the image automatically.
 
 ### Step 5 — Run
 
@@ -204,6 +205,9 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_WEBSOCKET` | auto-detected LAN IP | WS URL sent to devices on check-in |
 | `AGENT_HUB_SERVER_WS_PORT` | `8000` | WebSocket / dashboard port |
 | `AGENT_HUB_SERVER_HTTP_PORT` | `8003` | Device check-in port |
+| `AGENT_HUB_SERVER_DASHBOARD_PORT` | `8001` | Dashboard UI port |
+| `AGENT_HUB_SERVER_TIMEZONE` | unset | IANA timezone used for DST-aware device clock offset |
+| `AGENT_HUB_SERVER_TIMEZONE_OFFSET` | `-8` | Fallback fixed UTC offset in hours |
 
 See `.env.example` for the full list with comments.
 
