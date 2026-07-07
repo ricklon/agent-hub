@@ -49,6 +49,20 @@ class LLMProvider(abc.ABC):
         """
         return await self.complete(messages, system_prompt)
 
+    async def stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict[str, Any]], Awaitable[str]],
+        system_prompt: str = "",
+    ) -> AsyncIterator[str]:
+        """Stream the final response after any required tool calls.
+
+        Default implementation preserves compatibility for providers that do
+        not support streaming tool loops yet.
+        """
+        yield await self.complete_with_tools(messages, tools, tool_executor, system_prompt)
+
     @abc.abstractmethod
     def stream(
         self,

@@ -120,6 +120,102 @@ class OpenAILLMProvider(LLMProvider):
             return ""
         return (resp.choices[0].message.content or "").strip()
 
+    async def stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict[str, Any]], Awaitable[str]],
+        system_prompt: str = "",
+        max_rounds: int = 5,
+    ) -> AsyncIterator[str]:
+        """Stream the final assistant response while preserving tool calls."""
+        working: list[dict[str, Any]] = list(self._build_messages(messages, system_prompt))
+        completions = cast(Any, self._client.chat.completions)
+
+        for _ in range(max_rounds):
+            stream = await completions.create(
+                model=self._model,
+                messages=working,
+                tools=tools,
+                tool_choice="auto",
+                stream=True,
+            )
+
+            content_parts: list[str] = []
+            tool_calls: dict[int, dict[str, str]] = {}
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                delta_content = delta.content or ""
+                if delta_content:
+                    content_parts.append(delta_content)
+                    yield delta_content
+
+                for tc in delta.tool_calls or []:
+                    index = int(tc.index or 0)
+                    slot = tool_calls.setdefault(
+                        index,
+                        {"id": "", "type": "function", "name": "", "arguments": ""},
+                    )
+                    if tc.id:
+                        slot["id"] = tc.id
+                    if tc.type:
+                        slot["type"] = tc.type
+                    if tc.function:
+                        if tc.function.name:
+                            slot["name"] += tc.function.name
+                        if tc.function.arguments:
+                            slot["arguments"] += tc.function.arguments
+
+            if content_parts and not tool_calls:
+                return
+            if not tool_calls:
+                return
+
+            assistant_tool_calls: list[dict[str, Any]] = []
+            for index in sorted(tool_calls):
+                call = tool_calls[index]
+                assistant_tool_calls.append(
+                    {
+                        "id": call["id"],
+                        "type": call["type"] or "function",
+                        "function": {
+                            "name": call["name"],
+                            "arguments": call["arguments"],
+                        },
+                    }
+                )
+            working.append(
+                {
+                    "role": "assistant",
+                    "content": "".join(content_parts) or None,
+                    "tool_calls": assistant_tool_calls,
+                }
+            )
+
+            for call in assistant_tool_calls:
+                fn = cast(dict[str, Any], call["function"])
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                result = await tool_executor(str(fn.get("name") or ""), args)
+                if isinstance(result, str) and result.startswith("data:"):
+                    tool_content: Any = [{"type": "image_url", "image_url": {"url": result}}]
+                else:
+                    tool_content = result
+                working.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": tool_content,
+                    }
+                )
+
+        async for delta in self.stream(cast(list[dict[str, str]], working), system_prompt=""):
+            yield delta
+
     async def stream(
         self,
         messages: list[dict[str, str]],
