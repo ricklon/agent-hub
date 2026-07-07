@@ -5,6 +5,11 @@ Uses the FastAPI test client from conftest.py.
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from agent_hub.config import ServerConfig, Settings
+
 
 class TestCheckinGet:
     async def test_get_returns_200(self, client):
@@ -74,6 +79,29 @@ class TestCheckinPost:
             json={},
         )
         assert resp.headers.get("access-control-allow-origin") == "*"
+
+    async def test_timezone_name_overrides_fixed_offset(self, store):
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from agent_hub.server.checkin import make_router
+
+        settings = Settings(server=ServerConfig(timezone="America/New_York", timezone_offset=-8))
+        app = FastAPI()
+        app.include_router(make_router(store, settings))
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as test_client:
+            resp = await test_client.post(
+                "/checkin/",
+                headers={"device-id": "AA:BB:CC:DD:EE:AA", "client-id": "c"},
+                json={},
+            )
+
+        assert resp.status_code == 200
+        expected = int(datetime.now(ZoneInfo("America/New_York")).utcoffset().total_seconds() // 60)
+        assert resp.json()["server_time"]["timezone_offset"] == expected
 
 
 class TestCheckinOptions:

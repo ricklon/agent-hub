@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,24 +14,6 @@ from loguru import logger
 _ENV_PREFIX = "AGENT_HUB_"
 
 
-def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
-    """Apply AGENT_HUB_<SECTION>_<KEY> environment variables onto config dict.
-
-    Uses maxsplit=2 so that leaf keys with underscores (e.g. api_key) survive
-    intact. Supports two-level nesting: AGENT_HUB_SERVER_HOST → server.host,
-    and three-level: AGENT_HUB_LLM_OPENAI_API_KEY → llm.openai.api_key.
-    """
-    for env_key, value in os.environ.items():
-        if not env_key.startswith(_ENV_PREFIX):
-            continue
-        parts = env_key[len(_ENV_PREFIX) :].lower().split("_", 2)
-        target: dict[str, Any] = config
-        for part in parts[:-1]:
-            target = target.setdefault(part, {})
-        target[parts[-1]] = value
-    return config
-
-
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
@@ -40,11 +22,59 @@ class ServerConfig:
     dashboard_port: int = 8001
     websocket: str = ""
     timezone_offset: int = -8
+    timezone: str = ""
 
 
 @dataclass
 class RegistryConfig:
     db_path: str = "data/registry.db"
+
+
+_TOP_LEVEL_CONFIGS = {
+    "server": ServerConfig,
+    "registry": RegistryConfig,
+}
+
+
+def _section_leaf_keys(section: str) -> set[str]:
+    config_cls = _TOP_LEVEL_CONFIGS.get(section)
+    if config_cls is None or not is_dataclass(config_cls):
+        return set()
+    return {field.name for field in fields(config_cls)}
+
+
+def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
+    """Apply AGENT_HUB_<SECTION>_<KEY> environment variables onto config dict.
+
+    Known top-level sections resolve against their dataclass field names so
+    underscored leaves survive intact: AGENT_HUB_SERVER_WS_PORT → server.ws_port.
+    Provider-style sections remain three-level:
+    AGENT_HUB_LLM_OPENAI_API_KEY → llm.openai.api_key.
+    """
+    for env_key, value in os.environ.items():
+        if not env_key.startswith(_ENV_PREFIX):
+            continue
+        tokens = env_key[len(_ENV_PREFIX) :].lower().split("_")
+        if len(tokens) < 2:
+            continue
+
+        section = tokens[0]
+        tail = tokens[1:]
+        section_keys = _section_leaf_keys(section)
+        flat_key = "_".join(tail)
+
+        if flat_key in section_keys:
+            parts = [section, flat_key]
+        elif len(tail) >= 2:
+            parts = [section, tail[0], "_".join(tail[1:])]
+        else:
+            parts = [section, tail[0]]
+
+        target: dict[str, Any] = config
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = value
+    return config
 
 
 @dataclass
@@ -75,6 +105,7 @@ class Settings:
                 dashboard_port=int(srv.get("dashboard_port", 8001)),
                 websocket=str(srv.get("websocket", "")),
                 timezone_offset=int(srv.get("timezone_offset", -8)),
+                timezone=str(srv.get("timezone", "")),
             ),
             registry=RegistryConfig(
                 db_path=str(reg.get("db_path", "data/registry.db")),

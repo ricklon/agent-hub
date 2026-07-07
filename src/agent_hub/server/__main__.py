@@ -10,7 +10,7 @@ All routes share a single process and SQLite registry, served on three ports:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import uvicorn
 from fastapi import FastAPI
@@ -74,7 +74,7 @@ def build_app() -> FastAPI:
             f"WS on :{settings.server.ws_port}, "
             f"dashboard on :{settings.server.dashboard_port}"
         )
-        asyncio.create_task(_prewarm_providers(raw_config))
+        app.state.prewarm_task = asyncio.create_task(_prewarm_providers(raw_config))
 
     @app.get("/")
     async def root() -> RedirectResponse:
@@ -86,6 +86,11 @@ def build_app() -> FastAPI:
     app.include_router(make_dashboard_router(store, raw_config))
 
     return app
+
+
+def prewarm_task(app: FastAPI) -> asyncio.Task[None] | None:
+    """Return the retained provider prewarm task when startup has scheduled it."""
+    return cast(asyncio.Task[None] | None, getattr(app.state, "prewarm_task", None))
 
 
 def _make_server(app: FastAPI, host: str, port: int) -> uvicorn.Server:

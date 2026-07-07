@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import socket
 from contextlib import suppress
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter
 from fastapi.requests import Request
@@ -59,6 +61,24 @@ def _image_url(settings: Settings) -> str:
 
     p = urlparse(http_base)
     return urlunparse(p._replace(path="/xiaozhi/v1/image/", query="", fragment=""))
+
+
+def _timezone_offset_minutes(settings: Settings) -> int:
+    timezone = settings.server.timezone.strip()
+    if not timezone:
+        return settings.server.timezone_offset * 60
+
+    try:
+        offset = datetime.now(ZoneInfo(timezone)).utcoffset()
+    except ZoneInfoNotFoundError:
+        logger.bind(tag=_TAG).warning(
+            f"Unknown timezone {timezone!r}; falling back to timezone_offset"
+        )
+        return settings.server.timezone_offset * 60
+
+    if offset is None:
+        return settings.server.timezone_offset * 60
+    return int(offset.total_seconds() // 60)
 
 
 def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
@@ -123,7 +143,7 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
         resp = CheckinResponse(
             websocket_url=_ws_url(settings),
             firmware_version=req.application_version,
-            timezone_offset_minutes=settings.server.timezone_offset * 60,
+            timezone_offset_minutes=_timezone_offset_minutes(settings),
             image_url=_image_url(settings),
             image_token=image_token,
         )
