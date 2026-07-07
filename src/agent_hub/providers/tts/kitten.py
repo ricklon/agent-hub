@@ -76,7 +76,7 @@ class KittenTTSProvider(TTSProvider):
         """KittenTTS built-in voice names."""
         return ["Bella", "Jasper", "Luna", "Bruno", "Rosie", "Hugo", "Kiki", "Leo"]
 
-    def _array_to_wav(self, audio: np.ndarray) -> bytes:
+    def _array_to_wav(self, audio: npt.NDArray[np.float32]) -> bytes:
         buf = io.BytesIO()
         sf.write(buf, audio, _SAMPLE_RATE, format="WAV")
         return buf.getvalue()

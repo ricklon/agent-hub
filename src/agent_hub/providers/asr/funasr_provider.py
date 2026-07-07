@@ -42,7 +42,7 @@ _LANGUAGES = {
 }
 
 
-def _parse_tags(raw: str) -> Transcript:
+def parse_sensevoice_tags(raw: str) -> Transcript:
     """Extract language/emotion/event tags then return a Transcript.
 
     SenseVoiceSmall output format:
@@ -111,7 +111,7 @@ class FunASRProvider(ASRProvider):
             raw = result[0].get("text", "")
             if isinstance(raw, dict):
                 raw = raw.get("content", "")
-            return _parse_tags(str(raw))
+            return parse_sensevoice_tags(str(raw))
 
         try:
             result = await asyncio.to_thread(_run)

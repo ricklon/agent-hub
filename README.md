@@ -146,8 +146,8 @@ Replace `YOUR_LAN_IP` with the IP address of the machine running agent-hub
 
 ### Step 4 — Download models (first time only, ~1 GB)
 
-agent-hub runs speech recognition locally using SenseVoiceSmall. Download
-it once:
+agent-hub runs speech recognition locally using a quantized ONNX export of
+SenseVoiceSmall. Download it once:
 
 ```sh
 just download-models

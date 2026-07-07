@@ -10,7 +10,7 @@ download-models:
     mkdir -p models/SenseVoiceSmall
     echo "Copying Silero VAD ONNX from installed package..."
     uv run python scripts/copy_silero.py
-    echo "Downloading SenseVoiceSmall via FunASR (first run downloads from HuggingFace)..."
+    echo "Downloading SenseVoiceSmall ONNX from HuggingFace..."
     uv run python scripts/download_models.py
     echo "Models ready."
 

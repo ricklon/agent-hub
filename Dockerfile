@@ -13,7 +13,7 @@ COPY src/ src/
 COPY scripts/ scripts/
 
 RUN uv sync --frozen --no-dev \
-    && mkdir -p models/SenseVoiceSmall \
+    && mkdir -p models/SenseVoiceSmall-onnx \
     && uv run python scripts/copy_silero.py \
     && uv run python scripts/download_models.py
 

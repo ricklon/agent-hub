@@ -67,7 +67,7 @@ class RegistryStore:
                     name=_DEFAULT_PERSONA_NAME,
                     llm_provider="openai",
                     tts_provider="edge",
-                    asr_provider="funasr",
+                    asr_provider="funasr_onnx",
                     system_prompt=_DEFAULT_SYSTEM_PROMPT,
                 )
             )
@@ -237,7 +237,7 @@ class RegistryStore:
         llm_model: str | None = None,
         tts_provider: str = "edge",
         tts_voice: str | None = None,
-        asr_provider: str = "funasr",
+        asr_provider: str = "funasr_onnx",
     ) -> Persona | None:
         """Create a new persona. Returns None if the name is already taken."""
         async with self._sessions() as session:
