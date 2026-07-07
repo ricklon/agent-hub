@@ -168,6 +168,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             "transcribing": ("color:#d29922", "▶ transcribing…"),
             "thinking": ("color:#58a6ff", "🤔 thinking…"),
             "speaking": ("color:#3fb950", "🔊 speaking"),
+            "overloaded": ("color:#f85149", "⚠ overloaded"),
             "offline": ("color:#6e7681", "offline"),
         }
         style, label = phase_styles.get(phase, ("color:#6e7681", phase))

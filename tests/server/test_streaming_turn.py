@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 
 from agent_hub.providers.llm import LLMProvider
 from agent_hub.server.ws_session import (
+    _asr_realtime_factor,
     _DelayedTurnCue,
     _history_for_llm,
     _strip_history_markers,
@@ -110,3 +111,7 @@ def test_strip_history_markers_removes_internal_metadata() -> None:
     assert (
         _strip_history_markers("It is raining.\n[volatile-tools:get_weather]") == "It is raining."
     )
+
+
+def test_asr_realtime_factor_uses_audio_duration() -> None:
+    assert _asr_realtime_factor(asr_ms=1500, frame_count=50, frame_duration_ms=20) == 1.5
