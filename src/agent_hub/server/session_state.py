@@ -7,6 +7,7 @@ The dashboard reads this alongside the DB to show live metrics.
 
 from __future__ import annotations
 
+import asyncio
 import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -36,6 +37,12 @@ class DeviceState:
     turns: int = 0
 
 
+@dataclass
+class ImageJob:
+    path: str
+    description: asyncio.Future[str]
+
+
 _state: dict[str, DeviceState] = {}
 
 # Active WebSocket sessions: device_id → (speak_fn, send_json_fn)
@@ -57,6 +64,7 @@ _injectors: dict[str, Callable[[str], Awaitable[tuple[str, str | None]]]] = {}
 
 # Latest captured image path per device
 _device_latest_image: dict[str, str] = {}
+_device_latest_image_job: dict[str, ImageJob] = {}
 
 # Live pipeline status per device: phase + current text snippet
 _pipeline_phase: dict[str, str] = {}  # "idle" | "transcribing" | "thinking" | "speaking"
@@ -106,6 +114,53 @@ def set_latest_image(device_id: str, path: str) -> None:
 
 def get_latest_image(device_id: str) -> str | None:
     return _device_latest_image.get(device_id)
+
+
+def start_image_job(device_id: str, path: str) -> asyncio.Future[str]:
+    """Register an async vision job for the latest image from a device."""
+    fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    _device_latest_image_job[device_id] = ImageJob(path=path, description=fut)
+    return fut
+
+
+def finish_image_job(
+    device_id: str,
+    path: str,
+    *,
+    text: str | None = None,
+    error: Exception | None = None,
+) -> None:
+    """Complete a registered image vision job."""
+    job = _device_latest_image_job.get(device_id)
+    if job is None or job.path != path or job.description.done():
+        return
+    if error is not None:
+        job.description.set_exception(error)
+    else:
+        job.description.set_result(text or "")
+
+
+async def wait_latest_image_description(
+    device_id: str,
+    *,
+    previous_path: str | None = None,
+    timeout: float = 60.0,
+) -> str | None:
+    """Wait for the newest image description, ignoring a known previous path."""
+    deadline = _time.monotonic() + timeout
+    while True:
+        job = _device_latest_image_job.get(device_id)
+        if job is not None and job.path != previous_path:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(job.description),
+                    timeout=max(0.001, deadline - _time.monotonic()),
+                )
+            except TimeoutError:
+                return None
+        if _time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(0.05)
 
 
 def get_speak(device_id: str) -> Callable[[str], Awaitable[None]] | None:

@@ -1,15 +1,17 @@
 """Image explain endpoint: POST /xiaozhi/v1/image/
 
 The xiaozhi firmware captures a JPEG via the camera MCP tool, then POSTs it
-here with a text question. We call OpenRouter's vision model and return the
-description as JSON so the firmware can relay it as the MCP tool result.
+here with a text question. Device uploads are acknowledged immediately and
+the vision model runs asynchronously so the board does not hold its upload
+socket open for the full inference time.
 
 Request (multipart/form-data OR raw binary):
   - file / image field: JPEG bytes  (multipart), or raw body (content-type image/*)
   - question field: optional text prompt (multipart); falls back to query param
 
 Response JSON:
-  {"text": "<description>"}
+  Device upload with device_id: {"text": "Image received; ...", "status": "accepted"}
+  Manual upload without device_id: {"text": "<description>"}
 
 Auth: Bearer token in Authorization header must match server.image_token config.
 Empty/missing token config disables auth entirely (dev mode).
@@ -17,6 +19,7 @@ Empty/missing token config disables auth entirely (dev mode).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +40,78 @@ _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "*",
 }
+
+_ACCEPTED_TEXT = "Image received; vision processing started."
+
+
+async def _describe_image(
+    config: dict[str, Any],
+    jpeg_bytes: bytes,
+    question: str,
+) -> str:
+    """Call the configured vision model and return its text description."""
+    b64 = base64.b64encode(jpeg_bytes).decode()
+    data_url = f"data:image/jpeg;base64,{b64}"
+
+    llm_cfg = (config.get("llm") or {}).get("openai") or {}
+    api_key = str(llm_cfg.get("api_key", ""))
+    base_url = str(llm_cfg.get("base_url") or "https://openrouter.ai/api/v1")
+    vision_model = str(
+        (config.get("llm") or {}).get("vision_model")
+        or llm_cfg.get("model")
+        or "google/gemma-3-27b-it"
+    )
+
+    payload = {
+        "model": vision_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "text", "text": question},
+                ],
+            }
+        ],
+        "max_tokens": 512,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    body = resp.json()
+    if not resp.is_success:
+        logger.bind(tag=_TAG).error(f"Vision API {resp.status_code}: {body}")
+        raise RuntimeError(f"API error {resp.status_code}")
+    choices = body.get("choices") or []
+    if not choices:
+        logger.bind(tag=_TAG).error(f"Vision API empty choices: {body}")
+        raise RuntimeError("no choices in response")
+    text = choices[0]["message"].get("content") or ""
+    if not text:
+        logger.bind(tag=_TAG).warning(f"Vision model returned empty content: {body}")
+        return "I can see the image but couldn't generate a description."
+    logger.bind(tag=_TAG).info(f"Vision result: {text[:200]!r}")
+    return str(text)
+
+
+async def _complete_image_job(
+    config: dict[str, Any],
+    device_id: str,
+    path: str,
+    jpeg_bytes: bytes,
+    question: str,
+) -> None:
+    """Run vision in the background and complete the matching session job."""
+    try:
+        text = await _describe_image(config, jpeg_bytes, question)
+    except Exception as exc:
+        logger.bind(tag=_TAG).error(f"Vision call failed: {exc}")
+        text = "I couldn't describe the image."
+    _session_state.finish_image_job(device_id, path, text=text)
 
 
 def make_router(config: dict[str, Any]) -> APIRouter:
@@ -103,65 +178,20 @@ def make_router(config: dict[str, Any]) -> APIRouter:
             img_path.write_bytes(jpeg_bytes)
             _session_state.set_latest_image(device_id, str(img_path))
 
-        # Build data URL for the vision model
-        b64 = base64.b64encode(jpeg_bytes).decode()
-        data_url = f"data:image/jpeg;base64,{b64}"
+        if device_id:
+            _session_state.start_image_job(device_id, str(img_path))
+            asyncio.create_task(
+                _complete_image_job(config, device_id, str(img_path), jpeg_bytes, question)
+            )
+            return JSONResponse(
+                {"text": _ACCEPTED_TEXT, "status": "accepted"},
+                headers=_CORS_HEADERS,
+            )
 
-        # Call OpenRouter vision model
-        llm_cfg = (config.get("llm") or {}).get("openai") or {}
-        api_key = str(llm_cfg.get("api_key", ""))
-        base_url = str(llm_cfg.get("base_url") or "https://openrouter.ai/api/v1")
-        vision_model = str(
-            (config.get("llm") or {}).get("vision_model")
-            or llm_cfg.get("model")
-            or "google/gemma-3-27b-it"
-        )
-
-        payload = {
-            "model": vision_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                        {"type": "text", "text": question},
-                    ],
-                }
-            ],
-            "max_tokens": 512,
-        }
-
+        # Direct/manual calls without a device id preserve the old synchronous
+        # request/response behavior.
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{base_url.rstrip('/')}/chat/completions",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-            body = resp.json()
-            if not resp.is_success:
-                logger.bind(tag=_TAG).error(f"Vision API {resp.status_code}: {body}")
-                return JSONResponse(
-                    {
-                        "error": f"API error {resp.status_code}",
-                        "text": "I couldn't describe the image.",
-                    },
-                    status_code=502,
-                    headers=_CORS_HEADERS,
-                )
-            choices = body.get("choices") or []
-            if not choices:
-                logger.bind(tag=_TAG).error(f"Vision API empty choices: {body}")
-                return JSONResponse(
-                    {"error": "no choices in response", "text": "I couldn't describe the image."},
-                    status_code=502,
-                    headers=_CORS_HEADERS,
-                )
-            text = choices[0]["message"].get("content") or ""
-            if not text:
-                logger.bind(tag=_TAG).warning(f"Vision model returned empty content: {body}")
-                text = "I can see the image but couldn't generate a description."
-            logger.bind(tag=_TAG).info(f"Vision result: {text[:200]!r}")
+            text = await _describe_image(config, jpeg_bytes, question)
             return JSONResponse({"text": text}, headers=_CORS_HEADERS)
         except Exception as exc:
             logger.bind(tag=_TAG).error(f"Vision call failed: {exc}")

@@ -435,12 +435,20 @@ async def _run_llm_turn(
                         await _speak(
                             websocket, "Hold on, let me take a look.", persona, config, session_id
                         )
+                    previous_image = session_state.get_latest_image(device_id)
                     result = await mcp_client.call_tool(
                         name,
                         args,
                         timeout=60.0 if ("camera" in name or "photo" in name) else 30.0,
                     )
                     if "camera" in name or "photo" in name:
+                        description = await session_state.wait_latest_image_description(
+                            device_id,
+                            previous_path=previous_image,
+                            timeout=60.0,
+                        )
+                        if description:
+                            result = description
                         img = session_state.get_latest_image(device_id)
                         if img:
                             captured_images.append(img)
