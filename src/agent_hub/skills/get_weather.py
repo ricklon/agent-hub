@@ -4,6 +4,8 @@ from typing import Any
 
 import httpx
 
+from agent_hub.skills import SkillResult
+
 DEFINITION = {
     "type": "function",
     "function": {
@@ -26,10 +28,10 @@ DEFINITION = {
 }
 
 
-async def execute(args: dict[str, Any]) -> str:
+async def execute(args: dict[str, Any]) -> SkillResult:
     location = args.get("location", "").strip()
     if not location:
-        return "Location required."
+        return SkillResult.failure("Location required.")
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             resp = await client.get(
@@ -52,10 +54,13 @@ async def execute(args: dict[str, Any]) -> str:
         city = area["areaName"][0]["value"]
         country = area["country"][0]["value"]
 
-        return (
+        return SkillResult.success(
             f"Weather in {city}, {country}: {desc}. "
             f"{temp_f}°F ({temp_c}°C), feels like {feels_f}°F. "
             f"Humidity {humidity}%, wind {wind_mph} mph."
         )
     except Exception as exc:
-        return f"Could not get weather for {location!r}: {exc}"
+        return SkillResult.failure(
+            f"Could not get weather for {location!r}: {exc}",
+            error=str(exc),
+        )

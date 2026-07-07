@@ -375,6 +375,8 @@ async def _run_llm_turn(
     tools = device_tools + skill_tools
 
     session_state.set_pipeline_status(device_id, "thinking", transcript)
+    if device_id:
+        session_state.clear_tool_results(device_id)
     t1 = time.monotonic()
     captured_images: list[str] = []
     slow_cue = _DelayedTurnCue(
@@ -387,13 +389,19 @@ async def _run_llm_turn(
 
         async def _exec_tool(name: str, args: JsonDict) -> str:
             logger.bind(tag=_TAG).info(f"Tool call: {name!r} args={args}")
+            result = ""
+            ok = True
+            error: str | None = None
             try:
                 if mcp_client and mcp_client.ready and name in mcp_client.tools:
                     if not tool_policy.is_tool_allowed(name, tool_allowlist):
                         logger.bind(tag=_TAG).warning(
                             f"Blocked disallowed device tool {name!r} (allowlist={tool_allowlist})"
                         )
-                        return f"tool {name!r} is not permitted for this device"
+                        result = f"tool {name!r} is not permitted for this device"
+                        ok = False
+                        error = result
+                        return result
                     if ("camera" in name or "photo" in name) and "question" not in args:
                         args = {**args, "question": "What do you see?"}
                     if "camera" in name or "photo" in name:
@@ -415,15 +423,35 @@ async def _run_llm_turn(
                         logger.bind(tag=_TAG).warning(
                             f"Blocked disabled skill {name!r} (enabled={enabled_skills})"
                         )
-                        return f"skill {name!r} is not enabled for this persona"
-                    result = await server_skills.run(name, args)
+                        result = f"skill {name!r} is not enabled for this persona"
+                        ok = False
+                        error = result
+                        return result
+                    skill_result = await server_skills.run_result(name, args)
+                    result = skill_result.text
+                    ok = skill_result.ok
+                    error = skill_result.error
                 else:
                     result = f"unknown tool: {name!r}"
+                    ok = False
+                    error = result
                 logger.bind(tag=_TAG).info(f"Tool result {name!r}: {str(result)[:200]!r}")
                 return result
             except Exception as exc:
                 logger.bind(tag=_TAG).error(f"Tool {name!r} failed: {exc}")
-                return f"error: {exc}"
+                result = f"error: {exc}"
+                ok = False
+                error = str(exc)
+                return result
+            finally:
+                if device_id:
+                    session_state.record_tool_result(
+                        device_id,
+                        name=name,
+                        ok=ok,
+                        text=result,
+                        error=error,
+                    )
 
         deltas = llm.stream_with_tools(
             history,

@@ -3,6 +3,8 @@
 from datetime import datetime
 from typing import Any
 
+from agent_hub.skills import SkillResult
+
 DEFINITION = {
     "type": "function",
     "function": {
@@ -20,5 +22,5 @@ DEFINITION = {
 }
 
 
-def execute(args: dict[str, Any]) -> str:
-    return datetime.now().strftime("%A, %B %d, %Y — %I:%M %p")
+def execute(args: dict[str, Any]) -> SkillResult:
+    return SkillResult.success(datetime.now().strftime("%A, %B %d, %Y — %I:%M %p"))

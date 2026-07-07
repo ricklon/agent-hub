@@ -30,6 +30,7 @@ class TurnLatency:
 @dataclass
 class DeviceState:
     mcp_tools: list[str] = field(default_factory=list)
+    last_tool_results: list[JsonDict] = field(default_factory=list)
     last: TurnLatency = field(default_factory=TurnLatency)
     avg: TurnLatency = field(default_factory=TurnLatency)
     turns: int = 0
@@ -129,6 +130,30 @@ def _get(device_id: str) -> DeviceState:
 
 def set_tools(device_id: str, tools: list[str]) -> None:
     _get(device_id).mcp_tools = tools
+
+
+def clear_tool_results(device_id: str) -> None:
+    """Clear the per-turn tool result buffer for a device."""
+    _get(device_id).last_tool_results = []
+
+
+def record_tool_result(
+    device_id: str,
+    *,
+    name: str,
+    ok: bool,
+    text: str,
+    error: str | None = None,
+) -> None:
+    """Record one server or device tool result for dashboard/API consumers."""
+    _get(device_id).last_tool_results.append(
+        {
+            "name": name,
+            "ok": ok,
+            "text": text,
+            "error": error,
+        }
+    )
 
 
 def record_turn(device_id: str, asr_ms: int, llm_ms: int, tts_ms: int) -> None:
