@@ -54,16 +54,15 @@ AGENT_HUB_SERVER_IMAGE_TOKEN=change-this-long-random-token
 | `8001` | Human operators — `/dashboard/` | Tailscale or authenticated HTTPS only |
 | `8003` | ESP32 devices — `/checkin/`, `/xiaozhi/ota/` | LAN/Tailscale only |
 
-> **Port numbers are not currently a trust boundary.** The server binds one
-> application to all three ports, so *every* route is reachable on *every*
-> port — `/dashboard/` answers on `8000` and `8003` exactly as it does on
-> `8001`. The table above describes intent, not enforcement.
->
-> Until that is fixed, opening `8003` to the LAN for device check-in also
-> opens the dashboard to the LAN. Because `dashboard_password` is empty by
-> default, that dashboard is unauthenticated. **Set a dashboard password
-> whenever any port is reachable beyond localhost**, and do not rely on
-> per-port firewall rules to isolate the dashboard.
+Ports are enforced as a trust boundary: each port binds its own application
+with only its own routes mounted. `/dashboard/` returns `404` on `8000` and
+`8003`, and the device endpoints return `404` on `8001`. Opening a device port
+to the LAN therefore does not expose the dashboard.
+
+> **If you configure two of these ports to the same number, their routes
+> merge onto that port and the boundary is gone.** This is normal in local
+> development. The server logs a warning when the dashboard shares a port with
+> a device endpoint; set a dashboard password in that setup.
 
 Do not publish these ports directly on a cloud VM without a firewall or
 reverse proxy.
@@ -75,8 +74,8 @@ Use this when the server is at home, in a classroom, or in a makerspace.
 1. Install Tailscale on the Docker host.
 2. Keep `docker-compose.yml` as-is for LAN access.
 3. Use host firewall rules to limit `8001` to the Tailscale interface if the
-   LAN is not fully trusted. Note this does **not** isolate the dashboard on
-   its own — see the Port Map warning — so set a dashboard password as well.
+   LAN is not fully trusted. This does isolate the dashboard, provided `8001`
+   is not also configured as the WebSocket or check-in port.
 4. Browse to `http://<tailscale-hostname>:8001/dashboard/`.
 5. Keep device check-in URLs on LAN IPs unless the devices themselves can
    reach the tailnet.
@@ -153,6 +152,8 @@ The app currently includes:
 - Transcript HTML escaping in dashboard history.
 - Origin checking on dashboard state changes (CSRF defence), active whether
   or not a dashboard password is set.
+- Per-port route isolation: the dashboard is not mounted on the device-facing
+  ports, so opening them to the LAN does not expose it.
 
 ### Why Basic auth, and its limits
 
