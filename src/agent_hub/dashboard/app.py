@@ -25,6 +25,7 @@ h1{color:#58a6ff;margin-bottom:0.25rem}
 nav{margin-bottom:2rem}
 nav a{color:#58a6ff;margin-right:1.5rem;text-decoration:none}
 nav a:hover{text-decoration:underline}
+section{margin-bottom:2rem}
 table{border-collapse:collapse;width:100%}
 th,td{border:1px solid #30363d;padding:0.5rem 0.75rem;text-align:left;vertical-align:top}
 th{background:#161b22;white-space:nowrap}
@@ -62,6 +63,18 @@ label{display:block;color:#8b949e;font-size:0.8rem;margin-top:0.75rem;
   padding:1.25rem;margin-bottom:1.5rem}
 .form-section h3{margin:0 0 1rem;color:#58a6ff}
 input[type=number]{width:6rem}
+.doc-page{max-width:980px;line-height:1.55}
+.doc-page h2{color:#58a6ff;margin-bottom:0.35rem}
+.doc-page h3{color:#c9d1d9;margin:1.25rem 0 0.4rem}
+.doc-page p{color:#c9d1d9}
+.doc-page ul{padding-left:1.4rem}
+.doc-page li{margin:0.35rem 0}
+.doc-muted{color:#8b949e}
+.doc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem}
+.doc-card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem}
+.doc-card h3{margin-top:0;color:#58a6ff}
+.doc-flow{background:#010409;border:1px solid #30363d;border-radius:6px;
+  padding:1rem;white-space:pre-wrap;overflow:auto}
 """
 
 _PAGE = """\
@@ -75,6 +88,7 @@ _PAGE = """\
   <a href="/dashboard/">Agents</a>
   <a href="/dashboard/personas">Personas</a>
   <a href="/dashboard/models">Models</a>
+  <a href="/dashboard/docs">Docs</a>
 </nav>
 {body}
 </body></html>
@@ -111,6 +125,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     async def dashboard_agents_partial(request: Request) -> HTMLResponse:
         rows = await _render_agent_rows(store)
         return HTMLResponse(_agent_table(rows))
+
+    # ── Project docs ─────────────────────────────────────────────────────────
+
+    @router.get("/dashboard/docs", response_class=HTMLResponse)
+    async def dashboard_docs(request: Request) -> HTMLResponse:
+        body = _project_docs()
+        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
 
     # ── Agent detail ─────────────────────────────────────────────────────────
 
@@ -859,6 +880,123 @@ def _agent_table(rows: str) -> str:
 </tr></thead>
 <tbody>{rows}</tbody>
 </table>
+</div>"""
+
+
+def _project_docs() -> str:
+    """Render dashboard-facing project documentation."""
+    return """\
+<div class="doc-page">
+<h2>Project Documentation</h2>
+<p class="doc-muted">
+  agent-hub is the control plane for voice-enabled ESP32 devices and other
+  local agents on the same network.
+</p>
+
+<section>
+  <h3>What It Is</h3>
+  <p>
+    agent-hub turns small xiaozhi-compatible devices into managed voice agents.
+    A device checks in, receives a WebSocket voice-session URL, and immediately
+    runs with an assigned persona. The server handles speech recognition,
+    LLM calls, text-to-speech, tool routing, registry state, and the dashboard.
+  </p>
+  <p>
+    This is a clean Python implementation of the device-facing pieces needed by
+    xiaozhi-esp32 firmware, shaped for homelabs, classrooms, and makerspaces
+    instead of a multi-service cloud stack.
+  </p>
+</section>
+
+<section>
+  <h3>Architecture</h3>
+  <div class="doc-flow">ESP32 device
+  -> /checkin/ or /xiaozhi/ota/
+  -> registry + hub-default persona
+  -> /xiaozhi/v1/ WebSocket
+  -> ASR -> LLM + tools -> TTS
+  -> audio response back to device</div>
+  <div class="doc-grid">
+    <div class="doc-card">
+      <h3>Check-In</h3>
+      <p>
+        The firmware posts its device ID, client ID, version, and board details.
+        agent-hub registers first-contact devices and returns the WebSocket URL,
+        time data, and firmware-compatible response fields.
+      </p>
+    </div>
+    <div class="doc-card">
+      <h3>Voice Session</h3>
+      <p>
+        The WebSocket accepts xiaozhi hello messages and Opus audio frames, then
+        streams a full ASR, LLM, tool, and TTS turn back to the device.
+      </p>
+    </div>
+    <div class="doc-card">
+      <h3>Registry</h3>
+      <p>
+        SQLite stores devices, personas, provider choices, status, transcript
+        history, and per-device assignments so the hub can manage many agents
+        without a separate admin backend.
+      </p>
+    </div>
+    <div class="doc-card">
+      <h3>Dashboard</h3>
+      <p>
+        The HTMX dashboard shows live device status, MCP readiness, latency,
+        tools, personas, model selection, and conversation history from one
+        server-rendered UI.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h3>These Are Agents</h3>
+  <p>
+    In this hub, an agent is any network participant that can converse, expose
+    tools, or be managed through the registry. A xiaozhi ESP32 device is an
+    agent with a microphone, speaker, optional camera, and device-side MCP
+    tools. A persona is the behavior profile assigned to that agent: prompt,
+    LLM model, voice, ASR provider, server skills, tool permissions, and memory
+    window.
+  </p>
+</section>
+
+<section>
+  <h3>xiaozhi-esp32 MCP Compatibility</h3>
+  <p>
+    agent-hub preserves the firmware-facing endpoints and wire protocol used by
+    xiaozhi-esp32: the `/xiaozhi/ota/` check-in alias, the `/xiaozhi/v1/`
+    WebSocket session, hello messages, Opus audio frames, and device-side
+    MCP-over-WebSocket JSON-RPC framing. Devices can advertise tools such as
+    volume, screen, status, and camera actions; the hub exposes those tools to
+    the LLM under policy control.
+  </p>
+</section>
+
+<section>
+  <h3>Agent Hub Value Adds</h3>
+  <ul>
+    <li><strong>No activation gate:</strong> first-contact devices auto-bind to
+      `hub-default` and work immediately.</li>
+    <li><strong>Per-device personas:</strong> each device can use different
+      prompts, voices, models, skills, and tool allowlists.</li>
+    <li><strong>Unified registry:</strong> one place to see xiaozhi devices,
+      voice agents, and future MCP or AG2 agents.</li>
+    <li><strong>MCP bridge:</strong> server-side skills and device-side MCP tools
+      can be routed through the same voice session.</li>
+    <li><strong>Provider flexibility:</strong> OpenAI-compatible LLMs, local ASR,
+      and multiple TTS providers can be swapped per persona.</li>
+    <li><strong>Operational dashboard:</strong> live status, MCP readiness,
+      latency, transcripts, model picker, and device actions are built in.</li>
+    <li><strong>Classroom and homelab fit:</strong> single-container deployment,
+      SQLite storage, no MySQL, no Redis, no Java manager service, and no
+      frontend build step.</li>
+    <li><strong>Protocol safety:</strong> backward-compatible check-in JSON is
+      tested so field devices keep working when the hub evolves.</li>
+  </ul>
+</section>
 </div>"""
 
 
