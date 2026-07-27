@@ -195,3 +195,88 @@ async def test_configured_extra_origin_is_allowed(store: RegistryStore, tmp_path
         )
 
     assert resp.status_code != 403
+
+
+async def test_configured_allowlist_is_exhaustive(store: RegistryStore, tmp_path: Path) -> None:
+    """Once an allowlist is set, the request's own Host is no longer trusted.
+
+    This is the DNS-rebinding fix: an attacker who controls both Host and
+    Origin (both naming their own domain) must still be rejected.
+    """
+    app = FastAPI()
+    app.include_router(
+        make_dashboard_router(
+            store,
+            {
+                "server": {
+                    "dashboard_image_root": str(tmp_path),
+                    "dashboard_allowed_origins": "hub.local",
+                }
+            },
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://evil.example") as c:
+        resp = await c.post(
+            "/dashboard/agents/AA:BB/reboot",
+            headers={"Origin": "http://evil.example"},
+        )
+
+    assert resp.status_code == 403
+
+
+async def test_allowed_hosts_feeds_the_origin_allowlist(
+    store: RegistryStore, tmp_path: Path
+) -> None:
+    """server.allowed_hosts is a valid Origin source, not just a Host filter."""
+    app = FastAPI()
+    app.include_router(
+        make_dashboard_router(
+            store,
+            {"server": {"dashboard_image_root": str(tmp_path), "allowed_hosts": "hub.local"}},
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://hub.local") as c:
+        ok = await c.post(
+            "/dashboard/agents/AA:BB/reboot", headers={"Origin": "http://hub.local:8001"}
+        )
+        bad = await c.post(
+            "/dashboard/agents/AA:BB/reboot", headers={"Origin": "http://evil.example"}
+        )
+
+    assert ok.status_code != 403  # bare host in allowlist matches host:port origin
+    assert bad.status_code == 403
+
+
+async def test_wildcard_allowlist_entry_does_not_disable_the_check(
+    store: RegistryStore, tmp_path: Path
+) -> None:
+    """A '*' entry must not be treated as an allowed origin literal."""
+    app = FastAPI()
+    app.include_router(
+        make_dashboard_router(
+            store,
+            {"server": {"dashboard_image_root": str(tmp_path), "allowed_hosts": "*,hub.local"}},
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://hub.local") as c:
+        resp = await c.post(
+            "/dashboard/agents/AA:BB/reboot", headers={"Origin": "http://evil.example"}
+        )
+
+    assert resp.status_code == 403
+
+
+async def test_unconfigured_fallback_still_allows_same_origin(
+    store: RegistryStore, tmp_path: Path
+) -> None:
+    """Zero-config classroom setups must keep working."""
+    app = FastAPI()
+    app.include_router(
+        make_dashboard_router(store, {"server": {"dashboard_image_root": str(tmp_path)}})
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://192.168.1.5") as c:
+        resp = await c.post(
+            "/dashboard/agents/AA:BB/reboot", headers={"Origin": "http://192.168.1.5"}
+        )
+
+    assert resp.status_code != 403

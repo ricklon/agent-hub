@@ -16,6 +16,7 @@ import uvicorn
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import RedirectResponse
 from loguru import logger
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from agent_hub.config import Settings, load_config, load_settings
 from agent_hub.dashboard.app import make_router as make_dashboard_router
@@ -56,6 +57,33 @@ async def _prewarm_providers(config: dict[str, Any]) -> None:
         logger.info("FunASR model warm — first turn will not stall.")
     except Exception as exc:
         logger.warning(f"ASR pre-warm failed (non-fatal): {exc}")
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def parse_allowed_hosts(raw: str) -> list[str]:
+    """Split the comma-separated server.allowed_hosts setting into a list."""
+    return [h.strip() for h in raw.split(",") if h.strip()]
+
+
+def _warn_if_dashboard_exposed(settings: Settings) -> None:
+    """Warn when the dashboard is reachable off-loopback with no password.
+
+    Deliberately a warning rather than a hard failure: the zero-config
+    classroom flow has to keep working. Anyone running this beyond their own
+    machine needs to see it, though — an unauthenticated dashboard grants
+    control of every device and read access to every transcript.
+    """
+    if settings.server.host in _LOOPBACK_HOSTS or settings.server.dashboard_password:
+        return
+
+    logger.warning(
+        f"Dashboard is bound to {settings.server.host}:{settings.server.dashboard_port} "
+        f"with no password. Any host that can reach it can control every device "
+        f"and read all transcripts. Set AGENT_HUB_SERVER_DASHBOARD_PASSWORD, and "
+        f"AGENT_HUB_SERVER_ALLOWED_HOSTS to block DNS-rebinding, or bind to 127.0.0.1."
+    )
 
 
 def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any]) -> FastAPI:
@@ -126,12 +154,29 @@ def build_apps() -> dict[int, FastAPI]:
             _add_dashboard_root(app)
 
     dashboard_port = settings.server.dashboard_port
-    if dashboard_port in {settings.server.ws_port, settings.server.http_port}:
+    shares_device_port = dashboard_port in {settings.server.ws_port, settings.server.http_port}
+    if shares_device_port:
         logger.warning(
             f"Dashboard shares port {dashboard_port} with a device endpoint, so it is "
             f"reachable wherever devices can reach the hub. Give the dashboard its own "
             f"port, or set AGENT_HUB_SERVER_DASHBOARD_PASSWORD."
         )
+
+    # Host allowlisting is the real DNS-rebinding defence: it rejects a forged
+    # Host before routing. Applied to the dashboard app only — devices connect
+    # by bare LAN IP, and an allowlist of hostnames would reject their check-in
+    # outright, which fails in a way that looks like a network fault.
+    allowed_hosts = parse_allowed_hosts(settings.server.allowed_hosts)
+    if allowed_hosts:
+        apps[dashboard_port].add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+        if shares_device_port:
+            logger.warning(
+                f"allowed_hosts is enforced on port {dashboard_port}, which also serves "
+                f"device endpoints. Devices connecting by IP will be rejected unless that "
+                f"IP is listed in AGENT_HUB_SERVER_ALLOWED_HOSTS."
+            )
+
+    _warn_if_dashboard_exposed(settings)
 
     return apps
 

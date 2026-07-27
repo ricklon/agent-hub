@@ -16,6 +16,12 @@ server:
   # Only needed when a reverse proxy rewrites the Host header; the request's
   # own Host is always allowed. Cross-origin POSTs are rejected otherwise.
   dashboard_allowed_origins: ""
+  # Host header allowlist for the dashboard, comma-separated. When set, the
+  # dashboard rejects any request whose Host is not listed, which is what stops
+  # DNS-rebinding attacks from a browser on your LAN. List every name and IP
+  # the dashboard is reached by. Enforced on the dashboard port only — devices
+  # connect by bare IP and would be rejected on theirs.
+  allowed_hosts: ""
   # Override the WebSocket URL sent to devices on check-in.
   # Leave empty to auto-detect from the server's LAN IP.
   websocket: ""
