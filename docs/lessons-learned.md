@@ -37,6 +37,14 @@ After the multi-port fix, all three ports serve all routes.
 **Fix:** Dashboard is at `http://SERVER:8000/dashboard/` (or 8001 — both
 work after the multi-port fix). Updated README accordingly.
 
+**Superseded:** serving every route on every port turned out to be a security
+problem, not a convenience — a security review found that firewalling `8001`
+to Tailscale did nothing, because the dashboard also answered on the device
+ports operators open to the LAN. Each port now binds its own app with only
+its own routes, and **the dashboard is on `8001` only**. The lesson that
+survives: when the docs and the runtime disagree about where something lives,
+suspect the routing model rather than patching the docs to match.
+
 ---
 
 ### Startup event fires once per uvicorn server

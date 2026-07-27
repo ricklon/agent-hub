@@ -110,7 +110,7 @@ show you what's connected and what's happening.
 ## What is the dashboard?
 
 The dashboard is a web UI built into agent-hub. Open it at
-`http://YOUR_SERVER_IP:8000/dashboard/`. It shows:
+`http://YOUR_SERVER_IP:8001/dashboard/`. It shows:
 
 - All registered devices and their status (discovered / active / idle)
 - Live conversation history per device

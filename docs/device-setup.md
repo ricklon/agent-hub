@@ -137,7 +137,7 @@ Reboot the device (`!reboot` or unplug/replug). When it connects to WiFi
 it will POST to agent-hub's check-in endpoint. Open the dashboard:
 
 ```
-http://YOUR_SERVER_IP:8000/dashboard/
+http://YOUR_SERVER_IP:8001/dashboard/
 ```
 
 The device appears with status `discovered`. It is registered and assigned
@@ -165,13 +165,13 @@ changes to `active` in the dashboard while a session is running.
 
 Every new device gets `hub-default`. To change it:
 
-1. Go to `http://YOUR_SERVER_IP:8000/dashboard/`
+1. Go to `http://YOUR_SERVER_IP:8001/dashboard/`
 2. Click the device
 3. Use the **Assign** dropdown to pick a persona
 4. Start a new voice session — the persona takes effect immediately
 
 To create a new persona with a different voice, go to
-`http://YOUR_SERVER_IP:8000/dashboard/personas`.
+`http://YOUR_SERVER_IP:8001/dashboard/personas`.
 
 Available Edge TTS voices: any name from the
 [Microsoft voice list](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts).
