@@ -12,6 +12,10 @@ server:
   enrollment_token: ""
   # Directory the dashboard may read captured device images from.
   dashboard_image_root: "data/images"
+  # Extra origins allowed to submit dashboard forms, comma-separated.
+  # Only needed when a reverse proxy rewrites the Host header; the request's
+  # own Host is always allowed. Cross-origin POSTs are rejected otherwise.
+  dashboard_allowed_origins: ""
   # Override the WebSocket URL sent to devices on check-in.
   # Leave empty to auto-detect from the server's LAN IP.
   websocket: ""

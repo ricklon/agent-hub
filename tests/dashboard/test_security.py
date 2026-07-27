@@ -103,3 +103,95 @@ async def test_dashboard_history_escapes_html_but_preserves_image_markers(
     assert "<script>" not in resp.text
     assert "&lt;script&gt;" in resp.text
     assert '<img src="/dashboard/image?path=' in resp.text
+
+
+async def test_state_change_rejects_cross_origin_post(dashboard_client: AsyncClient) -> None:
+    """A malicious page must not be able to drive device actions via CSRF."""
+    resp = await dashboard_client.post(
+        "/dashboard/agents/AA:BB/reboot",
+        headers={
+            "Authorization": _basic_auth("admin", "secret"),
+            "Origin": "http://evil.example",
+        },
+    )
+
+    assert resp.status_code == 403
+
+
+async def test_state_change_allows_same_origin_post(dashboard_client: AsyncClient) -> None:
+    """The dashboard's own HTMX forms send a matching Origin."""
+    resp = await dashboard_client.post(
+        "/dashboard/agents/AA:BB/reboot",
+        headers={
+            "Authorization": _basic_auth("admin", "secret"),
+            "Origin": "http://test",
+        },
+    )
+
+    assert resp.status_code != 403
+
+
+async def test_state_change_allows_missing_origin(dashboard_client: AsyncClient) -> None:
+    """Non-browser clients (curl, scripts/smoke.py) send no Origin and must still work.
+
+    Browsers always send Origin on cross-origin POSTs, so absence is not a CSRF vector.
+    """
+    resp = await dashboard_client.post(
+        "/dashboard/agents/AA:BB/reboot",
+        headers={"Authorization": _basic_auth("admin", "secret")},
+    )
+
+    assert resp.status_code != 403
+
+
+async def test_cross_origin_get_is_allowed(dashboard_client: AsyncClient) -> None:
+    """The check guards state changes only; reads are unaffected."""
+    resp = await dashboard_client.get(
+        "/dashboard/",
+        headers={
+            "Authorization": _basic_auth("admin", "secret"),
+            "Origin": "http://evil.example",
+        },
+    )
+
+    assert resp.status_code == 200
+
+
+async def test_origin_check_applies_without_dashboard_password(
+    store: RegistryStore, tmp_path: Path
+) -> None:
+    """An unauthenticated LAN dashboard still must not accept drive-by POSTs."""
+    app = FastAPI()
+    app.include_router(
+        make_dashboard_router(store, {"server": {"dashboard_image_root": str(tmp_path)}})
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/dashboard/agents/AA:BB/reboot",
+            headers={"Origin": "http://evil.example"},
+        )
+
+    assert resp.status_code == 403
+
+
+async def test_configured_extra_origin_is_allowed(store: RegistryStore, tmp_path: Path) -> None:
+    """A proxy that rewrites Host can be accommodated via config."""
+    app = FastAPI()
+    app.include_router(
+        make_dashboard_router(
+            store,
+            {
+                "server": {
+                    "dashboard_image_root": str(tmp_path),
+                    "dashboard_allowed_origins": "https://hub.example.com",
+                }
+            },
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/dashboard/agents/AA:BB/reboot",
+            headers={"Origin": "https://hub.example.com"},
+        )
+
+    assert resp.status_code != 403

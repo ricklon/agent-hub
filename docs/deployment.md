@@ -139,6 +139,33 @@ The app currently includes:
 - Bearer-token auth for `/xiaozhi/v1/image/` when `server.image_token` is set.
 - Dashboard image serving restricted to `server.dashboard_image_root`.
 - Transcript HTML escaping in dashboard history.
+- Origin checking on dashboard state changes (CSRF defence), active whether
+  or not a dashboard password is set.
+
+### Why Basic auth, and its limits
+
+Basic is used only for `/dashboard/*` — human operators. Devices authenticate
+with bearer tokens instead, because ESP32 firmware cannot do an interactive
+login. Basic was chosen for the dashboard because it needs no session store,
+no login page, and no build step, and it keeps `curl` and `scripts/` working.
+
+Its weaknesses are worth knowing:
+
+- Browsers replay Basic credentials automatically, and there is no cookie to
+  carry a `SameSite` flag. That is why the Origin check above exists — without
+  it, any page an authenticated operator visits could POST to `/reboot`,
+  `/speak`, or `/inject`.
+- There is no logout. Browsers hold the credentials until they are closed,
+  which matters for a shared or handed-around demo machine.
+- The password is compared in cleartext, so it lives unhashed in the config
+  file or environment. Prefer the environment over `data/.config.yaml`.
+
+For anything internet-facing, do not rely on Basic as the primary control.
+Put an identity-aware proxy in front — Cloudflare Access supports passkeys,
+SSO, per-person audit, and revocation with no application changes — and keep
+Basic underneath as a backstop. WebAuthn cannot be implemented in the app as
+it stands: the server is HTTP-only, and passkeys require a secure context and
+a stable origin.
 
 ## Remaining Work Before Public Internet
 
