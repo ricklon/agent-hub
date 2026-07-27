@@ -177,7 +177,16 @@ async def _speak_segment(
     if not text:
         return
     tts = get_tts(persona.tts_provider, config)
-    pcm_bytes, tts_rate = await tts.synthesize_pcm(text, voice=persona.tts_voice)
+    try:
+        pcm_bytes, tts_rate = await tts.synthesize_pcm(text, voice=persona.tts_voice)
+    except ValueError as exc:
+        if not persona.tts_voice:
+            raise
+        logger.warning(
+            f"Invalid TTS voice {persona.tts_voice!r} for persona {persona.name!r}; "
+            f"falling back to provider default: {exc}"
+        )
+        pcm_bytes, tts_rate = await tts.synthesize_pcm(text, voice=None)
     target_rate = SERVER_TTS_AUDIO_PARAMS.sample_rate
     if tts_rate != target_rate:
         pcm_bytes = await pcm_resample(pcm_bytes, tts_rate, target_rate)
