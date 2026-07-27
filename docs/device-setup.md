@@ -85,6 +85,24 @@ You can also pass a full URL:
 !server http://192.168.1.39:8003/xiaozhi/ota/
 ```
 
+**If the server has an enrollment token set** (`AGENT_HUB_SERVER_ENROLLMENT_TOKEN`,
+see [`deployment.md`](deployment.md)), the device must present it or check-in
+is rejected with `401`. Stock firmware cannot add a custom header or a JSON
+body field, so put the token in the OTA URL query string — the one form the
+device can produce:
+
+```
+!server http://192.168.1.39:8003/xiaozhi/ota/?enrollment_token=YOUR_TOKEN
+```
+
+Nothing extra is needed for the voice session. On a successful check-in the
+server issues a per-device WebSocket token and returns it as
+`websocket.token`; the firmware stores that and sends it automatically as
+`Authorization: Bearer <token>` when it opens `/xiaozhi/v1/`.
+
+> The token travels in the URL, so it will appear in server and proxy access
+> logs. It is a shared fleet secret — rotate it if those logs are exposed.
+
 **Set WiFi credentials** (if the device doesn't already have them):
 ```
 !wifi YourNetworkName YourPassword
@@ -129,6 +147,9 @@ If the device does not appear:
 - Run `!status` and confirm the OTA URL is correct
 - Make sure the device and server are on the same WiFi network
 - Check server logs: `tail -f /tmp/agent-hub.log`
+- If the server has an enrollment token set, look for
+  `Rejected check-in ... invalid enrollment token` in the logs — that means
+  the `?enrollment_token=` part of the OTA URL is missing or wrong
 
 ## Step 5 — Start a voice session
 
