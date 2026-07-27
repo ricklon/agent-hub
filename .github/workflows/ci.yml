@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch makes the in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: lint / typecheck / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # opuslib_next resolves libopus through ctypes.find_library at import
+      # time, and soundfile needs libsndfile. Without these the test suite
+      # fails on import, not on assertion.
+      - name: Install native audio libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopus-dev libsndfile1
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install project
+        run: uv sync --all-extras
+
+      # Run the same recipes developers run locally, so CI and the justfile
+      # cannot drift apart.
+      - name: Install just
+        run: |
+          uv tool install rust-just
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Lint
+        run: just lint
+
+      - name: Typecheck
+        run: just typecheck
+
+      - name: Test
+        run: just test
