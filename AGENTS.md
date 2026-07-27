@@ -15,11 +15,17 @@ dashboard.
 
 ## Project status
 
-Pre-alpha. Scaffolding only. No `src/` code exists yet.
+Working alpha. Roughly 6k lines across `src/agent_hub/`, ~93 tests, all
+quality gates green and enforced by CI on every push and PR.
 
-When asked to implement something, **read the existing code first** even if
-it's a stub. Do not assume the design described here is the design that
-exists.
+Implemented and exercised against real hardware: check-in, the WebSocket
+voice session (streaming ASR → LLM → TTS), device-side MCP tool discovery
+and routing, server-side skills, the persona/registry model, camera capture
+with background vision inference, and the dashboard.
+
+When asked to implement something, **read the existing code first**. This
+file describes intent and constraints; it is not a substitute for the code,
+and where the two disagree the code wins.
 
 ## Architecture in two sentences
 
@@ -30,7 +36,7 @@ functional immediately. The WebSocket session endpoint (`/xiaozhi/v1/`)
 streams ASR/LLM/TTS for live conversations using the persona configured
 on the registry row for that device.
 
-## Repo layout (target)
+## Repo layout (actual)
 
 ```
 agent-hub/
@@ -38,30 +44,54 @@ agent-hub/
 ├── AGENTS.md                ← you are here
 ├── pyproject.toml           ← uv, hatchling, ruff, pytest
 ├── justfile                 ← all dev commands
+├── .github/workflows/ci.yml ← runs just lint / typecheck / test
 ├── docker-compose.yml
 ├── docker-compose.fubar.yml ← class-night override (laptop on FUBAR wifi)
 ├── .config.example.yaml
 ├── src/agent_hub/
-│   ├── __init__.py
+│   ├── config.py            ← loads .config.yaml + env overrides
 │   ├── server/
 │   │   ├── checkin.py       ← `/checkin/` and `/xiaozhi/ota/` alias
-│   │   ├── ws_session.py    ← `/xiaozhi/v1/` voice loop
+│   │   ├── ws_session.py    ← `/xiaozhi/v1/` voice loop (large; see note)
+│   │   ├── protocol.py      ← message types and JSON schemas
+│   │   ├── audio.py         ← Opus encode/decode, VAD, rate control
+│   │   ├── session_state.py ← per-connection state
 │   │   ├── mcp_bridge.py    ← MCP tool routing between agents
-│   │   └── protocol.py      ← message types and JSON schemas
+│   │   ├── mcp_client.py    ← device-side MCP-over-WS JSON-RPC client
+│   │   ├── tool_policy.py   ← which tools a persona may call
+│   │   ├── image_explain.py ← camera upload + background vision inference
+│   │   ├── transcript_log.py
+│   │   └── emotion.py
 │   ├── providers/
-│   │   ├── llm/             ← OpenAI, Anthropic, Ollama, KVM@TACC, …
-│   │   ├── tts/             ← Edge, Cartesia, ElevenLabs, …
-│   │   └── asr/             ← cloud Whisper, Deepgram, FunASR, …
+│   │   ├── llm/             ← openai_provider (OpenAI-compatible, incl. OpenRouter)
+│   │   ├── tts/             ← edge, kitten
+│   │   └── asr/             ← funasr, funasr_onnx, openai_whisper
 │   ├── registry/
 │   │   ├── models.py        ← Agent, Device, Persona, AgentKind enum
 │   │   └── store.py         ← SQLite-backed persistence
-│   ├── dashboard/
-│   │   └── app.py           ← FastAPI + HTMX (or React if scope grows)
-│   └── config.py            ← loads .config.yaml + env overrides
+│   ├── skills/              ← server-side LLM tools (NOT the `skills/` below)
+│   │   ├── get_weather.py
+│   │   ├── get_current_time.py
+│   │   └── web_search.py
+│   └── dashboard/
+│       └── app.py           ← FastAPI + HTMX (large; see note)
+├── scripts/                 ← smoke.py, test_features.py, model downloads
 ├── tests/
-├── skills/                  ← see "Skill catalogue" below
+├── skills/                  ← agent instruction files — currently EMPTY
 └── docs/
 ```
+
+Two naming traps:
+
+- `skills/` (repo root) holds **instructions for coding agents** and is
+  currently empty. `src/agent_hub/skills/` holds **runtime tools the LLM
+  can call** and is real code. They are unrelated.
+- `mcp_bridge.py` and `mcp_client.py` are different layers. The client
+  speaks JSON-RPC to one device; the bridge routes tools between agents.
+
+`ws_session.py` and `dashboard/app.py` are each ~1000 lines and together are
+about a third of the codebase. Prefer extracting into a sibling module over
+growing either further.
 
 ## Conventions
 
@@ -102,17 +132,30 @@ All commands run from repo root via `just`. List with `just`.
 | Command                    | What it does                                     |
 | -------------------------- | ------------------------------------------------ |
 | `just install`             | `uv sync --all-extras`                           |
+| `just download-models`     | Fetch Silero VAD + SenseVoiceSmall into `models/`|
 | `just lint`                | `ruff check src/ tests/ && ruff format --check`  |
 | `just format`              | `ruff format src/ tests/`                        |
 | `just typecheck`           | `mypy --strict src/agent_hub/`                   |
 | `just test`                | `pytest -xvs`                                    |
 | `just test-watch`          | `pytest-watch`                                   |
+| `just smoke`               | `scripts/smoke.py` — quick server sanity check   |
+| `just test-features`       | Drive every feature against a live device        |
 | `just run`                 | `uv run python -m agent_hub.server`              |
-| `just dashboard`           | `uv run python -m agent_hub.dashboard.app`       |
 | `just docker-build`        | `docker compose build`                           |
 | `just docker-up`           | `docker compose up`                              |
-| `just deploy-edge`         | `ansible-playbook deploy-agent-hub.yml`          |
 | `just deploy-fubar`        | Class-night laptop override                      |
+
+The test suite is hermetic — ASR providers are monkeypatched, so `just test`
+needs no models and no network. `just download-models` is only required to
+actually run the server.
+
+Two recipes are currently broken; fix them before relying on them:
+
+- `just dashboard` silently does nothing. `dashboard/app.py` has no
+  `if __name__ == "__main__"` guard, so `python -m agent_hub.dashboard.app`
+  imports the module and exits. The dashboard is mounted by `just run`.
+- `just deploy-edge` calls `ansible-playbook deploy-agent-hub.yml`, and no
+  such playbook exists in this repo.
 
 ## Hard rules — what agents must NOT do
 
@@ -130,17 +173,31 @@ All commands run from repo root via `just`. List with `just`.
 6. **Do not introduce a frontend build step (webpack/vite) for v1.**
    HTMX-style server-rendered HTML keeps the deploy a single container.
 7. **Do not push to remote without local `just lint typecheck test` clean.**
+   CI runs the same three recipes on every push and PR, so a dirty push
+   fails in public rather than quietly.
+8. **Do not commit directly to `main`.** Every change — code *and* docs —
+   lands through a branch and a PR. Squash-merge, so the commit subject on
+   `main` reads `<subject> (#N)`.
+9. **Do not `git add -A`.** Stage explicit paths; this repo sits next to
+   gitignored config and model files.
 
 ## Hard rules — what agents must do
 
-1. **Read the upstream protocol shape before implementing
-   `server/protocol.py`.** Specifically:
+1. **Cross-check the upstream protocol before touching
+   `server/protocol.py`.** It is implemented and field-proven; verify
+   against upstream rather than redesigning. The shapes that matter:
    - Check-in request/response: device sends MAC + version, server returns
      WebSocket URL + per-device config
    - WS message types: `hello`, audio frames (Opus-encoded), tool calls,
      TTS responses
    - MCP-over-WS: device-side MCP server is reachable inside the voice
      session via JSON-RPC framing
+
+   Known gaps against the current upstream spec, all deliberate: the
+   `Protocol-Version` request header is ignored, binary protocol v2/v3
+   (timestamped frames for server-side AEC) is unimplemented, and the
+   `aec` / `glyph_push` feature flags are unhandled. Firmware defaults to
+   binary v1, so none of these break real devices today.
 2. **Preserve backward compatibility** of the check-in response JSON.
    Adding fields is fine; removing/renaming is not.
 3. **Add a regression test for every protocol change** in
@@ -209,6 +266,12 @@ Env var overrides follow the pattern `AGENT_HUB_<SECTION>_<KEY>`, e.g.
   https://github.com/xinnan-tech/xiaozhi-esp32-server
 - Upstream firmware (same):
   https://github.com/78/xiaozhi-esp32
+  — protocol docs live in `docs/websocket.md` and `docs/mcp-protocol.md`
+
+Everything in `docs/lessons-learned.md` was learned against **firmware
+2.2.6**. Upstream has since shipped **2.4.0**, which migrated to ESP-IDF
+6.0. Treat hardware-behaviour lessons as unverified on 2.4.0 until
+re-tested on a flashed device.
 - Rick's homelab ansible patterns (private):
   github.com/ricklon/ansible-homelab
 - Coachable-robots project (uses the same toolchain conventions):
