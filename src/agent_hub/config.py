@@ -31,6 +31,7 @@ class ServerConfig:
     enrollment_token: str = ""
     dashboard_image_root: str = "data/images"
     dashboard_allowed_origins: str = ""
+    allowed_hosts: str = ""
     image_token: str = ""
 
 
@@ -120,6 +121,7 @@ class Settings:
                 enrollment_token=str(srv.get("enrollment_token", "")),
                 dashboard_image_root=str(srv.get("dashboard_image_root", "data/images")),
                 dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),
+                allowed_hosts=str(srv.get("allowed_hosts", "")),
                 image_token=str(srv.get("image_token", "")),
             ),
             registry=RegistryConfig(

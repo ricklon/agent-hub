@@ -127,3 +127,71 @@ def test_build_app_still_mounts_everything(monkeypatch, tmp_path) -> None:
     assert "/checkin/" in paths
     assert "/xiaozhi/v1/" in paths
     assert any(p.startswith("/dashboard") for p in paths)
+
+
+def test_allowed_hosts_installs_trusted_host_middleware(monkeypatch, tmp_path) -> None:
+    _configure(
+        monkeypatch,
+        tmp_path,
+        ws_port=8000,
+        http_port=8003,
+        dashboard_port=8001,
+        allowed_hosts="hub.local, 192.168.1.5",
+    )
+
+    apps = server_main.build_apps()
+
+    def _has_trusted_host(app: FastAPI) -> bool:
+        return any("TrustedHost" in str(m.cls) for m in app.user_middleware)
+
+    assert _has_trusted_host(apps[8001])
+    # Devices connect by bare IP; a hostname allowlist on their ports would
+    # reject check-in in a way that looks like a network fault.
+    assert not _has_trusted_host(apps[8000])
+    assert not _has_trusted_host(apps[8003])
+
+
+def test_no_middleware_when_allowed_hosts_unset(monkeypatch, tmp_path) -> None:
+    _configure(monkeypatch, tmp_path, ws_port=8000, http_port=8003, dashboard_port=8001)
+
+    apps = server_main.build_apps()
+
+    assert not any("TrustedHost" in str(m.cls) for m in apps[8001].user_middleware)
+
+
+def test_parse_allowed_hosts_ignores_blanks() -> None:
+    assert server_main.parse_allowed_hosts("a, ,b,") == ["a", "b"]
+    assert server_main.parse_allowed_hosts("") == []
+
+
+def test_warns_when_dashboard_exposed_without_password(monkeypatch, tmp_path) -> None:
+    _configure(monkeypatch, tmp_path, host="0.0.0.0", dashboard_port=8001)
+
+    messages: list[str] = []
+    monkeypatch.setattr(server_main.logger, "warning", lambda msg: messages.append(str(msg)))
+
+    server_main.build_apps()
+
+    assert any("no password" in m for m in messages)
+
+
+def test_no_exposure_warning_on_loopback(monkeypatch, tmp_path) -> None:
+    _configure(monkeypatch, tmp_path, host="127.0.0.1", dashboard_port=8001)
+
+    messages: list[str] = []
+    monkeypatch.setattr(server_main.logger, "warning", lambda msg: messages.append(str(msg)))
+
+    server_main.build_apps()
+
+    assert not any("no password" in m for m in messages)
+
+
+def test_no_exposure_warning_when_password_set(monkeypatch, tmp_path) -> None:
+    _configure(monkeypatch, tmp_path, host="0.0.0.0", dashboard_password="hunter2")
+
+    messages: list[str] = []
+    monkeypatch.setattr(server_main.logger, "warning", lambda msg: messages.append(str(msg)))
+
+    server_main.build_apps()
+
+    assert not any("no password" in m for m in messages)

@@ -40,7 +40,25 @@ On successful check-in, the server stores a fresh per-device WebSocket token
 and returns it as `websocket.token`. The xiaozhi firmware then sends it on
 `/xiaozhi/v1/` as `Authorization: Bearer <token>`.
 
-6. Set an image token before using camera/image tools outside a private lab:
+6. Set a host allowlist for the dashboard whenever it is reachable off
+   localhost:
+
+```sh
+AGENT_HUB_SERVER_ALLOWED_HOSTS=hub.local,192.168.5.6,agent-hub.example.com
+```
+
+List every name and IP you actually browse to. Requests arriving with any
+other `Host` are rejected with `400`. This is what blocks **DNS rebinding**,
+where a malicious page re-points its own domain at your hub's LAN address;
+without it, an attacker's page can send a `Host` and `Origin` that agree with
+each other and pass the cross-origin check on the way to `/reboot` or
+`/inject`.
+
+It is enforced on the dashboard port only. Devices connect by bare LAN IP, so
+a hostname allowlist on the device ports would reject check-in in a way that
+looks like a network fault.
+
+7. Set an image token before using camera/image tools outside a private lab:
 
 ```sh
 AGENT_HUB_SERVER_IMAGE_TOKEN=change-this-long-random-token
@@ -138,7 +156,14 @@ AGENT_HUB_SERVER_WEBSOCKET=wss://agent-hub.example.com/xiaozhi/v1/
 AGENT_HUB_SERVER_DASHBOARD_PASSWORD=change-this-long-random-password
 AGENT_HUB_SERVER_ENROLLMENT_TOKEN=change-this-long-random-token
 AGENT_HUB_SERVER_IMAGE_TOKEN=change-this-long-random-token
+AGENT_HUB_SERVER_ALLOWED_HOSTS=agent-hub.example.com
 ```
+
+Behind a proxy, `allowed_hosts` must name the host the **browser** uses, since
+that is what arrives in the `Host` header. If the proxy rewrites `Host` to
+something else, add that value to `dashboard_allowed_origins` too — once
+either allowlist is set it becomes exhaustive, and the request's own `Host` is
+no longer trusted implicitly.
 
 ## Current Hardening
 
@@ -154,6 +179,9 @@ The app currently includes:
   or not a dashboard password is set.
 - Per-port route isolation: the dashboard is not mounted on the device-facing
   ports, so opening them to the LAN does not expose it.
+- Host allowlisting on the dashboard when `server.allowed_hosts` is set,
+  which blocks DNS rebinding.
+- A startup warning when the dashboard is bound off-loopback with no password.
 
 ### Why Basic auth, and its limits
 

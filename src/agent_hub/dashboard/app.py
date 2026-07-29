@@ -25,6 +25,27 @@ _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 _STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+
+def _normalise_hosts(raw: Any) -> set[str]:
+    """Parse a host/origin allowlist into a set of bare lowercase hosts.
+
+    Accepts a YAML list or a comma-separated string (the env-override form),
+    with or without a scheme. Wildcard entries are discarded — they would make
+    the Origin check vacuous rather than merely permissive.
+    """
+    if not raw:
+        return set()
+    items = [o.strip() for o in raw.split(",")] if isinstance(raw, str) else [str(o) for o in raw]
+    hosts: set[str] = set()
+    for item in items:
+        value = item.strip().lower()
+        if not value or "*" in value:
+            continue
+        # urlsplit only populates netloc when a scheme is present.
+        hosts.add(urlsplit(value).netloc or value)
+    return hosts
+
+
 _CSS = """\
 body{font-family:monospace;padding:2rem;background:#0d1117;color:#c9d1d9;margin:0}
 h1{color:#58a6ff;margin-bottom:0.25rem}
@@ -106,14 +127,14 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     dashboard_username = str(server_config.get("dashboard_username") or "admin")
     dashboard_password = str(server_config.get("dashboard_password") or "")
     image_root = Path(str(server_config.get("dashboard_image_root") or "data/images")).resolve()
-    # Extra hosts allowed as a request Origin, for proxies that rewrite Host.
-    # Accepts a YAML list or a comma-separated string (env override).
-    _raw_origins = server_config.get("dashboard_allowed_origins") or []
-    if isinstance(_raw_origins, str):
-        _raw_origins = [o.strip() for o in _raw_origins.split(",")]
-    extra_allowed_origin_hosts = [
-        urlsplit(o).netloc.lower() or o.lower() for o in _raw_origins if o and str(o).strip()
-    ]
+    # Hosts allowed as a request Origin on state changes. Drawn from both
+    # dashboard_allowed_origins (dashboard-specific) and allowed_hosts (the
+    # server-wide host allowlist), since anything valid as a Host is valid as
+    # an Origin. Wildcards are dropped: they constrain nothing, and treating
+    # "*" as an allowed origin would silently disable the check.
+    configured_origin_hosts = _normalise_hosts(
+        server_config.get("dashboard_allowed_origins")
+    ) | _normalise_hosts(server_config.get("allowed_hosts"))
 
     async def _require_dashboard_auth(request: Request) -> None:
         """Require HTTP Basic auth when a dashboard password is configured."""
@@ -168,8 +189,15 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         if not origin:
             return
 
-        origin_host = urlsplit(origin).netloc.lower()
-        if origin_host and origin_host in _allowed_origin_hosts(request):
+        parsed = urlsplit(origin)
+        # Match on host-with-port and bare host, since an allowlist may be
+        # written either way ("hub.local" vs "https://hub.local:8443").
+        candidates = {parsed.netloc.lower()}
+        if parsed.hostname:
+            candidates.add(parsed.hostname.lower())
+        candidates.discard("")
+
+        if candidates & _allowed_origin_hosts(request):
             return
 
         raise HTTPException(
@@ -178,12 +206,23 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         )
 
     def _allowed_origin_hosts(request: Request) -> set[str]:
-        """Hosts an Origin header may name: this request's Host, plus config."""
-        allowed = {h.lower() for h in extra_allowed_origin_hosts}
+        """Hosts an Origin header may name.
+
+        Prefers the configured allowlist. Falls back to the request's own Host
+        header only when nothing is configured, because a Host-derived
+        allowlist is self-referential: under DNS rebinding the attacker
+        controls both Host and Origin, so they match and the check passes.
+        Setting server.allowed_hosts (which also installs Starlette's
+        TrustedHostMiddleware) is what actually closes that.
+
+        Note the allowlist is exhaustive once set — the request's own Host is
+        no longer trusted implicitly, so every name the dashboard is reached
+        by must appear in it.
+        """
+        if configured_origin_hosts:
+            return configured_origin_hosts
         host_header = request.headers.get("host")
-        if host_header:
-            allowed.add(host_header.lower())
-        return allowed
+        return {host_header.lower()} if host_header else set()
 
     def _dashboard_image_path(raw_path: str) -> Path | None:
         requested = Path(raw_path)
