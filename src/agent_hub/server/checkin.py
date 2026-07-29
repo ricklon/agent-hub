@@ -64,6 +64,15 @@ def _image_url(settings: Settings) -> str:
     return urlunparse(p._replace(path="/xiaozhi/v1/image/", query="", fragment=""))
 
 
+def _heartbeat_url(settings: Settings) -> str:
+    ws = _ws_url(settings)
+    http_base = ws.replace("ws://", "http://").replace("wss://", "https://")
+    from urllib.parse import urlparse, urlunparse
+
+    p = urlparse(http_base)
+    return urlunparse(p._replace(path="/xiaozhi/heartbeat/", query="", fragment=""))
+
+
 def _timezone_offset_minutes(settings: Settings) -> int:
     timezone = settings.server.timezone.strip()
     if not timezone:
@@ -149,9 +158,13 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
             f"Check-in from {req.device_id!r} at {req.ip_address} (fw {req.application_version})"
         )
 
+        raw_board = body.get("board")
+        board: dict[str, Any] = raw_board if isinstance(raw_board, dict) else {}
+        board_name = str(board.get("name") or "").strip() or None
         await store.get_or_create_agent(
             device_id=req.device_id,
             kind=AgentKind.XIAOZHI,
+            label=board_name,
             ip_address=req.ip_address,
             firmware_version=req.application_version,
         )
@@ -167,6 +180,8 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
             token=websocket_token,
             image_url=_image_url(settings),
             image_token=image_token,
+            heartbeat_url=_heartbeat_url(settings),
+            heartbeat_interval_seconds=settings.server.heartbeat_interval_seconds,
         )
         return JSONResponse(resp.to_json(), headers=_CORS_HEADERS)
 

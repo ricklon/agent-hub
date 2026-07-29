@@ -100,6 +100,8 @@ class CheckinResponse:
     token: str = ""
     image_url: str = ""
     image_token: str = ""
+    heartbeat_url: str = ""
+    heartbeat_interval_seconds: int = 60
 
     def to_json(self) -> dict[str, Any]:
         """Serialize to the upstream-compatible JSON wire format.
@@ -123,6 +125,13 @@ class CheckinResponse:
         }
         if self.image_url:
             d["image"] = {"url": self.image_url, "token": self.image_token}
+        if self.heartbeat_url and self.token:
+            d["heartbeat"] = {
+                "enabled": True,
+                "url": self.heartbeat_url,
+                "token": self.token,
+                "interval": self.heartbeat_interval_seconds,
+            }
         return d
 
 
@@ -212,6 +221,11 @@ class ClientHello:
     def supports_emoji(self) -> bool:
         """True if the client can display emotion faces (features.emoji)."""
         return bool(self.features.get("emoji"))
+
+    @property
+    def transcription_only(self) -> bool:
+        """True when this connection must perform ASR without LLM or TTS."""
+        return bool(self.features.get("transcription"))
 
 
 @dataclass

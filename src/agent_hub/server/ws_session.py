@@ -248,7 +248,8 @@ def _history_for_llm(history: list[dict[str, str]]) -> list[dict[str, str]]:
     return [
         msg
         for msg in history
-        if not (msg.get("role") == "assistant" and _VOLATILE_HISTORY_RE.search(msg["content"]))
+        if msg.get("role") in {"user", "assistant"}
+        and not (msg.get("role") == "assistant" and _VOLATILE_HISTORY_RE.search(msg["content"]))
     ]
 
 
@@ -662,6 +663,47 @@ async def _run_voice_turn(
     )
 
 
+async def _run_transcription_turn(
+    websocket: WebSocket,
+    opus_frames: list[bytes],
+    session_id: str,
+    audio_params_sample_rate: int,
+    audio_params_frame_duration: int,
+    persona: Persona,
+    config: dict[str, Any],
+    store: RegistryStore,
+    device_id: str,
+) -> None:
+    """Decode and persist one utterance without invoking the LLM or TTS."""
+    decoder = OpusDecoder(audio_params_sample_rate, audio_params_frame_duration)
+    pcm_chunks = [decoder.decode(frame) for frame in opus_frames]
+    wav_bytes = pcm_to_wav(b"".join(pcm_chunks), audio_params_sample_rate)
+
+    t0 = time.monotonic()
+    result = await get_asr(persona.asr_provider, config).transcribe(wav_bytes)
+    asr_ms = int((time.monotonic() - t0) * 1000)
+    if not result.is_speech or not result.text.strip():
+        logger.bind(tag=_TAG).debug("Non-speech transcription segment, skipping")
+        return
+
+    transcript = result.text.strip()
+    logger.bind(tag=_TAG).info(
+        f"Transcription ASR ({asr_ms}ms): {transcript!r} [lang={result.language or '?'}]"
+    )
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "stt",
+                "session_id": session_id,
+                "text": transcript,
+            }
+        )
+    )
+    await store.append_history(device_id, "transcript", transcript)
+    if device_id:
+        session_state.record_turn(device_id, asr_ms, 0, 0)
+
+
 async def _run_text_turn(
     websocket: WebSocket,
     transcript: str,
@@ -776,13 +818,14 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 f"{device_id!r} hello: format={hello.audio_params.format} "
                 f"rate={hello.audio_params.sample_rate} "
                 f"frame={hello.audio_params.frame_duration}ms "
-                f"mcp={hello.supports_mcp}"
+                f"mcp={hello.supports_mcp} "
+                f"transcription_only={hello.transcription_only}"
             )
             await websocket.send_text(json.dumps(ServerWelcome(session_id=session_id).to_json()))
 
             # 2. MCP registration — complete before persona assignment so the
             #    server knows the device's exact capabilities when picking a persona.
-            if hello.supports_mcp:
+            if hello.supports_mcp and not hello.transcription_only:
                 mcp_client = MCPClient(
                     websocket,
                     device_id,
@@ -867,8 +910,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         f"{device_id!r} pipeline busy — dropping {len(frames)} frames"
                     )
                     return
-                # Signal device that we're thinking
-                if hello.supports_emoji:
+                # Signal device that we're thinking only for assistant turns.
+                if hello.supports_emoji and not hello.transcription_only:
                     with suppress(Exception):
                         await websocket.send_text(
                             json.dumps(
@@ -884,19 +927,32 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 prev_len = len(conversation)
                 async with pipeline_lock:
                     try:
-                        await _run_voice_turn(
-                            websocket,
-                            frames,
-                            session_id,
-                            hello.audio_params.sample_rate,
-                            hello.audio_params.frame_duration,
-                            persona,
-                            conversation,
-                            config,
-                            mcp_client,
-                            device_id,
-                            supports_emoji=hello.supports_emoji,
-                        )
+                        if hello.transcription_only:
+                            await _run_transcription_turn(
+                                websocket,
+                                frames,
+                                session_id,
+                                hello.audio_params.sample_rate,
+                                hello.audio_params.frame_duration,
+                                persona,
+                                config,
+                                store,
+                                device_id,
+                            )
+                        else:
+                            await _run_voice_turn(
+                                websocket,
+                                frames,
+                                session_id,
+                                hello.audio_params.sample_rate,
+                                hello.audio_params.frame_duration,
+                                persona,
+                                conversation,
+                                config,
+                                mcp_client,
+                                device_id,
+                                supports_emoji=hello.supports_emoji,
+                            )
                     except Exception as exc:
                         import traceback as _tb
 
@@ -905,7 +961,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         )
                 phase, _ = session_state.get_pipeline_status(device_id)
                 if phase != "overloaded":
-                    session_state.set_pipeline_status(device_id, "idle")
+                    session_state.set_pipeline_status(
+                        device_id, "listening" if hello.transcription_only else "idle"
+                    )
                 new_msgs = conversation[prev_len:]
                 for msg in new_msgs:
                     await store.append_history(device_id, msg["role"], msg["content"])
@@ -913,6 +971,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             def _fire_pipeline(frames: list[bytes]) -> None:
                 nonlocal active_pipeline
                 if active_pipeline and not active_pipeline.done():
+                    if hello.transcription_only:
+                        previous = active_pipeline
+
+                        async def _after_previous() -> None:
+                            with suppress(asyncio.CancelledError):
+                                await previous
+                            await _dispatch_pipeline(frames)
+
+                        active_pipeline = asyncio.create_task(_after_previous())
+                        return
                     logger.bind(tag=_TAG).warning(
                         f"{device_id!r} pipeline busy — dropping {len(frames)} stale frames"
                     )
@@ -993,7 +1061,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
             # 4. Greeting — speak once before entering the audio loop so it
             #    always precedes any voice turn regardless of device timing.
-            if not session_state.has_greeted(device_id):
+            if not hello.transcription_only and not session_state.has_greeted(device_id):
                 session_state.mark_greeted(device_id)
                 await _speak(websocket, _GREETING, persona, config, session_id)
 
@@ -1004,16 +1072,37 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     raise WebSocketDisconnect()
 
                 if "bytes" in msg:
+                    phase, _ = session_state.get_pipeline_status(device_id)
+                    if phase == "idle":
+                        session_state.set_pipeline_status(device_id, "listening")
                     if vad.push(msg["bytes"]):
                         _fire_pipeline(vad.take())
 
                 elif "text" in msg:
                     ctrl = _parse_ctrl(msg["text"] or "")
                     ctrl_type = ctrl.get("type")
-                    if ctrl_type == "listen" and ctrl.get("state") == "stop":
-                        frames = vad.take()
-                        if frames:
-                            await _dispatch_pipeline(frames)
+                    if ctrl_type == "listen":
+                        if ctrl.get("state") == "start":
+                            session_state.set_pipeline_status(device_id, "listening")
+                        elif ctrl.get("state") == "stop":
+                            frames = vad.take()
+                            if active_pipeline and not active_pipeline.done():
+                                await active_pipeline
+                            if frames:
+                                await _dispatch_pipeline(frames)
+                            else:
+                                session_state.set_pipeline_status(device_id, "idle")
+                            if hello.transcription_only:
+                                session_state.set_pipeline_status(device_id, "idle")
+                                await websocket.send_text(
+                                    json.dumps(
+                                        {
+                                            "type": "transcription",
+                                            "session_id": session_id,
+                                            "state": "stopped",
+                                        }
+                                    )
+                                )
                     elif ctrl_type == "mcp" and mcp_client is not None:
                         payload = ctrl.get("payload", {})
                         asyncio.create_task(mcp_client.handle_message(payload))
@@ -1032,7 +1121,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 active_pipeline.cancel()
             if mcp_client is not None:
                 mcp_client.cancel_pending()
-            session_state.set_pipeline_status(device_id, "offline")
+            session_state.set_pipeline_status(device_id, "idle")
             session_state.unregister_session(device_id)
             await store.set_agent_status(device_id, AgentStatus.IDLE)
 

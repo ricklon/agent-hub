@@ -154,8 +154,8 @@ having extra context materially improves output quality. Each skill is a
 `skills/<name>/SKILL.md` file that gets loaded contextually when the work
 is in that area.
 
-The skills below are **planned**, not yet written. Create them as the
-corresponding code areas are touched, following the
+Skills with an existing `skills/<name>/SKILL.md` are available; the others
+below are planned. Create them as the corresponding code areas are touched, following the
 [Anthropic skill format](https://www.anthropic.com/news/agent-skills) used
 elsewhere in Rick's projects.
 

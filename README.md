@@ -200,6 +200,12 @@ dashboard supports optional HTTP Basic auth via
 `AGENT_HUB_SERVER_DASHBOARD_PASSWORD`; leave it empty only for trusted LAN
 development.
 
+To give only Agent Hub (not its Docker host) a private tailnet identity, use
+the `docker-compose.tailnet.yml` sidecar described in the deployment guide.
+It keeps the dashboard on the tailnet and can expose only the authenticated
+device protocol through Tailscale Funnel, so ESP32 firmware needs no Tailscale
+client or direct LAN route to the host.
+
 ### Configuration reference
 
 All settings can be set via environment variables using the pattern
@@ -215,6 +221,8 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_WS_PORT` | `8000` | WebSocket / dashboard port |
 | `AGENT_HUB_SERVER_HTTP_PORT` | `8003` | Device check-in port |
 | `AGENT_HUB_SERVER_DASHBOARD_PORT` | `8001` | Dashboard UI port |
+| `AGENT_HUB_SERVER_HEARTBEAT_INTERVAL_SECONDS` | `60` | Requested device heartbeat cadence |
+| `AGENT_HUB_SERVER_HEARTBEAT_TIMEOUT_SECONDS` | `180` | Time without heartbeat before offline |
 | `AGENT_HUB_SERVER_TIMEZONE` | unset | IANA timezone used for DST-aware device clock offset |
 | `AGENT_HUB_SERVER_TIMEZONE_OFFSET` | `-8` | Fallback fixed UTC offset in hours |
 | `AGENT_HUB_SERVER_DASHBOARD_USERNAME` | `admin` | Dashboard Basic auth username |

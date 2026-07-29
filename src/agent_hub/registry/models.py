@@ -96,7 +96,24 @@ class Agent(Base):
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     firmware_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     websocket_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_heartbeat: Mapped[datetime | None] = mapped_column(nullable=True)
+    health_fault: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reported_activity: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reported_mcp_tools: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     persona: Mapped[Persona] = relationship(back_populates="agents")
+
+    @property
+    def reported_mcp_tools_list(self) -> list[str]:
+        """Return MCP capability names from the latest authenticated heartbeat."""
+        if not self.reported_mcp_tools:
+            return []
+        try:
+            parsed = json.loads(self.reported_mcp_tools)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [name for name in parsed if isinstance(name, str)]

@@ -54,6 +54,12 @@ class TestIssueWebsocketToken:
         # Both reads come back from SQLite, so the tz representation matches.
         assert refreshed.last_seen >= before
 
+    async def test_checkin_records_initial_liveness(self, store):
+        agent = await store.get_or_create_agent(_DEVICE)
+
+        assert agent.last_heartbeat is not None
+        assert agent.reported_activity == "idle"
+
 
 class TestValidateWebsocketToken:
     async def test_empty_token_never_validates(self, store):
@@ -82,6 +88,23 @@ class TestValidateWebsocketToken:
 
 
 class TestTokenPersistence:
+    async def test_initialize_migrates_default_persona_to_packaged_onnx_asr(self, tmp_path):
+        db_path = tmp_path / "legacy-asr.db"
+        first = RegistryStore(db_path=db_path)
+        await first.initialize()
+        await first.get_or_create_agent(_DEVICE)
+        await first.update_persona("hub-default", asr_provider="funasr")
+        await first._engine.dispose()
+
+        second = RegistryStore(db_path=db_path)
+        await second.initialize()
+        try:
+            persona = await second.get_persona_for_device(_DEVICE)
+            assert persona is not None
+            assert persona.asr_provider == "funasr_onnx"
+        finally:
+            await second._engine.dispose()
+
     async def test_token_survives_a_store_restart(self, tmp_path):
         db_path = tmp_path / "restart.db"
         first = RegistryStore(db_path=db_path)

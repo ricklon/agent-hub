@@ -1,0 +1,4 @@
+interface:
+  display_name: "Registry Model"
+  short_description: "Maintain Agent Hub registry lifecycle data"
+  default_prompt: "Use $registry-model to safely update Agent Hub registry persistence and lifecycle behavior."

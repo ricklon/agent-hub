@@ -39,6 +39,7 @@ data/*.jsonl
 
 # Runtime device captures
 data/images/
+data/tailscale/
 
 # Claude Code local session state
 .claude/

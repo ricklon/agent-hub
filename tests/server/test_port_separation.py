@@ -79,6 +79,7 @@ def test_checkin_port_serves_checkin_and_ota(monkeypatch, tmp_path) -> None:
 
     assert "/checkin/" in paths
     assert "/xiaozhi/ota/" in paths
+    assert "/xiaozhi/heartbeat/" in paths
 
 
 def test_collapsed_ports_keep_every_route(monkeypatch, tmp_path) -> None:
@@ -91,6 +92,7 @@ def test_collapsed_ports_keep_every_route(monkeypatch, tmp_path) -> None:
     paths = _routes(apps[8000])
     assert "/checkin/" in paths
     assert "/xiaozhi/ota/" in paths
+    assert "/xiaozhi/heartbeat/" in paths
     assert "/xiaozhi/v1/" in paths
     assert any(p.startswith("/dashboard") for p in paths)
 

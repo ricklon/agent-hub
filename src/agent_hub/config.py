@@ -33,6 +33,8 @@ class ServerConfig:
     dashboard_allowed_origins: str = ""
     allowed_hosts: str = ""
     image_token: str = ""
+    heartbeat_interval_seconds: int = 60
+    heartbeat_timeout_seconds: int = 180
 
 
 @dataclass
@@ -123,6 +125,8 @@ class Settings:
                 dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),
                 allowed_hosts=str(srv.get("allowed_hosts", "")),
                 image_token=str(srv.get("image_token", "")),
+                heartbeat_interval_seconds=int(srv.get("heartbeat_interval_seconds", 60)),
+                heartbeat_timeout_seconds=int(srv.get("heartbeat_timeout_seconds", 180)),
             ),
             registry=RegistryConfig(
                 db_path=str(reg.get("db_path", "data/registry.db")),

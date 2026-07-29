@@ -12,6 +12,8 @@ def test_env_overrides_server_fields_with_underscored_names(monkeypatch, tmp_pat
     monkeypatch.setenv("AGENT_HUB_SERVER_HTTP_PORT", "9003")
     monkeypatch.setenv("AGENT_HUB_SERVER_DASHBOARD_PORT", "9001")
     monkeypatch.setenv("AGENT_HUB_SERVER_TIMEZONE_OFFSET", "-5")
+    monkeypatch.setenv("AGENT_HUB_SERVER_HEARTBEAT_INTERVAL_SECONDS", "60")
+    monkeypatch.setenv("AGENT_HUB_SERVER_HEARTBEAT_TIMEOUT_SECONDS", "180")
 
     settings = Settings.from_dict(load_config(config_path))
 
@@ -19,6 +21,8 @@ def test_env_overrides_server_fields_with_underscored_names(monkeypatch, tmp_pat
     assert settings.server.http_port == 9003
     assert settings.server.dashboard_port == 9001
     assert settings.server.timezone_offset == -5
+    assert settings.server.heartbeat_interval_seconds == 60
+    assert settings.server.heartbeat_timeout_seconds == 180
 
 
 def test_env_overrides_nested_provider_leaf_with_underscore(monkeypatch, tmp_path):
