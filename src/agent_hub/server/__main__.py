@@ -136,7 +136,7 @@ def build_apps() -> dict[int, FastAPI]:
     groups: list[tuple[int, list[APIRouter], bool]] = [
         (
             settings.server.ws_port,
-            [make_ws_router(store, raw_config), make_image_router(raw_config)],
+            [make_ws_router(store, raw_config), make_image_router(raw_config, store)],
             False,
         ),
         (
@@ -201,7 +201,7 @@ def build_app() -> FastAPI:
     _add_dashboard_root(app)
     app.include_router(make_checkin_router(store, settings))
     app.include_router(make_heartbeat_router(store, settings))
-    app.include_router(make_image_router(raw_config))
+    app.include_router(make_image_router(raw_config, store))
     app.include_router(make_ws_router(store, raw_config))
     app.include_router(make_dashboard_router(store, raw_config))
 

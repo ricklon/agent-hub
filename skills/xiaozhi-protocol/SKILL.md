@@ -26,6 +26,7 @@ Preserve deployed-firmware compatibility while keeping Agent Hub a clean reimple
 - Never log enrollment or per-device WebSocket tokens. Query strings can contain the enrollment token, so sanitize access logging when changing it.
 - Accept authenticated liveness reports at `POST /xiaozhi/heartbeat/`. Require `Device-Id` and the per-device WebSocket token as a Bearer header; never accept that token in the URL.
 - Heartbeat bodies use `{"health":"healthy"}` or `{"health":"degraded","fault":"..."}`. Keep activity out of the heartbeat because the voice pipeline owns it.
+- Camera uploads with multipart `purpose=transcript` are capture-only snapshots. Save them as chronological `image` history turns containing an `[image:PATH]` marker, acknowledge immediately, and do not invoke vision inference. Uploads without that purpose retain image-explain behavior.
 
 ## WebSocket and audio constraints
 
