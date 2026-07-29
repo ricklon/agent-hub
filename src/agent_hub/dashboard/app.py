@@ -6,11 +6,15 @@ Server-rendered with HTMX — no SPA build step.
 from __future__ import annotations
 
 import asyncio
+import html
 import re
+import secrets
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
@@ -18,6 +22,8 @@ from agent_hub.registry.store import RegistryStore
 from agent_hub.server import session_state, tool_policy
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 _CSS = """\
 body{font-family:monospace;padding:2rem;background:#0d1117;color:#c9d1d9;margin:0}
@@ -96,7 +102,104 @@ _PAGE = """\
 
 
 def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
-    router = APIRouter()
+    server_config = config.get("server") or {}
+    dashboard_username = str(server_config.get("dashboard_username") or "admin")
+    dashboard_password = str(server_config.get("dashboard_password") or "")
+    image_root = Path(str(server_config.get("dashboard_image_root") or "data/images")).resolve()
+    # Extra hosts allowed as a request Origin, for proxies that rewrite Host.
+    # Accepts a YAML list or a comma-separated string (env override).
+    _raw_origins = server_config.get("dashboard_allowed_origins") or []
+    if isinstance(_raw_origins, str):
+        _raw_origins = [o.strip() for o in _raw_origins.split(",")]
+    extra_allowed_origin_hosts = [
+        urlsplit(o).netloc.lower() or o.lower() for o in _raw_origins if o and str(o).strip()
+    ]
+
+    async def _require_dashboard_auth(request: Request) -> None:
+        """Require HTTP Basic auth when a dashboard password is configured."""
+        if not dashboard_password:
+            return
+
+        auth = request.headers.get("authorization", "")
+        scheme, _, encoded = auth.partition(" ")
+        if scheme.lower() != "basic" or not encoded:
+            raise _auth_error()
+
+        import base64
+        import binascii
+
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            raise _auth_error() from None
+
+        username, sep, password = decoded.partition(":")
+        if not sep or not (
+            secrets.compare_digest(username, dashboard_username)
+            and secrets.compare_digest(password, dashboard_password)
+        ):
+            raise _auth_error()
+
+    def _auth_error() -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Dashboard authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    async def _require_same_origin(request: Request) -> None:
+        """Reject cross-origin state-changing requests (CSRF defence).
+
+        HTTP Basic auth is replayed by the browser on cross-origin form POSTs,
+        and there is no cookie to carry a SameSite flag, so a malicious page
+        could otherwise drive /reboot, /speak, or /inject on a logged-in
+        operator's browser. This runs regardless of whether a dashboard
+        password is set: an unauthenticated LAN dashboard is still worth
+        protecting from drive-by POSTs.
+
+        A missing Origin header is allowed. Browsers always send Origin on
+        cross-origin POSTs, so absence means a non-browser client (curl,
+        scripts/smoke.py), which cannot be a CSRF vector.
+        """
+        if request.method not in _STATE_CHANGING_METHODS:
+            return
+
+        origin = request.headers.get("origin")
+        if not origin:
+            return
+
+        origin_host = urlsplit(origin).netloc.lower()
+        if origin_host and origin_host in _allowed_origin_hosts(request):
+            return
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cross-origin request rejected",
+        )
+
+    def _allowed_origin_hosts(request: Request) -> set[str]:
+        """Hosts an Origin header may name: this request's Host, plus config."""
+        allowed = {h.lower() for h in extra_allowed_origin_hosts}
+        host_header = request.headers.get("host")
+        if host_header:
+            allowed.add(host_header.lower())
+        return allowed
+
+    def _dashboard_image_path(raw_path: str) -> Path | None:
+        requested = Path(raw_path)
+        candidates = (
+            [requested.resolve()]
+            if requested.is_absolute()
+            else [(Path.cwd() / requested).resolve(), (image_root / requested).resolve()]
+        )
+        for candidate in candidates:
+            if candidate.is_relative_to(image_root):
+                return candidate
+        return None
+
+    router = APIRouter(
+        dependencies=[Depends(_require_dashboard_auth), Depends(_require_same_origin)]
+    )
     api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
 
     # ── Static image serving ──────────────────────────────────────────────────
@@ -104,12 +207,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.get("/dashboard/image")
     async def serve_image(path: str) -> Response:
         """Serve a saved device capture JPEG by filesystem path."""
-        from pathlib import Path as _Path
-
-        p = _Path(path)
-        if not p.exists() or p.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+        p = _dashboard_image_path(path)
+        if p is None or not p.exists() or p.suffix.lower() not in (".jpg", ".jpeg", ".png"):
             return Response(status_code=404)
-        return Response(content=p.read_bytes(), media_type="image/jpeg")
+        media_type = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
+        return Response(content=p.read_bytes(), media_type=media_type)
 
     # ── Agents ───────────────────────────────────────────────────────────────
 
@@ -140,19 +242,24 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         import urllib.parse as _up
 
         def _render_content(raw: str) -> str:
-            """Replace [image:path] markers with inline <img> tags."""
+            """Replace [image:path] markers with inline <img> tags.
 
-            def _img(m: re.Match[str]) -> str:
-                enc = _up.quote(m.group(1), safe="")
-                return (
+            Text outside the markers is HTML-escaped. Transcript content is
+            device- and LLM-supplied, so it must not be able to inject markup.
+            """
+            without_internal = re.sub(r"\n?\[volatile-tools:[^\]]+\]", "", raw).strip()
+            parts: list[str] = []
+            last = 0
+            for match in re.finditer(r"\[image:([^\]]+)\]", without_internal):
+                parts.append(html.escape(without_internal[last : match.start()]))
+                enc = _up.quote(match.group(1), safe="")
+                parts.append(
                     f'<br><img src="/dashboard/image?path={enc}" '
                     f'style="max-width:320px;border-radius:6px;margin-top:0.4rem;display:block">'
                 )
-
-            without_internal = re.sub(r"\n?\[volatile-tools:[^\]]+\]", "", raw).strip()
-            text = re.sub(r"\[image:([^\]]+)\]", _img, without_internal)
-            # Escape any remaining HTML in the text portion only
-            return text
+                last = match.end()
+            parts.append(html.escape(without_internal[last:]))
+            return "".join(parts)
 
         turns = await store.load_history(device_id, limit=60)
         if not turns:

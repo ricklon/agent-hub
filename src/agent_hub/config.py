@@ -23,6 +23,15 @@ class ServerConfig:
     websocket: str = ""
     timezone_offset: int = -8
     timezone: str = ""
+    # Hosting controls. Declared here so _apply_env_overrides resolves them as
+    # flat server keys — AGENT_HUB_SERVER_DASHBOARD_PASSWORD → server.dashboard_password
+    # rather than nesting into server.dashboard.password.
+    dashboard_username: str = "admin"
+    dashboard_password: str = ""
+    enrollment_token: str = ""
+    dashboard_image_root: str = "data/images"
+    dashboard_allowed_origins: str = ""
+    image_token: str = ""
 
 
 @dataclass
@@ -106,6 +115,12 @@ class Settings:
                 websocket=str(srv.get("websocket", "")),
                 timezone_offset=int(srv.get("timezone_offset", -8)),
                 timezone=str(srv.get("timezone", "")),
+                dashboard_username=str(srv.get("dashboard_username", "admin")),
+                dashboard_password=str(srv.get("dashboard_password", "")),
+                enrollment_token=str(srv.get("enrollment_token", "")),
+                dashboard_image_root=str(srv.get("dashboard_image_root", "data/images")),
+                dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),
+                image_token=str(srv.get("image_token", "")),
             ),
             registry=RegistryConfig(
                 db_path=str(reg.get("db_path", "data/registry.db")),

@@ -31,3 +31,26 @@ def test_env_overrides_nested_provider_leaf_with_underscore(monkeypatch, tmp_pat
 
     assert config["llm"]["openai"]["api_key"] == "test-key"
     assert config["llm"]["openai"]["base_url"] == "http://example.test/v1"
+
+
+def test_env_overrides_hosting_auth_keys_stay_flat(monkeypatch, tmp_path):
+    """Auth keys are ServerConfig fields, so they must not nest under server.dashboard."""
+    config_path = tmp_path / ".config.yaml"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("AGENT_HUB_SERVER_ENROLLMENT_TOKEN", "enroll-secret")
+    monkeypatch.setenv("AGENT_HUB_SERVER_DASHBOARD_PASSWORD", "hunter2")
+    monkeypatch.setenv("AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT", "/srv/images")
+    monkeypatch.setenv("AGENT_HUB_SERVER_IMAGE_TOKEN", "img-secret")
+
+    config = load_config(config_path)
+
+    assert config["server"]["enrollment_token"] == "enroll-secret"
+    assert config["server"]["dashboard_password"] == "hunter2"
+    assert config["server"]["dashboard_image_root"] == "/srv/images"
+    assert config["server"]["image_token"] == "img-secret"
+    assert "dashboard" not in config["server"]
+    assert "image" not in config["server"]
+
+    settings = Settings.from_dict(config)
+    assert settings.server.enrollment_token == "enroll-secret"
+    assert settings.server.dashboard_password == "hunter2"

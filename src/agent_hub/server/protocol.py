@@ -34,10 +34,15 @@ class CheckinRequest:
     application_version: str = "0.0.0"
     board_type: str = "default"
     ip_address: str = ""
+    enrollment_token: str = ""
 
     @classmethod
     def from_http(
-        cls, headers: dict[str, str], body: dict[str, Any], client_host: str
+        cls,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        client_host: str,
+        query_params: dict[str, str] | None = None,
     ) -> CheckinRequest:
         """Parse a check-in request from HTTP headers and body.
 
@@ -45,6 +50,7 @@ class CheckinRequest:
             headers: Lowercased HTTP request headers.
             body: Parsed JSON body (may be empty dict).
             client_host: Remote IP address of the connecting device.
+            query_params: URL query parameters from the check-in request.
 
         Returns:
             Populated CheckinRequest.
@@ -61,6 +67,16 @@ class CheckinRequest:
 
         app_version = (body.get("application") or {}).get("version", "0.0.0")
         board_type = (body.get("board") or {}).get("type", "default") or "default"
+        query_params = query_params or {}
+        auth_header = headers.get("authorization", "")
+        bearer_token = auth_header.removeprefix("Bearer ").strip()
+        enrollment_token = (
+            headers.get("x-agent-hub-enrollment-token", "")
+            or bearer_token
+            or query_params.get("enrollment_token", "")
+            or str((body.get("agent_hub") or {}).get("enrollment_token", ""))
+            or str(body.get("enrollment_token", ""))
+        ).strip()
 
         return cls(
             device_id=device_id,
@@ -68,6 +84,7 @@ class CheckinRequest:
             application_version=app_version or "0.0.0",
             board_type=board_type,
             ip_address=client_host,
+            enrollment_token=enrollment_token,
         )
 
 
