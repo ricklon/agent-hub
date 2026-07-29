@@ -166,16 +166,19 @@ just run
 uv run python -m agent_hub.server
 ```
 
-Open **`http://localhost:8000/dashboard/`** in a browser. Devices will
+Open **`http://localhost:8001/dashboard/`** in a browser. Devices will
 appear there as they connect.
 
-Three ports are used:
+Three ports are used, and each serves only its own routes:
 
 | Port | Purpose |
 |------|---------|
-| `8000` | WebSocket voice sessions + dashboard |
-| `8001` | Dashboard (same app, alternate port) |
+| `8000` | WebSocket voice sessions + image endpoint |
+| `8001` | Dashboard UI |
 | `8003` | Device check-in / OTA endpoint |
+
+The dashboard answers on `8001` only. It is deliberately not mounted on the
+device ports, so opening those to the LAN does not expose it.
 
 ### Docker (optional)
 

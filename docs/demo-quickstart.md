@@ -97,7 +97,7 @@ AGENT_HUB_LLM_OPENAI_API_KEY=sk-or-your-key-here
 just run
 ```
 
-Open `http://localhost:8000/dashboard/` — you should see the dashboard.
+Open `http://localhost:8001/dashboard/` — you should see the dashboard.
 No devices will appear yet; that's fine. If the server starts without
 errors, you're ready.
 
@@ -136,7 +136,7 @@ just run
 
 Share this URL with the room:
 ```
-http://192.168.1.42:8000/dashboard/
+http://192.168.1.42:8001/dashboard/
 ```
 
 Anyone on the same WiFi can watch the dashboard as devices connect and
