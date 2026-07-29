@@ -83,6 +83,23 @@ class TestCheckinPost:
         assert agent is not None
         assert agent.device_id == "11:22:33:44:55:66"
 
+    async def test_post_stores_and_refreshes_board_name(self, client, store):
+        headers = {"device-id": "11:22:33:44:55:77", "client-id": "c"}
+        await client.post(
+            "/checkin/",
+            headers=headers,
+            json={"board": {"type": "df-k10", "name": "UNIHIKER K10"}},
+        )
+        await client.post(
+            "/checkin/",
+            headers=headers,
+            json={"board": {"type": "df-k10", "name": "Classroom K10"}},
+        )
+
+        agent = await store.get_agent("11:22:33:44:55:77")
+        assert agent is not None
+        assert agent.label == "Classroom K10"
+
     async def test_post_missing_device_id_returns_400(self, client):
         resp = await client.post(
             "/checkin/",
@@ -159,6 +176,11 @@ class TestCheckinPost:
         assert resp.status_code == 200
         token = resp.json()["websocket"]["token"]
         assert token
+        heartbeat = resp.json()["heartbeat"]
+        assert heartbeat["url"].endswith("/xiaozhi/heartbeat/")
+        assert heartbeat["token"] == token
+        assert heartbeat["interval"] == 60
+        assert heartbeat["enabled"] is True
         assert await store.validate_websocket_token("AA:BB:CC:DD:EE:FF", token)
 
     async def test_enrollment_query_issues_websocket_token(self, auth_client):

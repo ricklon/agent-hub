@@ -48,6 +48,17 @@ docker-build:
 docker-up:
     docker compose up
 
+# Public device protocol through Funnel; private dashboard through Serve.
+tailnet-up:
+    docker compose -f docker-compose.yml -f docker-compose.tailnet.yml up -d
+
+tailnet-status:
+    docker compose -f docker-compose.yml -f docker-compose.tailnet.yml exec tailscale tailscale status
+    docker compose -f docker-compose.yml -f docker-compose.tailnet.yml exec tailscale tailscale serve status
+
+tailnet-down:
+    docker compose -f docker-compose.yml -f docker-compose.tailnet.yml down
+
 deploy-edge:
     ansible-playbook deploy-agent-hub.yml
 

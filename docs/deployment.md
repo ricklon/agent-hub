@@ -89,14 +89,81 @@ reverse proxy.
 
 Use this when the server is at home, in a classroom, or in a makerspace.
 
-1. Install Tailscale on the Docker host.
-2. Keep `docker-compose.yml` as-is for LAN access.
-3. Use host firewall rules to limit `8001` to the Tailscale interface if the
-   LAN is not fully trusted. This does isolate the dashboard, provided `8001`
-   is not also configured as the WebSocket or check-in port.
-4. Browse to `http://<tailscale-hostname>:8001/dashboard/`.
-5. Keep device check-in URLs on LAN IPs unless the devices themselves can
-   reach the tailnet.
+### App-only sidecar with public device access
+
+This gives Agent Hub its own tailnet node. It does not add the Docker host to
+the tailnet or publish Agent Hub ports on the host. Tailscale Funnel exposes
+only the device protocol publicly; the dashboard remains tailnet-private.
+
+1. In the Tailscale admin console, create a one-off, non-ephemeral auth key.
+   Put it temporarily in the gitignored `.env` file for the first start:
+
+```sh
+TS_AUTHKEY=tskey-auth-...
+TAILSCALE_HOSTNAME=agent-hub
+AGENT_HUB_PUBLIC_HOST=agent-hub.<tailnet-name>.ts.net
+AGENT_HUB_SERVER_ENROLLMENT_TOKEN=change-this-long-random-token
+AGENT_HUB_SERVER_IMAGE_TOKEN=change-this-other-long-random-token
+```
+
+2. Start the sidecar deployment:
+
+```sh
+just tailnet-up
+just tailnet-status
+```
+
+After the node successfully joins, remove `TS_AUTHKEY` from `.env`. The node
+identity persists in `data/tailscale/`, and `TS_AUTH_ONCE=true` reuses it on
+later starts. The auth key is not needed again unless that state is deleted.
+
+3. Enable Funnel for this node or its tag in the Tailscale policy. Funnel
+   requires the `funnel` node attribute and HTTPS support in the tailnet.
+
+4. Configure the device with this OTA/check-in URL, substituting the same
+   enrollment token stored in `.env`:
+
+```text
+https://agent-hub.<tailnet-name>.ts.net/xiaozhi/ota/?enrollment_token=<token>
+```
+
+The public HTTPS endpoint routes only `/checkin/`, `/xiaozhi/ota/`,
+`/xiaozhi/heartbeat/`, and `/xiaozhi/v1/`. After authenticated check-in, Agent Hub advertises
+`wss://agent-hub.<tailnet-name>.ts.net/xiaozhi/v1/` and issues the device a
+per-device WebSocket bearer token.
+
+Devices send that bearer token in the `Authorization` header of
+`POST /xiaozhi/heartbeat/` every 60 seconds. Never put the per-device token in
+a URL or query string. Agent Hub marks the device offline after 180 seconds
+without a heartbeat or live voice session.
+
+5. Open the private dashboard from a device on the tailnet:
+
+```text
+https://agent-hub.<tailnet-name>.ts.net:8443/dashboard/
+```
+
+Port `443` is Funnel/public. Port `8443` is Serve/tailnet-only. The dashboard
+is never routed on the public port.
+
+Tailscale state persists at `data/tailscale/`, so the app keeps its node
+identity across container replacement. `just tailnet-down` stops the
+deployment without deleting that identity.
+
+If `server.allowed_hosts` is configured, include the full `*.ts.net` name that
+operators use. Keep dashboard Basic auth enabled if untrusted people or shared
+devices are members of the tailnet.
+
+This override removes the base Compose port list. The ESP32 reaches the
+sidecar's public Funnel URL just as it reached `api.tenclass.net`; it does not
+need Tailscale software or LAN reachability to the laptop.
+
+### Host-installed alternative
+
+If the Docker host is already intentionally on the tailnet, the normal Compose
+deployment is reachable at `http://<host-magicdns-name>:8001/dashboard/`.
+Host-level `tailscale serve http://127.0.0.1:8001` can add HTTPS, but it exposes
+the service through the host's identity rather than an app-specific node.
 
 For xiaozhi firmware on the same LAN:
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import glob
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,17 @@ def dashboard_app(store: RegistryStore, dashboard_config: dict[str, object]) -> 
     app = FastAPI()
     app.include_router(make_dashboard_router(store, dashboard_config))
     return app
+
+
+@pytest.fixture()
+def no_serial_ports(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide serial ports from the reboot handler.
+
+    /reboot falls back to writing !reboot over the first /dev/ttyACM* it finds.
+    On a developer machine with a board attached that opens the real port and
+    blocks, so any test that lets the handler run must stub discovery out.
+    """
+    monkeypatch.setattr(glob, "glob", lambda _pattern: [])
 
 
 @pytest.fixture()
@@ -118,7 +130,9 @@ async def test_state_change_rejects_cross_origin_post(dashboard_client: AsyncCli
     assert resp.status_code == 403
 
 
-async def test_state_change_allows_same_origin_post(dashboard_client: AsyncClient) -> None:
+async def test_state_change_allows_same_origin_post(
+    dashboard_client: AsyncClient, no_serial_ports: None
+) -> None:
     """The dashboard's own HTMX forms send a matching Origin."""
     resp = await dashboard_client.post(
         "/dashboard/agents/AA:BB/reboot",
@@ -131,7 +145,9 @@ async def test_state_change_allows_same_origin_post(dashboard_client: AsyncClien
     assert resp.status_code != 403
 
 
-async def test_state_change_allows_missing_origin(dashboard_client: AsyncClient) -> None:
+async def test_state_change_allows_missing_origin(
+    dashboard_client: AsyncClient, no_serial_ports: None
+) -> None:
     """Non-browser clients (curl, scripts/smoke.py) send no Origin and must still work.
 
     Browsers always send Origin on cross-origin POSTs, so absence is not a CSRF vector.
@@ -174,7 +190,9 @@ async def test_origin_check_applies_without_dashboard_password(
     assert resp.status_code == 403
 
 
-async def test_configured_extra_origin_is_allowed(store: RegistryStore, tmp_path: Path) -> None:
+async def test_configured_extra_origin_is_allowed(
+    store: RegistryStore, tmp_path: Path, no_serial_ports: None
+) -> None:
     """A proxy that rewrites Host can be accommodated via config."""
     app = FastAPI()
     app.include_router(
@@ -225,7 +243,7 @@ async def test_configured_allowlist_is_exhaustive(store: RegistryStore, tmp_path
 
 
 async def test_allowed_hosts_feeds_the_origin_allowlist(
-    store: RegistryStore, tmp_path: Path
+    store: RegistryStore, tmp_path: Path, no_serial_ports: None
 ) -> None:
     """server.allowed_hosts is a valid Origin source, not just a Host filter."""
     app = FastAPI()
@@ -267,7 +285,7 @@ async def test_wildcard_allowlist_entry_does_not_disable_the_check(
 
 
 async def test_unconfigured_fallback_still_allows_same_origin(
-    store: RegistryStore, tmp_path: Path
+    store: RegistryStore, tmp_path: Path, no_serial_ports: None
 ) -> None:
     """Zero-config classroom setups must keep working."""
     app = FastAPI()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -63,6 +64,10 @@ class RegistryStore:
             "ALTER TABLE personas ADD COLUMN mcp_tools_allowlist TEXT",
             "ALTER TABLE personas ADD COLUMN memory_window INTEGER DEFAULT 20 NOT NULL",
             "ALTER TABLE agents ADD COLUMN websocket_token VARCHAR(128)",
+            "ALTER TABLE agents ADD COLUMN last_heartbeat DATETIME",
+            "ALTER TABLE agents ADD COLUMN health_fault TEXT",
+            "ALTER TABLE agents ADD COLUMN reported_activity VARCHAR(32)",
+            "ALTER TABLE agents ADD COLUMN reported_mcp_tools TEXT",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
@@ -84,15 +89,27 @@ class RegistryStore:
             )
             await session.commit()
             logger.info(f"Seeded persona '{_DEFAULT_PERSONA_NAME}'")
-        elif persona.system_prompt == _LEGACY_DEFAULT_SYSTEM_PROMPT:
-            persona.system_prompt = _DEFAULT_SYSTEM_PROMPT
-            await session.commit()
-            logger.info(f"Updated persona '{_DEFAULT_PERSONA_NAME}' prompt")
+        else:
+            updates: list[str] = []
+            if persona.system_prompt == _LEGACY_DEFAULT_SYSTEM_PROMPT:
+                persona.system_prompt = _DEFAULT_SYSTEM_PROMPT
+                updates.append("prompt")
+            # Early Agent Hub databases seeded the default persona with the
+            # native FunASR provider. Container deployments package the ONNX
+            # model, so retaining that legacy value leaves a connected device
+            # listening while every transcription silently fails.
+            if persona.asr_provider in {"funasr", "fun_local"}:
+                persona.asr_provider = "funasr_onnx"
+                updates.append("ASR provider")
+            if updates:
+                await session.commit()
+                logger.info(f"Updated persona '{_DEFAULT_PERSONA_NAME}' {', '.join(updates)}")
 
     async def get_or_create_agent(
         self,
         device_id: str,
         kind: AgentKind = AgentKind.XIAOZHI,
+        label: str | None = None,
         ip_address: str | None = None,
         firmware_version: str | None = None,
     ) -> Agent:
@@ -104,6 +121,7 @@ class RegistryStore:
         Args:
             device_id: MAC address or UUID identifying the device.
             kind: Agent kind; defaults to XIAOZHI.
+            label: Human-readable device name reported by the firmware.
             ip_address: Reported IP address from the check-in request.
             firmware_version: Reported firmware version string.
 
@@ -111,6 +129,7 @@ class RegistryStore:
             The Agent row, newly created or with last_seen updated.
         """
         async with self._sessions() as session:
+            now = datetime.now(UTC)
             result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             agent = result.scalar_one_or_none()
 
@@ -122,16 +141,25 @@ class RegistryStore:
                 agent = Agent(
                     kind=kind.value,
                     device_id=device_id,
+                    label=label,
                     persona_id=default_persona.id,
                     ip_address=ip_address,
                     firmware_version=firmware_version,
                     status=AgentStatus.DISCOVERED.value,
-                    last_seen=datetime.now(UTC),
+                    last_heartbeat=now,
+                    reported_activity="idle",
+                    last_seen=now,
                 )
                 session.add(agent)
                 logger.info(f"Registered new agent {device_id!r} → '{_DEFAULT_PERSONA_NAME}'")
             else:
-                agent.last_seen = datetime.now(UTC)
+                # A valid check-in is positive proof that the device is alive,
+                # even before its periodic heartbeat loop starts.
+                agent.last_heartbeat = now
+                agent.reported_activity = "idle"
+                agent.last_seen = now
+                if label:
+                    agent.label = label
                 if ip_address:
                     agent.ip_address = ip_address
                 if firmware_version:
@@ -139,6 +167,44 @@ class RegistryStore:
 
             await session.commit()
             return agent
+
+    async def record_authenticated_heartbeat(
+        self,
+        device_id: str,
+        token: str,
+        fault: str | None,
+        activity: str,
+        mcp_tools: list[str],
+    ) -> bool:
+        """Record an authenticated liveness heartbeat and optional fault.
+
+        Args:
+            device_id: Device sending the heartbeat.
+            token: Per-device token issued during check-in.
+            fault: Current device fault, or None when healthy.
+            activity: Current device activity reported independently of health.
+            mcp_tools: Device capability names available when its control channel is open.
+
+        Returns:
+            True when the device and token are valid; otherwise False.
+        """
+        if not token:
+            return False
+        async with self._sessions() as session:
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
+            agent = result.scalar_one_or_none()
+            if agent is None or not agent.websocket_token:
+                return False
+            if not secrets.compare_digest(agent.websocket_token, token):
+                return False
+            now = datetime.now(UTC)
+            agent.last_heartbeat = now
+            agent.last_seen = now
+            agent.health_fault = fault
+            agent.reported_activity = activity
+            agent.reported_mcp_tools = json.dumps(mcp_tools)
+            await session.commit()
+            return True
 
     async def issue_websocket_token(self, device_id: str) -> str:
         """Create or replace the WebSocket bearer token for device_id.

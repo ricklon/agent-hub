@@ -106,6 +106,28 @@ class TestCheckinResponse:
         data = resp.to_json()
         assert data["websocket"]["token"] == "session-secret"
 
+    def test_heartbeat_contract_is_serialized_when_configured(self):
+        """Regression: MCU firmware discovers heartbeat settings at check-in."""
+        resp = CheckinResponse(
+            websocket_url="wss://hub.example/xiaozhi/v1/",
+            token="session-secret",
+            heartbeat_url="https://hub.example/xiaozhi/heartbeat/",
+            heartbeat_interval_seconds=45,
+        )
+
+        assert resp.to_json()["heartbeat"] == {
+            "enabled": True,
+            "url": "https://hub.example/xiaozhi/heartbeat/",
+            "token": "session-secret",
+            "interval": 45,
+        }
+
+    def test_heartbeat_contract_is_omitted_when_not_configured(self):
+        """Backward compatibility: generic responses need no heartbeat block."""
+        resp = CheckinResponse(websocket_url="ws://x/")
+
+        assert "heartbeat" not in resp.to_json()
+
 
 class TestClientHello:
     def test_parse_full_hello(self):
@@ -122,6 +144,13 @@ class TestClientHello:
         hello = ClientHello.from_json({})
         assert hello.audio_params.format == "opus"
         assert hello.supports_mcp is False
+        assert hello.transcription_only is False
+
+    def test_parse_transcription_only_capability(self):
+        hello = ClientHello.from_json({"features": {"mcp": True, "transcription": True}})
+
+        assert hello.supports_mcp is True
+        assert hello.transcription_only is True
 
     def test_welcome_required_fields(self):
         """ServerWelcome sends server TTS params (not device params) and transport field."""

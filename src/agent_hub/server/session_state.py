@@ -11,10 +11,13 @@ import asyncio
 import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 JsonDict = dict[str, Any]
 SendJson = Callable[[JsonDict], Awaitable[None]]
+DeviceHealth = Literal["healthy", "degraded", "offline"]
+DeviceActivity = Literal["idle", "listening", "thinking", "speaking", "paused"]
 
 
 @dataclass
@@ -273,3 +276,45 @@ def get_pipeline_age(device_id: str) -> float:
 
 def get_prev_pipeline_phase(device_id: str) -> str:
     return _pipeline_prev.get(device_id, "idle")
+
+
+def get_device_health(
+    device_id: str,
+    last_heartbeat: datetime | None,
+    health_fault: str | None,
+    timeout_seconds: int,
+    *,
+    now: datetime | None = None,
+) -> DeviceHealth:
+    """Derive health from heartbeat freshness, faults, and a live voice socket."""
+    alive = is_connected(device_id)
+    if last_heartbeat is not None:
+        heartbeat = last_heartbeat
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=UTC)
+        reference = now or datetime.now(UTC)
+        alive = alive or (reference - heartbeat).total_seconds() <= timeout_seconds
+    if not alive:
+        return "offline"
+    phase, _ = get_pipeline_status(device_id)
+    if health_fault or phase == "overloaded":
+        return "degraded"
+    return "healthy"
+
+
+def get_device_activity(device_id: str, reported_activity: str | None = None) -> DeviceActivity:
+    """Map internal pipeline state to the operator-facing activity dimension."""
+    phase, _ = get_pipeline_status(device_id)
+    activity = {
+        "transcribing": "listening",
+        "listening": "listening",
+        "thinking": "thinking",
+        "speaking": "speaking",
+        "paused": "paused",
+        "overloaded": "paused",
+    }.get(phase)
+    if activity is not None:
+        return activity  # type: ignore[return-value]
+    if reported_activity in {"idle", "listening", "thinking", "speaking", "paused"}:
+        return reported_activity  # type: ignore[return-value]
+    return "idle"

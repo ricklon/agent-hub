@@ -126,6 +126,10 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     server_config = config.get("server") or {}
     dashboard_username = str(server_config.get("dashboard_username") or "admin")
     dashboard_password = str(server_config.get("dashboard_password") or "")
+    heartbeat_timeout_seconds = max(
+        1,
+        int(server_config.get("heartbeat_timeout_seconds") or 180),
+    )
     image_root = Path(str(server_config.get("dashboard_image_root") or "data/images")).resolve()
     # Hosts allowed as a request Origin on state changes. Drawn from both
     # dashboard_allowed_origins (dashboard-specific) and allowed_hosts (the
@@ -258,13 +262,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(request: Request) -> HTMLResponse:
-        rows = await _render_agent_rows(store)
+        rows = await _render_agent_rows(store, heartbeat_timeout_seconds)
         body = _agent_table(rows)
         return HTMLResponse(_PAGE.format(css=_full_css, body=body))
 
     @router.get("/dashboard/agents", response_class=HTMLResponse)
     async def dashboard_agents_partial(request: Request) -> HTMLResponse:
-        rows = await _render_agent_rows(store)
+        rows = await _render_agent_rows(store, heartbeat_timeout_seconds)
         return HTMLResponse(_agent_table(rows))
 
     # ── Project docs ─────────────────────────────────────────────────────────
@@ -323,25 +327,22 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.get("/dashboard/agents/{device_id}/pipeline_status", response_class=HTMLResponse)
     async def agent_pipeline_status(device_id: str) -> HTMLResponse:
 
-        phase, text = session_state.get_pipeline_status(device_id)
-        # Debounce idle: hold the previous active phase for 1.5s so brief
-        # failed transcriptions don't cause idle↔transcribing flickering.
-        if phase == "idle" and session_state.get_pipeline_age(device_id) < 1.5:
-            prev = session_state.get_prev_pipeline_phase(device_id)
-            if prev not in ("idle", "offline"):
-                phase = prev
+        _phase, text = session_state.get_pipeline_status(device_id)
+        agent = await store.get_agent(device_id)
+        activity = session_state.get_device_activity(
+            device_id, agent.reported_activity if agent else None
+        )
         phase_styles = {
-            "idle": ("color:#6e7681", "idle"),
-            "transcribing": ("color:#d29922", "▶ transcribing…"),
-            "thinking": ("color:#58a6ff", "🤔 thinking…"),
-            "speaking": ("color:#3fb950", "🔊 speaking"),
-            "overloaded": ("color:#f85149", "⚠ overloaded"),
-            "offline": ("color:#6e7681", "offline"),
+            "idle": ("color:#6e7681", "Idle"),
+            "listening": ("color:#d29922", "Listening"),
+            "thinking": ("color:#58a6ff", "Thinking"),
+            "speaking": ("color:#3fb950", "Speaking"),
+            "paused": ("color:#d29922", "Paused"),
         }
-        style, label = phase_styles.get(phase, ("color:#6e7681", phase))
+        style, label = phase_styles[activity]
         snippet = (
             f' <span style="color:#8b949e;font-size:0.8rem">{text[:80]}</span>'
-            if text and phase not in ("idle", "offline", "speaking")
+            if text and activity not in ("idle", "speaking")
             else ""
         )
         return HTMLResponse(f'<span style="{style}">{label}</span>{snippet}')
@@ -352,11 +353,20 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         mcp_client = session_state.get_mcp_client(device_id)
         agent = await store.get_agent(device_id)
         db_status = agent.status if agent else "unknown"
+        health = session_state.get_device_health(
+            device_id,
+            agent.last_heartbeat if agent else None,
+            agent.health_fault if agent else None,
+            heartbeat_timeout_seconds,
+        )
+        activity = session_state.get_device_activity(
+            device_id, agent.reported_activity if agent else None
+        )
 
         if ws_connected:
             ws_html = '<span style="color:#3fb950">● connected</span>'
         else:
-            ws_html = '<span style="color:#6e7681">○ offline</span>'
+            ws_html = '<span style="color:#6e7681">○ closed (wake-word standby)</span>'
 
         if mcp_client and mcp_client.ready:
             tool_names = ", ".join(mcp_client.tools.keys())
@@ -372,14 +382,15 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         else:
             mcp_html = '<span style="color:#6e7681">○ —</span>'
 
-        status_color = {"active": "#3fb950", "idle": "#d29922"}.get(
-            str(db_status).lower(), "#6e7681"
-        )
+        health_color = {"healthy": "#3fb950", "degraded": "#d29922", "offline": "#6e7681"}[health]
         return HTMLResponse(f"""\
 <table style="width:auto;margin-bottom:0.5rem">
-  <tr><th style="width:7rem">WebSocket</th><td>{ws_html}</td></tr>
+  <tr><th style="width:7rem">Health</th>
+      <td><span style="color:{health_color}">{health.title()}</span></td></tr>
+  <tr><th>Activity</th><td>{activity.title()}</td></tr>
+  <tr><th>Voice transport</th><td>{ws_html}</td></tr>
   <tr><th>MCP</th><td>{mcp_html}</td></tr>
-  <tr><th>Agent status</th><td><span style="color:{status_color}">{db_status}</span></td></tr>
+  <tr><th>Registration</th><td>{db_status}</td></tr>
 </table>""")
 
     @router.get("/dashboard/agents/{device_id}/status.json")
@@ -392,7 +403,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         persona = await store.get_persona_for_device(device_id)
         dev = session_state.get_state(device_id)
         mcp_client = session_state.get_mcp_client(device_id)
-        discovered_tools = _discovered_mcp_tools(mcp_client, dev.mcp_tools)
+        discovered_tools = _discovered_mcp_tools(
+            mcp_client, dev.mcp_tools or agent.reported_mcp_tools_list
+        )
         discovered_tool_names = [tool["name"] for tool in discovered_tools]
         persona_allowlist = persona.mcp_tools_allowlist_list if persona else None
         effective_tools = tool_policy.allowed_device_tools(
@@ -400,15 +413,26 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             persona_allowlist,
         )
         pipeline_phase, pipeline_text = session_state.get_pipeline_status(device_id)
+        health = session_state.get_device_health(
+            device_id,
+            agent.last_heartbeat,
+            agent.health_fault,
+            heartbeat_timeout_seconds,
+        )
+        activity = session_state.get_device_activity(device_id, agent.reported_activity)
 
         return {
             "device_id": agent.device_id,
             "kind": agent.kind,
             "status": agent.status,
+            "health": health,
+            "activity": activity,
             "connected": session_state.is_connected(device_id),
             "ip_address": agent.ip_address,
             "firmware_version": agent.firmware_version,
             "last_seen": agent.last_seen.isoformat() if agent.last_seen else None,
+            "last_heartbeat": (agent.last_heartbeat.isoformat() if agent.last_heartbeat else None),
+            "health_fault": agent.health_fault,
             "persona": _persona_status(persona),
             "mcp": {
                 "connected": mcp_client is not None,
@@ -502,7 +526,10 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         import agent_hub.skills as _skills
 
         device_tool_badges = (
-            "".join(f'<span class="badge badge-tool">{t}</span>' for t in dev.mcp_tools)
+            "".join(
+                f'<span class="badge badge-tool">{html.escape(t)}</span>'
+                for t in (dev.mcp_tools or agent.reported_mcp_tools_list)
+            )
             or '<span style="color:#6e7681">none discovered yet</span>'
         )
         skill_badges = "".join(
@@ -586,8 +613,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
         body = f"""\
 <p><a href="/dashboard/" style="color:#58a6ff">← agents</a></p>
-<h2>{device_id}</h2>
+<h2>{html.escape(agent.label or device_id)}</h2>
 <p style="color:#8b949e;margin-top:-0.5rem">
+  Device ID: {html.escape(device_id)} &nbsp;·&nbsp;
   IP: {agent.ip_address or "—"} &nbsp;·&nbsp;
   Firmware: {agent.firmware_version or "—"} &nbsp;·&nbsp;
   Last seen: {agent.last_seen.strftime("%H:%M:%S") if agent.last_seen else "—"}
@@ -1020,7 +1048,7 @@ def _agent_table(rows: str) -> str:
 <div hx-get="/dashboard/agents" hx-trigger="every 5s" hx-swap="outerHTML">
 <table>
 <thead><tr>
-  <th>device-id</th><th>connection</th><th>persona / model</th>
+  <th>device</th><th>health · activity</th><th>persona / model</th>
   <th>tools</th><th>latency (last / avg)</th>
   <th>ip</th><th>fw</th><th>last seen</th>
 </tr></thead>
@@ -1146,7 +1174,7 @@ def _project_docs() -> str:
 </div>"""
 
 
-async def _render_agent_rows(store: RegistryStore) -> str:
+async def _render_agent_rows(store: RegistryStore, heartbeat_timeout_seconds: int) -> str:
     try:
         rows_data = await store.list_agents_with_personas()
     except Exception as exc:
@@ -1162,6 +1190,11 @@ async def _render_agent_rows(store: RegistryStore) -> str:
 
     rows = []
     for agent, persona in rows_data:
+        device_id = html.escape(agent.device_id)
+        label = html.escape(agent.label or agent.device_id)
+        device_cell = f'<a href="/dashboard/agents/{device_id}" style="color:#58a6ff">{label}</a>'
+        if agent.label:
+            device_cell += f'<span class="model">{device_id}</span>'
         last_seen = agent.last_seen.strftime("%H:%M:%S") if agent.last_seen else "—"
         dev = session_state.get_state(agent.device_id)
 
@@ -1173,31 +1206,42 @@ async def _render_agent_rows(store: RegistryStore) -> str:
         model_line = f'<span class="model">{model}</span>' if model else ""
 
         # Tools cell — device MCP badges + skill badges
-        tool_badges = "".join(f'<span class="badge badge-tool">{t}</span>' for t in dev.mcp_tools)
+        device_tools = dev.mcp_tools or agent.reported_mcp_tools_list
+        tool_badges = "".join(
+            f'<span class="badge badge-tool">{html.escape(t)}</span>' for t in device_tools
+        )
         skill_badges = "".join(f'<span class="badge badge-skill">{s}</span>' for s in skill_names)
         tools_cell = (tool_badges + skill_badges) or '<span style="color:#6e7681">—</span>'
 
-        # Connection + MCP status cell
+        # Health and activity are independent from the on-demand voice socket.
         ws_connected = session_state.is_connected(agent.device_id)
         mcp_client = session_state.get_mcp_client(agent.device_id)
-        if ws_connected and mcp_client and mcp_client.ready:
-            conn_cell = (
-                '<span style="color:#3fb950">● WS + MCP ready</span>'
-                f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
-                f"{len(mcp_client.tools)} tools · {agent.status}</div>"
-            )
-        elif ws_connected:
-            conn_cell = (
-                '<span style="color:#d29922">◑ WS connected</span>'
-                f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
-                f"MCP pending · {agent.status}</div>"
-            )
-        else:
-            conn_cell = (
-                '<span style="color:#6e7681">○ offline</span>'
-                f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">'
-                f"{agent.status}</div>"
-            )
+        health = session_state.get_device_health(
+            agent.device_id,
+            agent.last_heartbeat,
+            agent.health_fault,
+            heartbeat_timeout_seconds,
+        )
+        activity = session_state.get_device_activity(agent.device_id, agent.reported_activity)
+        health_color = {
+            "healthy": "#3fb950",
+            "degraded": "#d29922",
+            "offline": "#6e7681",
+        }[health]
+        transport = "voice connected" if ws_connected else "wake-word standby"
+        if mcp_client and mcp_client.ready:
+            transport += f" · {len(mcp_client.tools)} MCP tools"
+        fault_detail = (
+            f'<div style="font-size:0.75rem;color:#d29922">{html.escape(agent.health_fault)}</div>'
+            if agent.health_fault and health == "degraded"
+            else ""
+        )
+        conn_cell = (
+            f'<span style="color:{health_color}">● {health.title()}</span>'
+            f" · {activity.title()}"
+            f'<div style="font-size:0.75rem;color:#6e7681;margin-top:0.1rem">{transport}</div>'
+            f"{fault_detail}"
+        )
 
         # Latency cell
         if dev.turns > 0:
@@ -1215,7 +1259,7 @@ async def _render_agent_rows(store: RegistryStore) -> str:
 
         rows.append(f"""\
 <tr>
-  <td><a href="/dashboard/agents/{agent.device_id}" style="color:#58a6ff">{agent.device_id}</a></td>
+  <td>{device_cell}</td>
   <td>{conn_cell}</td>
   <td>{persona_name}{model_line}</td>
   <td>{tools_cell}</td>

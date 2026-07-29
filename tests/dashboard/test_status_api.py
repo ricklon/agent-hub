@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import FastAPI
@@ -35,6 +36,57 @@ async def _noop_send_json(payload: dict[str, Any]) -> None:
     _ = payload
 
 
+def test_health_and_activity_are_independent_dimensions() -> None:
+    device_id = "AA:BB:CC:DD:EE:07"
+    now = datetime.now(UTC)
+    expected_activities = {
+        "idle": "idle",
+        "listening": "listening",
+        "transcribing": "listening",
+        "thinking": "thinking",
+        "speaking": "speaking",
+        "paused": "paused",
+    }
+    for phase, expected in expected_activities.items():
+        session_state.set_pipeline_status(device_id, phase)
+        assert session_state.get_device_activity(device_id) == expected
+        assert session_state.get_device_health(device_id, now, None, 180, now=now) == "healthy"
+
+    assert (
+        session_state.get_device_health(
+            device_id,
+            now,
+            "microphone unavailable",
+            180,
+            now=now,
+        )
+        == "degraded"
+    )
+    assert session_state.get_device_activity(device_id) == "paused"
+    stale = now - timedelta(seconds=181)
+    assert session_state.get_device_health(device_id, stale, None, 180, now=now) == "offline"
+
+
+async def test_agents_list_displays_escaped_device_label(store: RegistryStore) -> None:
+    device_id = "AA:BB:CC:DD:EE:06"
+    await store.get_or_create_agent(device_id, label="UNIHIKER <K10>")
+    token = await store.issue_websocket_token(device_id)
+    assert await store.record_authenticated_heartbeat(device_id, token, None, "idle", [])
+    app = FastAPI()
+    app.include_router(make_router(store, {}))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/dashboard/agents")
+
+    assert resp.status_code == 200
+    assert "UNIHIKER &lt;K10&gt;" in resp.text
+    assert "UNIHIKER <K10>" not in resp.text
+    assert device_id in resp.text
+    assert "Healthy" in resp.text
+    assert "Idle" in resp.text
+    assert "offline" not in resp.text.lower()
+
+
 async def test_status_json_reports_capabilities_and_safe_effective_tools(
     store: RegistryStore,
 ) -> None:
@@ -64,6 +116,8 @@ async def test_status_json_reports_capabilities_and_safe_effective_tools(
     data = resp.json()
     assert data["device_id"] == device_id
     assert data["connected"] is True
+    assert data["health"] == "healthy"
+    assert data["activity"] == "idle"
     assert data["persona"]["name"] == "hub-default"
     assert data["persona"]["asr_provider"] == "funasr_onnx"
     assert data["mcp"]["connected"] is True

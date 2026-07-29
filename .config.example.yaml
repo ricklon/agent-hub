@@ -10,6 +10,10 @@ server:
   # Optional shared secret required during device check-in.
   # Leave empty for trusted LAN/classroom auto-registration.
   enrollment_token: ""
+  # Devices should heartbeat at this cadence. The dashboard marks a device
+  # offline when no heartbeat or live voice session is seen before the timeout.
+  heartbeat_interval_seconds: 60
+  heartbeat_timeout_seconds: 180
   # Directory the dashboard may read captured device images from.
   dashboard_image_root: "data/images"
   # Extra origins allowed to submit dashboard forms, comma-separated.

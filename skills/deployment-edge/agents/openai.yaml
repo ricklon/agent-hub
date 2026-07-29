@@ -1,0 +1,4 @@
+interface:
+  display_name: "Edge Deployment"
+  short_description: "Deploy Agent Hub safely at the network edge"
+  default_prompt: "Use $deployment-edge to expose Agent Hub securely through Tailscale."

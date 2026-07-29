@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
+from agent_hub.providers.asr import Transcript
 from agent_hub.providers.llm import LLMProvider
 from agent_hub.server.ws_session import (
     _asr_realtime_factor,
     _DelayedTurnCue,
     _history_for_llm,
+    _run_transcription_turn,
     _strip_history_markers,
     _take_speakable_chunks,
 )
@@ -93,6 +97,7 @@ async def test_delayed_turn_cue_respects_specific_cue() -> None:
 
 def test_history_for_llm_skips_volatile_assistant_answers() -> None:
     history = [
+        {"role": "transcript", "content": "meeting notes only"},
         {"role": "user", "content": "what time is it?"},
         {
             "role": "assistant",
@@ -115,3 +120,56 @@ def test_strip_history_markers_removes_internal_metadata() -> None:
 
 def test_asr_realtime_factor_uses_audio_duration() -> None:
     assert _asr_realtime_factor(asr_ms=1500, frame_count=50, frame_duration_ms=20) == 1.5
+
+
+async def test_transcription_turn_sends_and_persists_text_without_llm_or_tts(monkeypatch) -> None:
+    sent: list[dict[str, str]] = []
+    saved: list[tuple[str, str, str]] = []
+
+    class _WebSocket:
+        async def send_text(self, payload: str) -> None:
+            sent.append(json.loads(payload))
+
+    class _Store:
+        async def append_history(self, device_id: str, role: str, content: str) -> None:
+            saved.append((device_id, role, content))
+
+    class _Decoder:
+        def __init__(self, *_args) -> None:
+            pass
+
+        def decode(self, _frame: bytes) -> bytes:
+            return b"\x00\x00"
+
+    class _ASR:
+        async def transcribe(self, _wav: bytes) -> Transcript:
+            return Transcript(text="Computer, take this meeting note.", language="en")
+
+    def _unexpected_provider(*_args, **_kwargs):
+        raise AssertionError("transcription-only mode invoked an assistant provider")
+
+    monkeypatch.setattr("agent_hub.server.ws_session.OpusDecoder", _Decoder)
+    monkeypatch.setattr("agent_hub.server.ws_session.get_asr", lambda *_args: _ASR())
+    monkeypatch.setattr("agent_hub.server.ws_session.get_llm", _unexpected_provider)
+    monkeypatch.setattr("agent_hub.server.ws_session.get_tts", _unexpected_provider)
+
+    await _run_transcription_turn(
+        _WebSocket(),  # type: ignore[arg-type]
+        [b"opus"],
+        "session-1",
+        16000,
+        60,
+        SimpleNamespace(asr_provider="fake"),  # type: ignore[arg-type]
+        {},
+        _Store(),  # type: ignore[arg-type]
+        "AA:BB",
+    )
+
+    assert sent == [
+        {
+            "type": "stt",
+            "session_id": "session-1",
+            "text": "Computer, take this meeting note.",
+        }
+    ]
+    assert saved == [("AA:BB", "transcript", "Computer, take this meeting note.")]

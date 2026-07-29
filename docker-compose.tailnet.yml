@@ -1,0 +1,34 @@
+# App-only Tailscale deployment. Agent Hub shares the sidecar's network
+# namespace, publishes no ports on the Docker host, and exposes only the
+# device protocol through Funnel. The dashboard remains tailnet-private.
+services:
+  tailscale:
+    image: tailscale/tailscale:v1.98.10
+    hostname: "${TAILSCALE_HOSTNAME:-agent-hub}"
+    environment:
+      # Needed only for the first enrollment. Once state is persisted below,
+      # remove it from .env; TS_AUTH_ONCE reuses the stored node identity.
+      TS_AUTHKEY: "${TS_AUTHKEY:-}"
+      TS_AUTH_ONCE: "true"
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+    volumes:
+      - ./data/tailscale:/var/lib/tailscale
+      - ./deploy/tailscale:/config:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+
+  agent-hub:
+    network_mode: service:tailscale
+    ports: !reset []
+    depends_on:
+      - tailscale
+    environment:
+      AGENT_HUB_SERVER_WEBSOCKET: "wss://${AGENT_HUB_PUBLIC_HOST:?Set AGENT_HUB_PUBLIC_HOST in .env}/xiaozhi/v1/"
+      AGENT_HUB_SERVER_ENROLLMENT_TOKEN: "${AGENT_HUB_SERVER_ENROLLMENT_TOKEN:?Set AGENT_HUB_SERVER_ENROLLMENT_TOKEN in .env}"
+      AGENT_HUB_SERVER_IMAGE_TOKEN: "${AGENT_HUB_SERVER_IMAGE_TOKEN:?Set AGENT_HUB_SERVER_IMAGE_TOKEN in .env}"

@@ -1,0 +1,39 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    },
+    "8443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "${TS_CERT_DOMAIN}:443": {
+      "Handlers": {
+        "/checkin/": {
+          "Proxy": "http://127.0.0.1:8003/checkin/"
+        },
+        "/xiaozhi/ota/": {
+          "Proxy": "http://127.0.0.1:8003/xiaozhi/ota/"
+        },
+        "/xiaozhi/heartbeat/": {
+          "Proxy": "http://127.0.0.1:8003/xiaozhi/heartbeat/"
+        },
+        "/xiaozhi/v1/": {
+          "Proxy": "http://127.0.0.1:8000/xiaozhi/v1/"
+        }
+      }
+    },
+    "${TS_CERT_DOMAIN}:8443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:8001"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {
+    "${TS_CERT_DOMAIN}:443": true,
+    "${TS_CERT_DOMAIN}:8443": false
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Xiaozhi Protocol"
+  short_description: "Preserve Xiaozhi device wire compatibility"
+  default_prompt: "Use $xiaozhi-protocol to safely update a Xiaozhi check-in or WebSocket protocol path."
