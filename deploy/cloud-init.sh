@@ -101,6 +101,16 @@ EOF
   chmod 600 "$CREDS_FILE"
 fi
 
+# DigitalOcean's Docker image boots with ufw active, allowing only 22, 2375
+# and 2376. Without this the stack starts and binds correctly but every
+# external request is dropped, which looks exactly like a crashed container.
+if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+  ufw allow 8000/tcp comment "agent-hub device WebSocket"
+  ufw allow 8001/tcp comment "agent-hub dashboard"
+  ufw allow 8003/tcp comment "agent-hub device check-in"
+  ufw reload
+fi
+
 # Build and start
 docker compose -f docker-compose.yml -f docker-compose.do.yml build
 docker compose -f docker-compose.yml -f docker-compose.do.yml up -d
