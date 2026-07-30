@@ -20,6 +20,9 @@ set -euo pipefail
 
 APP_DIR=/opt/agent-hub
 CREDS_FILE=/root/agent-hub-credentials.txt
+# Branch or tag to deploy. Edit before pasting to test a branch that has not
+# merged yet — the compose and Dockerfile this script uses must exist on it.
+AGENT_HUB_REF="${AGENT_HUB_REF:-main}"
 
 # Install Docker if not present
 if ! command -v docker &>/dev/null; then
@@ -36,10 +39,18 @@ fi
 
 # Clone the repo
 if [ ! -d "$APP_DIR" ]; then
-  git clone https://github.com/ricklon/agent-hub.git "$APP_DIR"
+  git clone --branch "$AGENT_HUB_REF" https://github.com/ricklon/agent-hub.git "$APP_DIR"
 fi
 cd "$APP_DIR"
 mkdir -p data
+
+# Fail early with a clear reason rather than a confusing compose error.
+for required in Dockerfile.do docker-compose.do.yml .env.do.example; do
+  if [ ! -f "$required" ]; then
+    echo "FATAL: $required missing on ref '$AGENT_HUB_REF' — deploy a ref that has it." >&2
+    exit 1
+  fi
+done
 
 # Generate the deployment env on first boot. This droplet has a public IP, so
 # neither of the template's open defaults is safe here: the dashboard controls
