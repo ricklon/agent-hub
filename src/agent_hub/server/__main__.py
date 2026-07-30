@@ -95,9 +95,8 @@ def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any
 
     @app.on_event("startup")
     async def _startup() -> None:
-        # Safe to run per app: create_all is idempotent, the migration
-        # statements are suppressed on re-run, and the default persona is
-        # only seeded when absent.
+        # Safe to run per app: initialize() is guarded by a lock and a
+        # done-flag, so only the first app to start does the work.
         await store.initialize()
         logger.info(
             f"agent-hub ready — "

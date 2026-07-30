@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from contextlib import suppress
@@ -47,15 +48,27 @@ class RegistryStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", echo=False)
         self._sessions = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._init_lock = asyncio.Lock()
+        self._initialized = False
 
     async def initialize(self) -> None:
-        """Create tables and seed the hub-default persona if missing."""
-        async with self._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        await self._migrate()
-        async with self._sessions() as session:
-            await self._ensure_default_persona(session)
-        logger.info("Registry store initialized")
+        """Create tables and seed the hub-default persona if missing.
+
+        Safe to call concurrently and repeatedly: the server binds one app per
+        port and every app's startup hook calls this against the shared store.
+        Without the lock, a fresh database lets all of them pass create_all's
+        existence check together and the losers fail with "table already exists".
+        """
+        async with self._init_lock:
+            if self._initialized:
+                return
+            async with self._engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            await self._migrate()
+            async with self._sessions() as session:
+                await self._ensure_default_persona(session)
+            self._initialized = True
+            logger.info("Registry store initialized")
 
     async def _migrate(self) -> None:
         """Add columns introduced after the initial schema without Alembic."""
