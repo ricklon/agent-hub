@@ -87,6 +87,15 @@ def get_provider(name: str, config: dict[str, Any]) -> ASRProvider:
             model=str(cfg.get("model", "whisper-1")),
             language=cfg.get("language") or None,
         )
+    elif name == "moonshine":
+        from agent_hub.providers.asr.moonshine_provider import MoonshineASRProvider
+
+        cfg = asr_cfg.get("moonshine", {})
+        provider = MoonshineASRProvider(
+            language=str(cfg.get("language", "en")),
+            model_arch=str(cfg.get("model_arch", "tiny")),
+            cache_root=str(cfg.get("cache_root", "models/moonshine")),
+        )
     else:
         raise ValueError(f"Unknown ASR provider: {name!r}")
 
