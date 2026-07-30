@@ -18,6 +18,7 @@ from fastapi.responses import RedirectResponse
 from loguru import logger
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from agent_hub import spend
 from agent_hub.config import Settings, load_config, load_settings
 from agent_hub.dashboard.app import make_router as make_dashboard_router
 from agent_hub.registry.store import RegistryStore
@@ -98,6 +99,7 @@ def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any
         # Safe to run per app: initialize() is guarded by a lock and a
         # done-flag, so only the first app to start does the work.
         await store.initialize()
+        spend.configure(store, raw_config)
         logger.info(
             f"agent-hub ready — "
             f"check-in on :{settings.server.http_port}, "

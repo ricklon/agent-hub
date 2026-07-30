@@ -8,7 +8,13 @@ from typing import Any, cast
 
 from openai import AsyncOpenAI
 
+from agent_hub import spend
 from agent_hub.providers.llm import LLMProvider
+
+# Endpoints known to report token usage. Local servers (Ollama, LM Studio)
+# often reject the extra fields, so usage reporting is opt-in by host rather
+# than sent blindly to whatever base_url is configured.
+_USAGE_CAPABLE_HOSTS = ("openrouter.ai", "api.openai.com")
 
 
 class OpenAILLMProvider(LLMProvider):
@@ -35,6 +41,34 @@ class OpenAILLMProvider(LLMProvider):
         """
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
         self._model = model
+        # base_url=None means api.openai.com.
+        self._usage_capable = base_url is None or any(
+            host in base_url for host in _USAGE_CAPABLE_HOSTS
+        )
+        # OpenRouter only returns a real cost when asked for it.
+        self._cost_capable = base_url is not None and "openrouter.ai" in base_url
+
+    def _usage_kwargs(self, *, stream: bool) -> dict[str, Any]:
+        """Extra request fields that make the endpoint report token usage."""
+        if not self._usage_capable:
+            return {}
+        kwargs: dict[str, Any] = {}
+        if stream:
+            # Without this a streamed response carries no usage block at all.
+            kwargs["stream_options"] = {"include_usage": True}
+        if self._cost_capable:
+            kwargs["extra_body"] = {"usage": {"include": True}}
+        return kwargs
+
+    async def _meter(self, usage: Any) -> None:
+        """Record one call's usage. Falls back to estimation when unreported."""
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        # OpenRouter puts the real charge on usage.cost; everyone else omits it
+        # and we fall back to the configured price table.
+        raw_cost = getattr(usage, "cost", None)
+        cost = float(raw_cost) if raw_cost is not None else None
+        await spend.record(self._model, prompt_tokens, completion_tokens, cost)
 
     def _build_messages(
         self, messages: list[dict[str, str]], system_prompt: str
@@ -59,11 +93,14 @@ class OpenAILLMProvider(LLMProvider):
         Returns:
             Model response content string.
         """
+        await spend.guard()
         completions = cast(Any, self._client.chat.completions)
         resp = await completions.create(
             model=self._model,
             messages=self._build_messages(messages, system_prompt),
+            **self._usage_kwargs(stream=False),
         )
+        await self._meter(getattr(resp, "usage", None))
         return (resp.choices[0].message.content or "").strip()
 
     async def complete_with_tools(
@@ -78,12 +115,17 @@ class OpenAILLMProvider(LLMProvider):
         completions = cast(Any, self._client.chat.completions)
 
         for _ in range(max_rounds):
+            await spend.guard()
             resp = await completions.create(
                 model=self._model,
                 messages=working,
                 tools=tools,
                 tool_choice="auto",
+                **self._usage_kwargs(stream=False),
             )
+            # Each tool round is a separate billed call, so meter before any
+            # early return below.
+            await self._meter(getattr(resp, "usage", None))
             if not resp.choices:
                 return ""
             msg = resp.choices[0].message
@@ -124,10 +166,13 @@ class OpenAILLMProvider(LLMProvider):
                     )
 
         # Exhausted rounds — final call without tools
+        await spend.guard()
         resp = await completions.create(
             model=self._model,
             messages=working,
+            **self._usage_kwargs(stream=False),
         )
+        await self._meter(getattr(resp, "usage", None))
         if not resp.choices:
             return ""
         return (resp.choices[0].message.content or "").strip()
@@ -145,17 +190,23 @@ class OpenAILLMProvider(LLMProvider):
         completions = cast(Any, self._client.chat.completions)
 
         for _ in range(max_rounds):
+            await spend.guard()
             stream = await completions.create(
                 model=self._model,
                 messages=working,
                 tools=tools,
                 tool_choice="auto",
                 stream=True,
+                **self._usage_kwargs(stream=True),
             )
 
             content_parts: list[str] = []
             tool_calls: dict[int, dict[str, str]] = {}
             async for chunk in stream:
+                # The usage block arrives in its own trailing chunk, which
+                # carries no choices — check it before skipping those.
+                if getattr(chunk, "usage", None):
+                    await self._meter(chunk.usage)
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -252,13 +303,20 @@ class OpenAILLMProvider(LLMProvider):
         Yields:
             Text delta strings.
         """
+        await spend.guard()
         completions = cast(Any, self._client.chat.completions)
         stream = await completions.create(
             model=self._model,
             messages=self._build_messages(messages, system_prompt),
             stream=True,
+            **self._usage_kwargs(stream=True),
         )
         async for chunk in stream:
+            # The trailing usage chunk has no choices; indexing [0] would raise.
+            if getattr(chunk, "usage", None):
+                await self._meter(chunk.usage)
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta.content or ""
             if delta:
                 yield delta

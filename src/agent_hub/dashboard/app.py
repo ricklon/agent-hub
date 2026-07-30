@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
+from agent_hub import spend
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import session_state, tool_policy
 
@@ -394,6 +395,19 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
   <tr><th>MCP</th><td>{mcp_html}</td></tr>
   <tr><th>Registration</th><td>{db_status}</td></tr>
 </table>""")
+
+    @router.get("/dashboard/spend.json")
+    async def spend_json() -> dict[str, Any]:
+        """LLM spend so far, against the configured caps."""
+        tracker = spend.get_tracker()
+        if tracker is None:
+            # Metering is wired up at server startup; a dashboard mounted
+            # standalone (as in tests) has none.
+            return {"enabled": False}
+        totals = await tracker.totals()
+        totals["enabled"] = True
+        totals["by_model_today"] = await store.llm_spend_by_model(since=spend.day_start())
+        return totals
 
     @router.get("/dashboard/agents/{device_id}/status.json")
     async def agent_status_json(device_id: str) -> dict[str, Any]:

@@ -47,6 +47,7 @@ from agent_hub.server.audio import (
 )
 from agent_hub.server.mcp_client import MCPClient
 from agent_hub.server.protocol import SERVER_TTS_AUDIO_PARAMS, ClientHello, ServerWelcome
+from agent_hub.spend import SpendLimitExceeded
 
 _TAG = "ws_session"
 
@@ -338,6 +339,27 @@ async def _stream_reply_to_speech(
     return "".join(reply_parts).strip(), tts_ms
 
 
+_DEFAULT_SPEND_NOTICE = (
+    "I've reached my spending limit, so I can't answer right now. "
+    "Ask my operator to raise the limit."
+)
+
+
+def _spend_limit_notice(config: dict[str, Any], exc: SpendLimitExceeded) -> str:
+    """What the device says when a cap blocks a turn.
+
+    Override with llm.spend.limit_message for demos where the default is too
+    revealing about how the hub is run.
+    """
+    configured = ((config.get("llm") or {}).get("spend") or {}).get("limit_message")
+    if configured:
+        return str(configured)
+    logger.bind(tag=_TAG).info(
+        f"spend notice for {exc.window} window: ${exc.spent_usd:.4f} of ${exc.limit_usd:.2f}"
+    )
+    return _DEFAULT_SPEND_NOTICE
+
+
 async def _run_llm_turn(
     websocket: WebSocket,
     transcript: str,
@@ -518,6 +540,18 @@ async def _run_llm_turn(
             session_id,
             on_first_delta=slow_cue.settle_before_reply,
         )
+    except SpendLimitExceeded as exc:
+        # The cap is a cost control, not a fault: say so out loud rather than
+        # dropping the turn silently, which is indistinguishable from a device
+        # or network failure. TTS still works, so the device can explain itself.
+        # close() is idempotent, so the finally below is harmless.
+        await slow_cue.close()
+        logger.bind(tag=_TAG).error(f"turn blocked by spend limit: {exc}")
+        notice = _spend_limit_notice(config, exc)
+        await _speak(websocket, notice, persona, config, session_id)
+        session_state.set_pipeline_status(device_id, "idle", transcript)
+        history.pop()
+        return 0, 0, ""
     finally:
         await slow_cue.close()
     llm_ms = int((time.monotonic() - t1) * 1000)

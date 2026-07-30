@@ -8,12 +8,21 @@ import secrets
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from agent_hub.registry.models import Agent, AgentKind, AgentStatus, Base, ConversationTurn, Persona
+from agent_hub.registry.models import (
+    Agent,
+    AgentKind,
+    AgentStatus,
+    Base,
+    ConversationTurn,
+    LLMSpend,
+    Persona,
+)
 
 _DEFAULT_PERSONA_NAME = "hub-default"
 _DEFAULT_SYSTEM_PROMPT = (
@@ -309,6 +318,73 @@ class RegistryStore:
                 .where(Agent.device_id == device_id)
             )
             return result.scalar_one_or_none()
+
+    async def record_llm_spend(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float,
+        cost_estimated: bool,
+        device_id: str | None = None,
+    ) -> None:
+        """Append one billed LLM call to the spend ledger."""
+        async with self._sessions() as session:
+            session.add(
+                LLMSpend(
+                    device_id=device_id,
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost_usd,
+                    cost_estimated=cost_estimated,
+                )
+            )
+            await session.commit()
+
+    async def llm_spend_summary(self, since: datetime | None = None) -> dict[str, float | int]:
+        """Aggregate the spend ledger, optionally only rows at or after `since`.
+
+        Returns cost_usd, prompt_tokens, completion_tokens, calls, and
+        estimated_calls — the last so callers can tell how much of the total
+        came from the local price table rather than the provider.
+        """
+        async with self._sessions() as session:
+            query = select(
+                func.coalesce(func.sum(LLMSpend.cost_usd), 0.0),
+                func.coalesce(func.sum(LLMSpend.prompt_tokens), 0),
+                func.coalesce(func.sum(LLMSpend.completion_tokens), 0),
+                func.count(LLMSpend.id),
+                func.coalesce(func.sum(LLMSpend.cost_estimated), 0),
+            )
+            if since is not None:
+                query = query.where(LLMSpend.created_at >= since)
+            cost, prompt, completion, calls, estimated = (await session.execute(query)).one()
+            return {
+                "cost_usd": float(cost),
+                "prompt_tokens": int(prompt),
+                "completion_tokens": int(completion),
+                "calls": int(calls),
+                "estimated_calls": int(estimated),
+            }
+
+    async def llm_spend_by_model(self, since: datetime | None = None) -> list[dict[str, Any]]:
+        """Per-model spend breakdown, most expensive first."""
+        async with self._sessions() as session:
+            query = select(
+                LLMSpend.model,
+                func.coalesce(func.sum(LLMSpend.cost_usd), 0.0),
+                func.count(LLMSpend.id),
+            ).group_by(LLMSpend.model)
+            if since is not None:
+                query = query.where(LLMSpend.created_at >= since)
+            rows = (await session.execute(query)).all()
+            out = [
+                {"model": model, "cost_usd": float(cost), "calls": int(calls)}
+                for model, cost, calls in rows
+            ]
+            out.sort(key=lambda row: float(row["cost_usd"]), reverse=True)
+            return out
 
     async def list_personas(self) -> list[Persona]:
         """Return all personas ordered by name."""

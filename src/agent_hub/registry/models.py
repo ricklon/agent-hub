@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -81,6 +81,25 @@ class ConversationTurn(Base):
     role: Mapped[str] = mapped_column(String(16))  # 'user' or 'assistant'
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class LLMSpend(Base):
+    """One billed LLM call — the ledger behind the spend metrics and limits."""
+
+    __tablename__ = "llm_spend"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # NULL for calls with no device behind them (page agent, image explain).
+    device_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    # True when cost came from the local price table rather than the provider.
+    # An estimate is only as good as the configured prices, so the dashboard
+    # says so rather than presenting a guess as billing truth.
+    cost_estimated: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
 
 
 class Agent(Base):
