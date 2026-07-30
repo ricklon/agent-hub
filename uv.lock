@@ -27,13 +27,9 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "edge-tts" },
     { name = "fastapi" },
-    { name = "funasr" },
-    { name = "funasr-onnx" },
     { name = "httpx" },
     { name = "jinja2" },
-    { name = "kittentts" },
     { name = "loguru" },
-    { name = "modelscope" },
     { name = "moonshine-voice" },
     { name = "onnx" },
     { name = "onnxruntime" },
@@ -43,13 +39,8 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pyyaml" },
-    { name = "silero-vad" },
     { name = "soundfile" },
     { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "torch", version = "2.12.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.12.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
 ]
@@ -62,19 +53,30 @@ dev = [
     { name = "ruff" },
     { name = "types-pyyaml" },
 ]
+full = [
+    { name = "funasr" },
+    { name = "funasr-onnx" },
+    { name = "kittentts" },
+    { name = "modelscope" },
+    { name = "silero-vad" },
+    { name = "torch", version = "2.12.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
+    { name = "torch", version = "2.12.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "torchaudio", version = "2.11.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
+    { name = "torchaudio", version = "2.11.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "edge-tts", specifier = ">=6.1" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "funasr", specifier = ">=1.2.7" },
-    { name = "funasr-onnx", specifier = ">=0.4.1" },
+    { name = "funasr", marker = "extra == 'full'", specifier = ">=1.2.7" },
+    { name = "funasr-onnx", marker = "extra == 'full'", specifier = ">=0.4.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "kittentts", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
+    { name = "kittentts", marker = "extra == 'full'", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
     { name = "loguru", specifier = ">=0.7" },
-    { name = "modelscope", specifier = ">=1.32" },
+    { name = "modelscope", marker = "extra == 'full'", specifier = ">=1.32" },
     { name = "moonshine-voice", specifier = ">=0.1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "onnx", specifier = ">=1.18,<1.19" },
@@ -88,16 +90,16 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
-    { name = "silero-vad", specifier = ">=5.0" },
+    { name = "silero-vad", marker = "extra == 'full'", specifier = ">=5.0" },
     { name = "soundfile", specifier = ">=0.12" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
-    { name = "torch", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torchaudio", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "extra == 'full'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchaudio", marker = "extra == 'full'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
     { name = "websockets", specifier = ">=13" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["full", "dev"]
 
 [[package]]
 name = "aiohappyeyeballs"

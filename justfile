@@ -59,6 +59,19 @@ tailnet-status:
 tailnet-down:
     docker compose -f docker-compose.yml -f docker-compose.tailnet.yml down
 
+# DigitalOcean stack: Moonshine ASR + Edge TTS, no torch (390MB image).
+do-build:
+    docker compose -f docker-compose.yml -f docker-compose.do.yml build
+
+do-up:
+    docker compose -f docker-compose.yml -f docker-compose.do.yml up -d
+
+do-logs:
+    docker compose -f docker-compose.yml -f docker-compose.do.yml logs -f
+
+do-down:
+    docker compose -f docker-compose.yml -f docker-compose.do.yml down
+
 deploy-edge:
     ansible-playbook deploy-agent-hub.yml
 

@@ -240,6 +240,76 @@ something else, add that value to `dashboard_allowed_origins` too — once
 either allowlist is set it becomes exhaustive, and the request's own `Host` is
 no longer trusted implicitly.
 
+## DigitalOcean Droplet
+
+A public cloud droplet is the least trusted environment `agent-hub` runs in:
+there is no LAN boundary, so the device ports and the dashboard are reachable
+from the internet the moment the container starts. Read
+[Remaining Work Before Public Internet](#remaining-work-before-public-internet)
+before leaving one running.
+
+The droplet stack swaps both heavy providers for light ones:
+
+| | Local (`Dockerfile`) | Droplet (`Dockerfile.do`) |
+| --- | --- | --- |
+| ASR | SenseVoice via FunASR (torch) | Moonshine (onnxruntime) |
+| TTS | KittenTTS (torch, via `misaki[en]`) | Edge TTS (cloud) |
+| Image | ~4GB | 390MB |
+| Idle RAM | ~650MB | ~95MB |
+
+Everything needing torch lives in the `full` extra. Both provider registries
+import lazily, so the droplet image runs fine without it — but selecting
+`funasr`, `funasr_onnx`, or `kitten` there fails when that provider is
+constructed. ASR stays local; only TTS becomes a cloud call.
+
+The Moonshine and Silero models are baked into the image, so `models/` is
+deliberately **not** a bind mount in `docker-compose.do.yml` — mounting it
+would shadow them with the host's empty directory on a fresh droplet.
+
+### Provisioning
+
+```sh
+doctl compute droplet create agent-hub \
+  --image docker-20-04 --size s-1vcpu-2gb --region nyc1 \
+  --user-data-file deploy/cloud-init.sh
+```
+
+Use at least 2GB: the server needs ~250MB with a session live, but building
+the image on the droplet needs more. First boot takes ~5 minutes.
+
+`deploy/cloud-init.sh` installs Docker, clones the repo to `/opt/agent-hub`,
+generates a random dashboard password, sets `allowed_hosts` to the droplet's
+public IP, and writes both to `/root/agent-hub-credentials.txt`. It never
+deploys the template's placeholder password.
+
+The LLM key is deliberately left unset — add it and restart:
+
+```sh
+ssh root@<droplet-ip>
+cat /root/agent-hub-credentials.txt
+vi /opt/agent-hub/.env.do          # AGENT_HUB_LLM_OPENAI_API_KEY=sk-or-...
+cd /opt/agent-hub && docker compose -f docker-compose.yml -f docker-compose.do.yml restart
+```
+
+Locally, `just do-build` / `do-up` / `do-logs` / `do-down` drive the same
+stack. It builds as `agent-hub-do:latest` so it does not overwrite the
+full-stack local image.
+
+### Before pointing devices at it
+
+The droplet's ports are open to the internet, not a LAN, so the LAN-first
+assumptions above do not hold:
+
+1. Set `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` — otherwise anyone who finds
+   `8003` can register a device.
+2. Set `AGENT_HUB_SERVER_IMAGE_TOKEN` before enabling camera tools.
+3. Put the droplet behind the HTTPS proxy pattern above, or restrict the
+   ports with a DO cloud firewall. The dashboard is Basic auth over plain
+   HTTP until you do — see [Why Basic auth, and its
+   limits](#why-basic-auth-and-its-limits).
+4. Cap spend at the LLM provider. An exposed hub with a working API key bills
+   whoever finds it.
+
 ## Current Hardening
 
 The app currently includes:

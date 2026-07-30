@@ -20,23 +20,30 @@ dependencies = [
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
     "soundfile>=0.12",
-    "kittentts",
     "openai>=1.30",
     "opuslib-next>=1.1.5",
     "onnx>=1.18,<1.19",
     "onnxruntime>=1.18",
-    "silero-vad>=5.0",
-    "funasr>=1.2.7",
-    "funasr-onnx>=0.4.1",
-    "moonshine-voice>=0.1.0",
-    "modelscope>=1.32",
-    "torch>=2.2",
-    "torchaudio>=2.2",
     "python-dotenv>=1.0",
     "pyserial>=3.5",
+    "moonshine-voice>=0.1.0",
 ]
 
 [project.optional-dependencies]
+# Everything that needs torch (~700MB) — SenseVoice/FunASR ASR and KittenTTS,
+# which pulls torch transitively via misaki[en] -> spacy-curated-transformers.
+# Omitted on DigitalOcean, which uses Moonshine ASR + Edge TTS instead. Both
+# provider registries import lazily, so the code runs fine without these.
+full = [
+    "kittentts",
+    "silero-vad>=5.0",
+    "funasr>=1.2.7",
+    "funasr-onnx>=0.4.1",
+    "modelscope>=1.32",
+    "torch>=2.2",
+    "torchaudio>=2.2",
+]
+
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",

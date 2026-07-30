@@ -12,7 +12,7 @@ COPY pyproject.toml uv.lock ./
 COPY src/ src/
 COPY scripts/ scripts/
 
-RUN uv sync --frozen --no-dev \
+RUN uv sync --frozen --no-dev --extra full \
     && mkdir -p models/SenseVoiceSmall-onnx \
     && uv run python scripts/copy_silero.py \
     && uv run python scripts/download_models.py

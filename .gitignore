@@ -64,3 +64,4 @@ docker-compose.override.yml
 # Model files — download separately with `just download-models`
 models/
 !models/.gitkeep
+.env.do
