@@ -123,6 +123,33 @@ class TestLimits:
         assert totals["utilisation"]["total"] == pytest.approx(0.5)
 
 
+class TestConfigParsing:
+    def test_env_override_strings_are_coerced_to_numbers(self):
+        """The droplet sets these via env, so values arrive as strings."""
+        config = SpendConfig.from_config(
+            {
+                "llm": {
+                    "spend": {
+                        "daily_limit_usd": "5",
+                        "total_limit_usd": "25",
+                        "warn_at": "0.9",
+                    }
+                }
+            }
+        )
+
+        assert config.daily_limit_usd == pytest.approx(5.0)
+        assert config.total_limit_usd == pytest.approx(25.0)
+        assert config.warn_at == pytest.approx(0.9)
+
+    def test_missing_section_yields_disabled_caps(self):
+        config = SpendConfig.from_config({})
+
+        assert config.daily_limit_usd == 0.0
+        assert config.total_limit_usd == 0.0
+        assert config.prices == {}
+
+
 class TestModuleLevelWiring:
     async def test_guard_and_record_are_noops_until_configured(self, tmp_path):
         spend.reset()

@@ -395,8 +395,60 @@ assumptions above do not hold:
    ports with a DO cloud firewall. The dashboard is Basic auth over plain
    HTTP until you do — see [Why Basic auth, and its
    limits](#why-basic-auth-and-its-limits).
-4. Cap spend at the LLM provider. An exposed hub with a working API key bills
-   whoever finds it.
+4. Cap spend at the LLM provider **and** set `llm.spend` limits — see below.
+   An exposed hub with a working API key bills whoever finds it.
+
+## LLM Spend
+
+Every LLM call is metered: model, tokens, cost, and the device it came from.
+Two independent caps are checked before each request, so a cap can be exceeded
+by at most one call and no billable request goes out once one is reached.
+
+```yaml
+llm:
+  spend:
+    daily_limit_usd: 5.0     # 0 disables this cap
+    total_limit_usd: 50.0    # 0 disables this cap
+    warn_at: 0.8             # warn from 80% of either cap
+    limit_message: ""        # what the device says when blocked
+```
+
+At `warn_at` the hub logs a warning once per window. At the cap it refuses
+further calls and the device *speaks* a notice rather than going silent —
+a dropped turn is indistinguishable from a device or network fault, which is
+the worst way to discover you hit a limit mid-demo.
+
+Current spend is at `/dashboard/spend.json`, with a per-model breakdown for
+the day.
+
+**This is a backstop, not the real limit.** It only counts what it sees: a
+crash between the API call and the ledger write loses that call. Keep a hard
+spend cap at the provider — on OpenRouter, a credit limit on the key.
+
+### Where cost figures come from
+
+OpenRouter reports the real charge when asked for it, and the hub asks. Other
+OpenAI-compatible endpoints do not, so cost falls back to a local price table
+and is flagged as estimated — the dashboard distinguishes the two rather than
+presenting a guess as billing truth.
+
+```yaml
+llm:
+  spend:
+    pricing:                       # USD per 1M tokens
+      "some/model":
+        input: 0.10
+        output: 0.20
+```
+
+An unpriced model still records its tokens, just with zero cost — so tokens
+are always trustworthy even when dollars are not.
+
+Usage-reporting request fields go only to endpoints known to accept them
+(OpenRouter, api.openai.com). Local servers like Ollama reject unknown fields,
+so they are metered by token count and the price table instead. Note that
+streamed responses carry no usage block unless it is explicitly requested,
+which is why streaming spend would otherwise silently record as zero.
 
 ## Current Hardening
 
