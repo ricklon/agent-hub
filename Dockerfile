@@ -12,6 +12,9 @@ COPY pyproject.toml uv.lock ./
 COPY src/ src/
 COPY scripts/ scripts/
 
+# --extra full because the default ASR is SenseVoice. Its ONNX provider needs
+# torch despite what its metadata says (see pyproject.toml), so this image is
+# 1.1GB. Dockerfile.do is the torch-free build: Moonshine ASR instead, 532MB.
 RUN uv sync --frozen --no-dev --extra full \
     && mkdir -p models/SenseVoiceSmall-onnx \
     && uv run python scripts/copy_silero.py \

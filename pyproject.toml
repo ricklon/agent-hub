@@ -31,15 +31,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# SenseVoice/FunASR ASR and the Silero VAD package, which need torch (~700MB).
-# Omitted on DigitalOcean, which runs Moonshine ASR instead; the VAD there uses
-# the bundled .onnx through onnxruntime. The ASR registry imports lazily, so
-# the code runs fine without these — selecting funasr without them fails when
-# that provider is constructed.
+# SenseVoice ASR in either form, plus everything torch it drags along (~700MB).
+#
+# funasr-onnx looks torch-free — its metadata declares only onnxruntime — but
+# sensevoice_bin.py imports torch and uses it in the CTC decode path, and it
+# imports jieba without declaring it (that used to arrive via funasr). Verified
+# by running a transcription with the base deps alone: it fails with
+# ModuleNotFoundError. So the ONNX provider belongs here too.
+#
+# The base install is therefore the torch-free stack: Moonshine ASR, KittenTTS
+# or Edge TTS. That is exactly what Dockerfile.do ships.
+#
+# The ASR registry imports lazily, so selecting a SenseVoice provider without
+# these fails when that provider is constructed, not at startup.
 full = [
     "silero-vad>=5.0",
     "funasr>=1.2.7",
     "funasr-onnx>=0.4.1",
+    "jieba>=0.42",
     "modelscope>=1.32",
     "torch>=2.2",
     "torchaudio>=2.2",

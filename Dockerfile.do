@@ -1,8 +1,13 @@
 # DigitalOcean-optimized Dockerfile — Moonshine ASR + KittenTTS, no torch.
 #
 # Both run on onnxruntime, so speech stays local on the droplet. What this
-# image skips is the `full` extra: SenseVoice/FunASR ASR and the silero-vad
-# package, which need torch (~700MB). Measured: 690MB image (vs ~4GB).
+# image skips is the `full` extra: SenseVoice ASR and the silero-vad package,
+# which need torch (~700MB).
+#
+# Measured with `docker image inspect --format '{{.Size}}'`: 532MB, against
+# 1.1GB for the default Dockerfile. Note that `docker images` reports a much
+# larger "disk usage" for both — that column includes build cache and shared
+# layers, so don't compare it against this number.
 #
 # The ASR registry imports lazily, so selecting funasr here fails at that
 # provider's construction, not at startup.

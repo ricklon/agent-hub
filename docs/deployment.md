@@ -253,15 +253,27 @@ ends:
 
 | | Local (`Dockerfile`) | Droplet (`Dockerfile.do`) |
 | --- | --- | --- |
-| ASR | SenseVoice via FunASR (torch) | Moonshine (onnxruntime) |
+| ASR | SenseVoice via funasr_onnx (torch) | Moonshine (onnxruntime) |
 | TTS | KittenTTS or Edge | Edge by default, KittenTTS installed |
-| Image | ~4GB | 532MB |
+| Image | 1.1GB | 532MB |
+| Idle RAM | — | 79MB |
 
-Torch is confined to the `full` extra — SenseVoice/FunASR and the `silero-vad`
-package. The droplet skips it, running the Silero VAD from the bundled `.onnx`
-through onnxruntime instead. The ASR registry imports lazily, so the droplet
-image starts fine; selecting `funasr` there fails when that provider is
-constructed.
+Image sizes are `docker image inspect --format '{{.Size}}'`. The `docker images`
+"disk usage" column reads much higher for both (4.08GB and 2.08GB) because it
+counts build cache and shared layers — the two are not comparable.
+
+Torch is confined to the `full` extra — SenseVoice in either form, plus the
+`silero-vad` package. The droplet skips it, running the Silero VAD from the
+bundled `.onnx` through onnxruntime instead. The ASR registry imports lazily,
+so the droplet image starts fine; selecting `funasr` or `funasr_onnx` there
+fails when that provider is constructed.
+
+**`funasr-onnx` is not torch-free**, despite declaring only onnxruntime in its
+metadata: `sensevoice_bin.py` imports torch for the CTC decode path, and
+imports `jieba` without declaring it at all. Dependency-graph tools will tell
+you otherwise — the local image cannot drop torch while SenseVoice is its
+default ASR. Switching the default to Moonshine is what would make a
+torch-free local image possible.
 
 KittenTTS looks like it needs torch, but does not. Its `misaki[en]` dependency
 declares `spacy-curated-transformers`, which pulls torch, and the English G2P
