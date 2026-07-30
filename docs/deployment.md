@@ -77,6 +77,14 @@ with only its own routes mounted. `/dashboard/` returns `404` on `8000` and
 `8003`, and the device endpoints return `404` on `8001`. Opening a device port
 to the LAN therefore does not expose the dashboard.
 
+### Transcript photos
+
+The image endpoint accepts the firmware's multipart `purpose=transcript`
+field. These capture-only uploads are saved immediately as chronological
+`image` entries in the device transcript and skip vision inference. Ordinary
+camera-tool uploads without that field retain the asynchronous image-explain
+flow and are attached to the corresponding assistant turn.
+
 > **If you configure two of these ports to the same number, their routes
 > merge onto that port and the boundary is gone.** This is normal in local
 > development. The server logs a warning when the dashboard shares a port with

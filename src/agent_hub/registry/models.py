@@ -17,6 +17,7 @@ class AgentKind(StrEnum):
     VOICE = "voice"  # software voice agent (e.g. Talkbot)
     MCP = "mcp"  # agent that exposes MCP tools
     AG2 = "ag2"  # AutoGen2 agent
+    PAGE = "page"  # browser page agent (talking + seeing) acting as an MCP server
 
 
 class AgentStatus(StrEnum):

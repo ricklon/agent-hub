@@ -3,6 +3,10 @@ server:
   ws_port: 8000
   http_port: 8003
   dashboard_port: 8001
+  # Port for the page-agent MCP bridge (SSE-down / POST-up JSON-RPC).
+  # Defaults to the dashboard port so the browser page connects same-origin.
+  # Set to a dedicated value (e.g. 8004) to isolate it as its own port.
+  mcp_bridge_port: 8001
   # Optional HTTP Basic auth for /dashboard/*.
   # Leave password empty for local/LAN-only development.
   dashboard_username: "admin"

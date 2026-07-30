@@ -1,0 +1,104 @@
+"""Tests for the page-agent registration + heartbeat endpoints."""
+
+from __future__ import annotations
+
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from agent_hub.config import Settings
+from agent_hub.registry.models import AgentKind
+from agent_hub.registry.store import RegistryStore
+from agent_hub.server import mcp_bridge
+from agent_hub.server.page_agent import make_router as make_page_agent_router
+
+
+async def _client(store: RegistryStore) -> AsyncClient:
+    app = FastAPI()
+    app.include_router(make_page_agent_router(store, Settings(), {}))
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+async def test_register_creates_page_agent_and_returns_token(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        resp = await client.post(
+            "/page-agent/register",
+            json={
+                "device_id": "page-abc",
+                "label": "classroom page",
+                "tools": [
+                    {
+                        "name": "page.audio_speaker.speak",
+                        "description": "speak",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                        },
+                    }
+                ],
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["device_id"] == "page-abc"
+    assert data["token"]
+    assert data["mcp_event_url"].endswith("/mcp/v1/events")
+    assert data["mcp_respond_url"].endswith("/mcp/v1/respond")
+
+    agent = await store.get_agent("page-abc")
+    assert agent is not None
+    assert agent.kind == AgentKind.PAGE.value
+
+
+async def test_register_stores_tools_in_bridge(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        await client.post(
+            "/page-agent/register",
+            json={
+                "device_id": "page-tools",
+                "tools": [
+                    {"name": "page.camera.take_photo", "description": "see", "inputSchema": {}}
+                ],
+            },
+        )
+    handle = mcp_bridge.find_page_agent_for_tool("page.camera.take_photo")
+    assert handle is not None
+    assert handle.device_id == "page-tools"
+    mcp_bridge.unregister_page_agent("page-tools")
+
+
+async def test_register_generates_device_id_when_omitted(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        resp = await client.post("/page-agent/register", json={"tools": []})
+    data = resp.json()
+    assert data["device_id"].startswith("page-")
+    mcp_bridge.unregister_page_agent(data["device_id"])
+
+
+async def test_heartbeat_rejects_bad_token(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        resp = await client.post(
+            "/page-agent/heartbeat",
+            json={"device_id": "page-x", "token": "wrong", "activity": "idle"},
+        )
+    assert resp.status_code == 401
+
+
+async def test_heartbeat_accepts_valid_token(store: RegistryStore) -> None:
+    await store.get_or_create_agent(device_id="page-hb", kind=AgentKind.PAGE)
+    token = await store.issue_websocket_token("page-hb")
+    async with await _client(store) as client:
+        resp = await client.post(
+            "/page-agent/heartbeat",
+            json={
+                "device_id": "page-hb",
+                "token": token,
+                "activity": "idle",
+                "mcp_tools": ["page.audio_speaker.speak"],
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    agent = await store.get_agent("page-hb")
+    assert agent is not None
+    assert agent.reported_mcp_tools_list == ["page.audio_speaker.speak"]

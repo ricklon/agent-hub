@@ -221,6 +221,7 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_WS_PORT` | `8000` | WebSocket / dashboard port |
 | `AGENT_HUB_SERVER_HTTP_PORT` | `8003` | Device check-in port |
 | `AGENT_HUB_SERVER_DASHBOARD_PORT` | `8001` | Dashboard UI port |
+| `AGENT_HUB_SERVER_MCP_BRIDGE_PORT` | `8001` | Page-agent MCP bridge (SSE-down / POST-up); defaults to the dashboard port for same-origin pages, set to `8004` to isolate |
 | `AGENT_HUB_SERVER_HEARTBEAT_INTERVAL_SECONDS` | `60` | Requested device heartbeat cadence |
 | `AGENT_HUB_SERVER_HEARTBEAT_TIMEOUT_SECONDS` | `180` | Time without heartbeat before offline |
 | `AGENT_HUB_SERVER_TIMEZONE` | unset | IANA timezone used for DST-aware device clock offset |
@@ -249,8 +250,17 @@ See `.env.example` for the full list with comments.
 
 ## Status
 
-Active development (Phase 1 — xiaozhi server parity). Core pipeline is
-working end-to-end. See `AGENTS.md` for contribution conventions.
+Active development (Phase 1 — xiaozhi server parity, plus the page-agent MCP
+bridge for Phase 2). Core pipeline is working end-to-end. See `AGENTS.md`
+for contribution conventions.
+
+The **page agent** (`/dashboard/page-agent`) is a browser page that acts as a
+talking + seeing MCP agent: it registers as `AgentKind.PAGE`, exposes
+`page.audio_speaker.speak` (Web Speech), `page.camera.take_photo`
+(getUserMedia), `page.discussion.*`, `page.site.get`, and `page.agent.status`
+tools, and is driven by the hub over the MCP bridge the same way a xiaozhi
+device's tools are. The `page_speak` / `page_see` server skills route LLM
+tool calls to a connected page agent. See `skills/mcp-bridge/SKILL.md`.
 
 ## Architecture (target)
 
@@ -260,7 +270,7 @@ working end-to-end. See `AGENTS.md` for contribution conventions.
 │                                                                │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐               │
 │  │  check-in  │  │ WS session │  │ MCP bridge │               │
-│  │   :8003    │  │   :8000    │  │   :8004    │               │
+│  │   :8003    │  │   :8000    │  │   :8001*   │               │
 │  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘               │
 │        │                │                │                      │
 │        └────────┬───────┴────────┬───────┘                      │
@@ -277,10 +287,15 @@ working end-to-end. See `AGENTS.md` for contribution conventions.
 └───────────────────────────────────────────────────────────────┘
        ▲                ▲                ▲
        │                │                │
-   xiaozhi          Talkbot           AG2 agent
-   ESP32              (voice           (custom)
-   devices             agent)
+   xiaozhi          Talkbot        browser page
+   ESP32            (voice         agent (talking
+   devices          agent)         + seeing, MCP
+                                   server)
 ```
+
+\* The MCP bridge defaults to the dashboard port (:8001) so the page connects
+same-origin; set `mcp_bridge_port: 8004` to isolate it as its own port
+(the architecture above shows the isolated target).
 
 ## Roadmap
 

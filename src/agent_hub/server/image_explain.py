@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.requests import ClientDisconnect
 
+from agent_hub.registry.store import RegistryStore
 from agent_hub.server import session_state as _session_state
 
 _TAG = "image_explain"
@@ -114,7 +115,16 @@ async def _complete_image_job(
     _session_state.finish_image_job(device_id, path, text=text)
 
 
-def make_router(config: dict[str, Any]) -> APIRouter:
+def make_router(config: dict[str, Any], store: RegistryStore) -> APIRouter:
+    """Build the device image-upload router.
+
+    Args:
+        config: Raw Agent Hub configuration.
+        store: Registry used to append transcript snapshots to device history.
+
+    Returns:
+        Router serving the authenticated device image endpoint.
+    """
     router = APIRouter()
 
     @router.options("/xiaozhi/v1/image/")
@@ -136,6 +146,7 @@ def make_router(config: dict[str, Any]) -> APIRouter:
         # Parse image bytes + question
         content_type = request.headers.get("content-type", "")
         question = request.query_params.get("question", "What do you see?")
+        purpose = request.query_params.get("purpose", "").strip().lower()
         jpeg_bytes: bytes = b""
 
         try:
@@ -152,6 +163,9 @@ def make_router(config: dict[str, Any]) -> APIRouter:
                 q = form.get("question")
                 if q:
                     question = str(q)
+                form_purpose = form.get("purpose")
+                if form_purpose:
+                    purpose = str(form_purpose).strip().lower()
             else:
                 jpeg_bytes = await request.body()
         except ClientDisconnect:
@@ -173,12 +187,19 @@ def make_router(config: dict[str, Any]) -> APIRouter:
         if device_id:
             img_dir = Path("data/images") / device_id.replace(":", "-")
             img_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
             img_path = img_dir / f"{ts}.jpg"
             img_path.write_bytes(jpeg_bytes)
             _session_state.set_latest_image(device_id, str(img_path))
 
         if device_id:
+            if purpose == "transcript":
+                await store.append_history(device_id, "image", f"[image:{img_path}]")
+                logger.bind(tag=_TAG).info(f"Added transcript photo for {device_id!r}: {img_path}")
+                return JSONResponse(
+                    {"text": "Photo added to transcript.", "status": "accepted"},
+                    headers=_CORS_HEADERS,
+                )
             _session_state.start_image_job(device_id, str(img_path))
             asyncio.create_task(
                 _complete_image_job(config, device_id, str(img_path), jpeg_bytes, question)

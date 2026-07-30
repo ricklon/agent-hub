@@ -64,6 +64,11 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# The page-agent browser page is a big inline HTML/CSS/JS string; wrapping
+# every line would harm readability for no semantic gain.
+"src/agent_hub/server/_page_html.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

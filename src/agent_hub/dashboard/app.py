@@ -63,6 +63,7 @@ tr:hover td{background:#161b22}
 .badge-free{background:#2d1f6e;color:#a5a0ff}
 .badge-tool{background:#1a2a3a;color:#79c0ff}
 .badge-skill{background:#2a1a3a;color:#d2a8ff}
+.badge-kind{background:#3a2a1a;color:#f0883e}
 .status-active{color:#3fb950}
 .status-idle{color:#d29922}
 .status-offline{color:#6e7681}
@@ -115,6 +116,7 @@ _PAGE = """\
   <a href="/dashboard/">Agents</a>
   <a href="/dashboard/personas">Personas</a>
   <a href="/dashboard/models">Models</a>
+  <a href="/dashboard/page-agent">Page Agent</a>
   <a href="/dashboard/docs">Docs</a>
 </nav>
 {body}
@@ -1192,7 +1194,14 @@ async def _render_agent_rows(store: RegistryStore, heartbeat_timeout_seconds: in
     for agent, persona in rows_data:
         device_id = html.escape(agent.device_id)
         label = html.escape(agent.label or agent.device_id)
-        device_cell = f'<a href="/dashboard/agents/{device_id}" style="color:#58a6ff">{label}</a>'
+        kind_badge = (
+            f'<span class="badge badge-kind">{html.escape(agent.kind)}</span> '
+            if agent.kind != "xiaozhi"
+            else ""
+        )
+        device_cell = (
+            f'{kind_badge}<a href="/dashboard/agents/{device_id}" style="color:#58a6ff">{label}</a>'
+        )
         if agent.label:
             device_cell += f'<span class="model">{device_id}</span>'
         last_seen = agent.last_seen.strftime("%H:%M:%S") if agent.last_seen else "—"

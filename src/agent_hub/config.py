@@ -20,6 +20,10 @@ class ServerConfig:
     ws_port: int = 8000
     http_port: int = 8003
     dashboard_port: int = 8001
+    # Port for the page-agent MCP bridge (SSE-down / POST-up JSON-RPC). Defaults
+    # to the dashboard port so the browser page connects same-origin; set to a
+    # dedicated value (e.g. 8004) to isolate it as its own trust boundary.
+    mcp_bridge_port: int = 8001
     websocket: str = ""
     timezone_offset: int = -8
     timezone: str = ""
@@ -115,6 +119,7 @@ class Settings:
                 ws_port=int(srv.get("ws_port", 8000)),
                 http_port=int(srv.get("http_port", 8003)),
                 dashboard_port=int(srv.get("dashboard_port", 8001)),
+                mcp_bridge_port=int(srv.get("mcp_bridge_port", 8001)),
                 websocket=str(srv.get("websocket", "")),
                 timezone_offset=int(srv.get("timezone_offset", -8)),
                 timezone=str(srv.get("timezone", "")),
