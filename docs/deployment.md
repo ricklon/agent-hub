@@ -358,9 +358,16 @@ Use at least 2GB: the server needs ~250MB with a session live, but building
 the image on the droplet needs more. First boot takes ~5 minutes.
 
 `deploy/cloud-init.sh` installs Docker, clones the repo to `/opt/agent-hub`,
-generates a random dashboard password, sets `allowed_hosts` to the droplet's
-public IP, and writes both to `/root/agent-hub-credentials.txt`. It never
-deploys the template's placeholder password.
+generates a random dashboard password **and enrollment token**, sets
+`allowed_hosts` to the droplet's public IP, and writes them all to
+`/root/agent-hub-credentials.txt`. It never deploys the template's placeholder
+password, and aborts rather than starting if a substitution failed to match.
+
+Because the token is generated, **devices must present it to check in** — a
+droplet is not a LAN, so open enrollment would let anyone who finds port 8003
+register against your hub. The credentials file lists the three ways to send
+it. To go back to open enrollment, clear `AGENT_HUB_SERVER_ENROLLMENT_TOKEN`
+and restart; only do that behind a firewall.
 
 The LLM key is deliberately left unset — add it and restart:
 
@@ -380,8 +387,9 @@ full-stack local image.
 The droplet's ports are open to the internet, not a LAN, so the LAN-first
 assumptions above do not hold:
 
-1. Set `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` — otherwise anyone who finds
-   `8003` can register a device.
+1. `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` is generated for you by cloud-init —
+   configure each device with it. If you provisioned by hand, set it, or
+   anyone who finds `8003` can register a device.
 2. Set `AGENT_HUB_SERVER_IMAGE_TOKEN` before enabling camera tools.
 3. Put the droplet behind the HTTPS proxy pattern above, or restrict the
    ports with a DO cloud firewall. The dashboard is Basic auth over plain

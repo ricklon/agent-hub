@@ -41,17 +41,27 @@ fi
 cd "$APP_DIR"
 mkdir -p data
 
-# Generate the deployment env on first boot. The dashboard controls every
-# device and this droplet has a public IP, so never ship the template's
-# placeholder password — generate a real one and record it for the operator.
+# Generate the deployment env on first boot. This droplet has a public IP, so
+# neither of the template's open defaults is safe here: the dashboard controls
+# every device, and an empty enrollment token lets anyone who finds port 8003
+# register a device. Generate both and record them for the operator.
 if [ ! -f .env.do ]; then
   PUBLIC_IP=$(curl -fsS --max-time 10 http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address || echo "")
   DASHBOARD_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)
+  ENROLLMENT_TOKEN=$(openssl rand -hex 24)
 
   cp .env.do.example .env.do
   sed -i "s|^AGENT_HUB_SERVER_DASHBOARD_PASSWORD=.*|AGENT_HUB_SERVER_DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}|" .env.do
+  sed -i "s|^AGENT_HUB_SERVER_ENROLLMENT_TOKEN=.*|AGENT_HUB_SERVER_ENROLLMENT_TOKEN=${ENROLLMENT_TOKEN}|" .env.do
   if [ -n "$PUBLIC_IP" ]; then
     sed -i "s|^AGENT_HUB_SERVER_ALLOWED_HOSTS=.*|AGENT_HUB_SERVER_ALLOWED_HOSTS=${PUBLIC_IP},localhost,127.0.0.1|" .env.do
+  fi
+
+  # Fail loudly rather than booting with a placeholder still in place — a
+  # silently unmatched sed would put `changeme` on a public IP.
+  if grep -q "changeme" .env.do || grep -qE "^AGENT_HUB_SERVER_ENROLLMENT_TOKEN=$" .env.do; then
+    echo "FATAL: .env.do still contains placeholder values; refusing to start." >&2
+    exit 1
   fi
 
   umask 077
@@ -60,6 +70,18 @@ agent-hub dashboard
   URL:      http://${PUBLIC_IP:-<droplet-ip>}:8001/dashboard/
   username: admin
   password: ${DASHBOARD_PASSWORD}
+
+Enrollment token (devices must send this to check in):
+  ${ENROLLMENT_TOKEN}
+
+Devices send it as one of:
+  X-Agent-Hub-Enrollment-Token: <token>
+  Authorization: Bearer <token>
+  /xiaozhi/ota/?enrollment_token=<token>
+
+To allow a device to enroll without the token, clear
+AGENT_HUB_SERVER_ENROLLMENT_TOKEN in ${APP_DIR}/.env.do and restart. Only do
+that if the droplet's ports are firewalled off from the public internet.
 
 The LLM API key is NOT set yet. Add it to ${APP_DIR}/.env.do:
   AGENT_HUB_LLM_OPENAI_API_KEY=sk-or-...
