@@ -7,23 +7,22 @@ no activation gate, same rule as xiaozhi devices) and issues a token. The page
 then opens the MCP bridge SSE channel (``server.mcp_bridge``) to receive
 ``tools/call`` requests and posts results back.
 
-Mirrors the xiaozhi firmware tool surface where it makes sense on a page:
-``page.audio_speaker.speak`` (Web Speech), ``page.camera.take_photo``
-(getUserMedia), plus ``page.discussion.*``, ``page.site.get`` and
-``page.agent.status``. When the experimental WebMCP imperative API
-(``document.modelContext.registerTool``) is available, the same functions are
-also exposed to browser agents — see
-https://github.com/ricklon/webmcp-litert-pwa for the local-first pattern.
+The voice WebSocket at ``/page-agent/voice`` streams 16kHz PCM from the
+browser through the hub's Silero VAD + FunASR + LLM + KittenTTS pipeline,
+with an optional wake word ("computer"). This reuses the same ASR/TTS/VAD
+providers as xiaozhi devices rather than browser-only speech APIs.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import secrets
 import time
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 
@@ -284,5 +283,220 @@ def make_router(store: RegistryStore, settings: Settings, config: dict[str, Any]
             {"ok": True, "reply": reply, "images": captured_images},
             headers=_CORS,
         )
+
+    # ── Voice WebSocket: browser mic → hub VAD + ASR + LLM + TTS ──────────
+
+    @router.websocket("/page-agent/voice")
+    async def page_voice_session(websocket: WebSocket) -> None:
+        """Stream 16kHz PCM from the browser through the full hub pipeline.
+
+        The browser sends raw int16 LE PCM as binary frames and JSON control
+        messages as text frames. The hub runs SileroVAD on the PCM, transcribes
+        with the persona's ASR provider, runs the LLM+tools turn, and streams
+        TTS PCM back as binary frames (preceded by ``{"type":"tts","state":
+        "start"}`` and followed by ``{"type":"tts","state":"stop"}``).
+
+        An optional wake word ("computer") gates which utterances trigger a
+        full LLM turn; non-wake utterances are shown as transcripts but not
+        sent to the LLM.
+        """
+        device_id = websocket.query_params.get("device_id", "")
+        token = websocket.query_params.get("token", "")
+        if not device_id or not await store.validate_websocket_token(device_id, token):
+            await websocket.close(code=1008, reason="invalid device_id or token")
+            return
+
+        await websocket.accept()
+        logger.bind(tag=_TAG).info(f"Page voice WS connected: {device_id!r}")
+
+        persona = await store.get_persona_for_device(device_id)
+        if persona is None:
+            await websocket.close(code=1008, reason="no persona")
+            return
+
+        from agent_hub.providers.asr import get_provider as get_asr
+        from agent_hub.providers.llm import get_provider as get_llm
+        from agent_hub.providers.tts import get_provider as get_tts
+        from agent_hub.server.audio import PcmSileroVAD, pcm_to_wav
+
+        vad_model_path = (
+            config.get("vad", {}).get("silero", {}).get("model_path", "models/silero_vad.onnx")
+        )
+        try:
+            vad = PcmSileroVAD(model_path=vad_model_path, sample_rate=16000)
+        except Exception as exc:
+            logger.bind(tag=_TAG).warning(
+                f"Page voice {device_id!r}: PcmSileroVAD unavailable ({exc}), closing"
+            )
+            await websocket.close(code=1011, reason="VAD model unavailable")
+            return
+
+        conversation: list[dict[str, str]] = await store.load_history(
+            device_id, limit=(persona.memory_window or 20) * 2
+        )
+        pipeline_lock = asyncio.Lock()
+        wake_word = "computer"
+
+        # Tool setup: page MCP tools + server skills (same as /page-agent/ask).
+        page_tool_defs = mcp_bridge.list_page_tool_definitions(device_id)
+        skill_defs = [
+            d
+            for d in server_skills.get_definitions()
+            if d["function"]["name"] not in {"page_speak", "page_see"}
+        ]
+        tools = page_tool_defs + skill_defs
+        page_tool_names = {d["function"]["name"] for d in page_tool_defs}
+
+        tool_lines: list[str] = []
+        for d in tools:
+            fn = d["function"]
+            extra = ""
+            if "camera" in fn["name"] or "photo" in fn["name"]:
+                extra = " Always pass a 'question' arg describing what to look for."
+            tool_lines.append(f"- {fn['name']}: {fn['description']}{extra}")
+        system_prompt = persona.system_prompt or ""
+        if tool_lines:
+            system_prompt = (
+                f"{system_prompt}\n\nAvailable tools you MUST use when relevant:\n"
+                + "\n".join(tool_lines)
+            ).strip()
+
+        async def _exec_tool(name: str, args: dict[str, Any]) -> str:
+            if name in page_tool_names:
+                timeout = 60.0 if ("camera" in name or "photo" in name) else 30.0
+                return await mcp_bridge.call_page_tool(device_id, name, args, timeout=timeout)
+            if server_skills.has_skill(name):
+                result = await server_skills.run_result(name, args)
+                return result.text
+            return f"unknown tool: {name!r}"
+
+        async def _run_turn(transcript: str) -> None:
+            async with pipeline_lock:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "stt",
+                            "text": transcript,
+                        }
+                    )
+                )
+                await websocket.send_text(json.dumps({"type": "thinking"}))
+                llm = get_llm(
+                    persona.llm_provider, config, model_override=persona.llm_model or None
+                )
+                try:
+                    reply = await llm.complete_with_tools(
+                        conversation, tools, _exec_tool, system_prompt=system_prompt
+                    )
+                except Exception as exc:
+                    logger.bind(tag=_TAG).error(f"Page voice LLM error: {exc}")
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "message": str(exc),
+                            }
+                        )
+                    )
+                    return
+                reply = (reply or "").strip()
+                if not reply:
+                    return
+                conversation.append({"role": "user", "content": transcript})
+                conversation.append({"role": "assistant", "content": reply})
+                await store.append_history(device_id, "user", transcript)
+                await store.append_history(device_id, "assistant", reply)
+
+                # TTS: synthesize and stream PCM back
+                tts = get_tts(persona.tts_provider, config)
+                try:
+                    pcm_bytes, tts_rate = await tts.synthesize_pcm(reply, voice=persona.tts_voice)
+                except Exception as exc:
+                    logger.bind(tag=_TAG).error(f"Page voice TTS error: {exc}")
+                    return
+                # Resample if needed (browser plays 24kHz or we send 16kHz raw)
+                if tts_rate != 16000:
+                    from agent_hub.server.audio import pcm_resample
+
+                    pcm_bytes = await pcm_resample(pcm_bytes, tts_rate, 16000)
+
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "tts",
+                            "state": "start",
+                            "text": reply,
+                        }
+                    )
+                )
+                # Send PCM in ~60ms chunks (1920 bytes = 960 samples * 2)
+                chunk_size = 1920
+                for i in range(0, len(pcm_bytes), chunk_size):
+                    await websocket.send_bytes(pcm_bytes[i : i + chunk_size])
+                await websocket.send_text(json.dumps({"type": "tts", "state": "stop"}))
+                logger.bind(tag=_TAG).info(
+                    f"Page voice {device_id!r}: {transcript!r} → {reply[:60]!r}"
+                )
+
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                if "bytes" in msg:
+                    if pipeline_lock.locked():
+                        continue  # drop audio while thinking/speaking
+                    pcm = msg["bytes"]
+                    if vad.push(pcm):
+                        pcm_all = vad.take_pcm()
+                        wav_bytes = pcm_to_wav(pcm_all, 16000)
+                        asr = get_asr(persona.asr_provider, config)
+                        result = await asr.transcribe(wav_bytes)
+                        if not result.is_speech or not result.text:
+                            continue
+                        transcript = result.text.strip()
+                        if len(transcript.split()) < 2:
+                            continue
+                        # Wake word check
+                        lower = transcript.lower()
+                        if wake_word and wake_word in lower:
+                            # Strip the wake word and send the command
+                            idx = lower.index(wake_word)
+                            command = transcript[idx + len(wake_word) :].strip().lstrip(",.?!")
+                            if not command:
+                                # Just "computer" — prompt for input
+                                command = "yes?"
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        "type": "wake",
+                                        "word": wake_word,
+                                        "command": command,
+                                    }
+                                )
+                            )
+                            await _run_turn(command)
+                        else:
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        "type": "transcript",
+                                        "text": transcript,
+                                    }
+                                )
+                            )
+                elif "text" in msg:
+                    ctrl = json.loads(msg["text"])
+                    if ctrl.get("type") == "wake_word":
+                        # Browser can set/clear the wake word at runtime
+                        wake_word = ctrl.get("word", "")
+                    elif ctrl.get("type") == "stop":
+                        vad.reset()
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        except Exception as exc:
+            logger.bind(tag=_TAG).error(f"Page voice error for {device_id!r}: {exc}")
+        finally:
+            logger.bind(tag=_TAG).info(f"Page voice WS disconnected: {device_id!r}")
 
     return router

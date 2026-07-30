@@ -48,6 +48,13 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 <input type="checkbox" id="speakReply" checked> speak reply</label></div>
 <div id="log" data-empty="1" style="background:#010409;border:1px solid #30363d;padding:.6rem;overflow:auto;max-height:24rem;border-radius:4px;white-space:pre-wrap;font-family:monospace;color:#c9d1d9">dialogue will appear here…</div>
 
+<h2>Voice (hands-free with wake word)</h2>
+<div class="row">
+<button id="listen">Listen</button>
+<label style="display:inline-flex;align-items:center;gap:.2rem;font-size:.8rem">
+Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
+<span id="voicestate" style="font-size:.85rem;color:#8b949e">off</span></div>
+
 <script>
 const LS_KEY = "agenthub.pageAgent.deviceId";
 let deviceId = localStorage.getItem(LS_KEY);
@@ -279,6 +286,132 @@ document.getElementById("cam").onclick = async () => {
   } catch (e) {
     document.getElementById("camstate").textContent = "denied";
   }
+};
+
+// ── Voice WebSocket: hands-free with wake word ──────────────────────────
+let voiceWs = null;
+let audioCtx = null;
+let micStream = null;
+let micSource = null;
+let processor = null;
+let listening = false;
+
+function voiceLog(msg, color) {
+  const logEl = document.getElementById("log");
+  const line = document.createElement("div");
+  line.textContent = "[voice] " + msg;
+  line.style.color = color || "#8b949e";
+  line.style.fontSize = "0.85rem";
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function startListening() {
+  if (listening) return;
+  const wakeWord = document.getElementById("wakeWord").value.trim().toLowerCase();
+  const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host
+    + "/page-agent/voice?device_id=" + encodeURIComponent(deviceId)
+    + "&token=" + encodeURIComponent(token);
+  voiceWs = new WebSocket(wsUrl);
+  voiceWs.binaryType = "arraybuffer";
+  voiceWs.onopen = async () => {
+    if (wakeWord) voiceWs.send(JSON.stringify({type: "wake_word", word: wakeWord}));
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({audio: {sampleRate: 16000, channelCount: 1}});
+    } catch (e) {
+      voiceLog("mic denied: " + e, "#f85149");
+      stopListening();
+      return;
+    }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+    micSource = audioCtx.createMediaStreamSource(micStream);
+    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    processor.onaudioprocess = (e) => {
+      if (!listening || !voiceWs || voiceWs.readyState !== 1) return;
+      const input = e.inputBuffer.getChannelData(0);
+      const pcm = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        let s = input[i] * 32768;
+        s = Math.max(-32768, Math.min(32767, s));
+        pcm[i] = s;
+      }
+      voiceWs.send(pcm.buffer);
+    };
+    micSource.connect(processor);
+    processor.connect(audioCtx.destination);
+    listening = true;
+    document.getElementById("listen").textContent = "Stop";
+    document.getElementById("voicestate").textContent = "listening"
+      + (wakeWord ? " for '" + wakeWord + "'" : "");
+    document.getElementById("voicestate").style.color = "#3fb950";
+    voiceLog("listening" + (wakeWord ? " for wake word '" + wakeWord + "'" : ""), "#3fb950");
+  };
+  voiceWs.onmessage = async (ev) => {
+    if (typeof ev.data === "string") {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "stt") {
+        voiceLog("heard: " + msg.text, "#58a6ff");
+      } else if (msg.type === "wake") {
+        voiceLog("wake word detected: '" + msg.word + "' → " + msg.command, "#f0883e");
+        const logEl = document.getElementById("log");
+        if (logEl.dataset.empty) { logEl.textContent = ""; delete logEl.dataset.empty; }
+        const line = document.createElement("div");
+        line.textContent = "you: " + msg.command;
+        line.style.color = "#58a6ff";
+        logEl.appendChild(line);
+      } else if (msg.type === "thinking") {
+        document.getElementById("voicestate").textContent = "thinking…";
+        document.getElementById("voicestate").style.color = "#d29922";
+      } else if (msg.type === "tts" && msg.state === "start") {
+        document.getElementById("voicestate").textContent = "speaking…";
+        document.getElementById("voicestate").style.color = "#3fb950";
+        const logEl = document.getElementById("log");
+        const line = document.createElement("div");
+        line.textContent = "agent: " + msg.text;
+        line.style.color = "#3fb950";
+        logEl.appendChild(line);
+        logEl.scrollTop = logEl.scrollHeight;
+      } else if (msg.type === "tts" && msg.state === "stop") {
+        document.getElementById("voicestate").textContent = "listening"
+          + (document.getElementById("wakeWord").value ? " for '" + document.getElementById("wakeWord").value + "'" : "");
+        document.getElementById("voicestate").style.color = "#3fb950";
+      } else if (msg.type === "transcript") {
+        voiceLog("(not wake word) " + msg.text, "#6e7681");
+      } else if (msg.type === "error") {
+        voiceLog("error: " + msg.message, "#f85149");
+      }
+    } else {
+      // Binary PCM audio — play it through WebAudio
+      if (!audioCtx) return;
+      const pcm16 = new Int16Array(ev.data);
+      const float32 = new Float32Array(pcm16.length);
+      for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
+      const buf = audioCtx.createBuffer(1, float32.length, 16000);
+      buf.getChannelData(0).set(float32);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start();
+    }
+  };
+  voiceWs.onerror = () => { voiceLog("WS error", "#f85149"); };
+  voiceWs.onclose = () => { stopListening(); };
+}
+
+function stopListening() {
+  listening = false;
+  if (processor) { processor.disconnect(); processor = null; }
+  if (micSource) { micSource.disconnect(); micSource = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  if (voiceWs) { voiceWs.close(); voiceWs = null; }
+  document.getElementById("listen").textContent = "Listen";
+  document.getElementById("voicestate").textContent = "off";
+  document.getElementById("voicestate").style.color = "#8b949e";
+}
+
+document.getElementById("listen").onclick = () => {
+  if (listening) stopListening(); else startListening();
 };
 
 register();
