@@ -62,6 +62,8 @@ if [ ! -f .env.do ]; then
   ENROLLMENT_TOKEN=$(openssl rand -hex 24)
 
   cp .env.do.example .env.do
+  # Holds the dashboard password, enrollment token, and later the LLM API key.
+  chmod 600 .env.do
   sed -i "s|^AGENT_HUB_SERVER_DASHBOARD_PASSWORD=.*|AGENT_HUB_SERVER_DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}|" .env.do
   sed -i "s|^AGENT_HUB_SERVER_ENROLLMENT_TOKEN=.*|AGENT_HUB_SERVER_ENROLLMENT_TOKEN=${ENROLLMENT_TOKEN}|" .env.do
   if [ -n "$PUBLIC_IP" ]; then
