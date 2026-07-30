@@ -103,19 +103,39 @@ EOF
   chmod 600 "$CREDS_FILE"
 fi
 
+# Setting AGENT_HUB_PUBLIC_HOST in .env.do selects the public ingress overlay:
+# Caddy terminates TLS for devices and a Cloudflare Tunnel carries the
+# dashboard, so the app ports are not published on the host at all.
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.do.yml)
+PUBLIC_INGRESS=false
+if grep -qE "^AGENT_HUB_PUBLIC_HOST=.+" .env.do; then
+  COMPOSE_FILES+=(-f docker-compose.public.yml)
+  PUBLIC_INGRESS=true
+fi
+
 # DigitalOcean's Docker image boots with ufw active, allowing only 22, 2375
 # and 2376. Without this the stack starts and binds correctly but every
 # external request is dropped, which looks exactly like a crashed container.
 if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-  ufw allow 8000/tcp comment "agent-hub device WebSocket"
-  ufw allow 8001/tcp comment "agent-hub dashboard"
-  ufw allow 8003/tcp comment "agent-hub device check-in"
+  if [ "$PUBLIC_INGRESS" = true ]; then
+    # Only the TLS front door. 80 is required for the ACME http-01 challenge,
+    # and the tunnel needs no inbound port at all.
+    ufw allow 80/tcp comment "agent-hub ACME http-01"
+    ufw allow 443/tcp comment "agent-hub TLS"
+  else
+    ufw allow 8000/tcp comment "agent-hub device WebSocket"
+    ufw allow 8001/tcp comment "agent-hub dashboard"
+    ufw allow 8003/tcp comment "agent-hub device check-in"
+  fi
   ufw reload
 fi
 
 # Build and start
-docker compose -f docker-compose.yml -f docker-compose.do.yml build
-docker compose -f docker-compose.yml -f docker-compose.do.yml up -d
+docker compose "${COMPOSE_FILES[@]}" build
+docker compose "${COMPOSE_FILES[@]}" up -d
 
 echo "agent-hub is starting. Credentials and next steps: $CREDS_FILE"
+if [ "$PUBLIC_INGRESS" = true ]; then
+  echo "Public ingress enabled — devices via Caddy, dashboard via Cloudflare Tunnel."
+fi
 cat "$CREDS_FILE"

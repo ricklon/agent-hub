@@ -382,6 +382,58 @@ Locally, `just do-build` / `do-up` / `do-logs` / `do-down` drive the same
 stack. It builds as `agent-hub-do:latest` so it does not overwrite the
 full-stack local image.
 
+### Public ingress: Caddy for devices, Cloudflare Tunnel for the dashboard
+
+`docker-compose.public.yml` puts the droplet behind TLS and stops publishing
+the app ports entirely. It splits the two kinds of traffic because they want
+opposite things — the same split the one-app-per-port separation already
+encodes:
+
+```
+devices    hub.<domain>    -> Caddy :443 -> 8000 (wss, image), 8003 (checkin)
+dashboard  admin.<domain>  -> Cloudflare Tunnel -> 8001, behind Access
+```
+
+**Devices go direct.** Voice is latency-critical — ASR alone runs at RTF 0.73
+on one vCPU — so an extra edge hop is expensive, and vision over a tunnel is
+already the flakiest part of the pipeline. Devices also cannot complete an
+interactive Access login. They do not need to: they present the enrollment
+token, then a per-device WebSocket token, plus the image token for camera
+uploads.
+
+**The dashboard goes through the tunnel.** It is latency-insensitive and the
+highest-value target in the system — it can change personas, drive device
+tools, and read every transcript and photo. Through a tunnel it has no public
+port at all, and Cloudflare Access puts real SSO in front of it, replacing
+Basic auth over plain HTTP. Put an Access policy on that hostname; without one
+the tunnel has simply published your dashboard.
+
+The Caddyfile returns 404 for anything it does not route, so `/dashboard/` on
+the device hostname finds nothing even though the app is listening on 8001
+inside the compose network.
+
+Set in `.env.do`:
+
+```sh
+AGENT_HUB_PUBLIC_HOST=hub.example.com       # devices
+AGENT_HUB_DASHBOARD_HOST=admin.example.com  # dashboard, via the tunnel
+CLOUDFLARE_TUNNEL_TOKEN=...                 # from the Cloudflare dashboard
+ACME_EMAIL=you@example.com
+```
+
+`AGENT_HUB_PUBLIC_HOST` is what selects this mode — cloud-init detects it,
+adds the overlay, and opens only 80 and 443 in ufw instead of the app ports.
+Port 80 is needed for the ACME http-01 challenge; the tunnel needs no inbound
+port.
+
+Create the tunnel under Zero Trust → Networks → Tunnels, add a public hostname
+routing your dashboard host to `http://agent-hub:8001`, and paste the token
+into `.env.do`. Then `just public-up`, or let cloud-init do it on a fresh
+droplet.
+
+Certificates live in `./data/caddy`. Keep that directory across restarts or
+Caddy re-issues every time and will hit Let's Encrypt rate limits.
+
 ### Before pointing devices at it
 
 The droplet's ports are open to the internet, not a LAN, so the LAN-first
