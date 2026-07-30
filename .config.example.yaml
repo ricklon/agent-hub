@@ -83,6 +83,14 @@ asr:
     api_key: null  # inherits llm.openai.api_key when omitted
     model: "whisper-1"
     language: "en"
+  moonshine:
+    # Lightweight on-device ASR — 34M params (tiny), ~70MB, no API keys needed.
+    # Supports: en, es, zh, ja, ko, vi, uk, ar
+    # Model arch: tiny (34M), tiny_streaming, base, base_streaming,
+    #             small_streaming (123M), medium_streaming (245M)
+    language: "en"
+    model_arch: "tiny"
+    cache_root: "models/moonshine"
 
 vad:
   silero:
