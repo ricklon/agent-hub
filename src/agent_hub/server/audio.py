@@ -319,6 +319,115 @@ class SileroVAD:
         return frames
 
 
+class PcmSileroVAD:
+    """Silero VAD that accepts raw 16kHz int16 PCM directly (no Opus decode).
+
+    Used by the page-agent voice WebSocket, where the browser sends raw PCM
+    instead of Opus-encoded packets. Otherwise identical to SileroVAD: dual
+    threshold + sliding window + silence-frame count to detect speech turns.
+    """
+
+    THRESHOLD: float = 0.5
+    THRESHOLD_LOW: float = 0.2
+    SILENCE_FRAMES: int = 16
+    WINDOW_SIZE: int = 8
+    WINDOW_THRESHOLD: int = 3
+    MAX_FRAMES: int = 250
+
+    def __init__(self, model_path: str, sample_rate: int = 16000) -> None:
+        import onnxruntime
+
+        opts = onnxruntime.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        self._session: Any = onnxruntime.InferenceSession(
+            model_path,
+            providers=["CPUExecutionProvider"],
+            sess_options=opts,
+        )
+        self._sample_rate = sample_rate
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        self._pcm_buf = bytearray()
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, 64), dtype=np.float32)
+        self._voice_window: list[bool] = []
+        self._last_is_voice: bool = False
+        self._has_speech: bool = False
+        self._silent_count: int = 0
+        self._speech_stopped: bool = False
+        self._total_pcm: int = 0
+
+    def push(self, pcm_bytes: bytes) -> bool:
+        """Feed raw int16 LE PCM. Returns True when a speech turn is complete.
+
+        Args:
+            pcm_bytes: Raw signed 16-bit little-endian PCM at 16 kHz.
+
+        Returns:
+            True when enough silence follows speech to trigger ASR.
+        """
+        self._pcm_buf.extend(pcm_bytes)
+        chunk_bytes = 512 * 2
+        active = False
+        while len(self._pcm_buf) >= chunk_bytes:
+            chunk = bytes(self._pcm_buf[:chunk_bytes])
+            self._pcm_buf = self._pcm_buf[chunk_bytes:]
+            active = self._infer_chunk(chunk)
+
+        if active:
+            self._has_speech = True
+            self._silent_count = 0
+            self._speech_stopped = False
+        elif self._has_speech:
+            self._silent_count += 1
+            if self._silent_count >= self.SILENCE_FRAMES:
+                self._speech_stopped = True
+
+        return self._speech_stopped
+
+    def _infer_chunk(self, samples_int16: bytes) -> bool:
+        audio_int16 = np.frombuffer(samples_int16, dtype=np.int16)
+        self._total_pcm += len(audio_int16)
+        audio_f32 = audio_int16.astype(np.float32) / 32768.0
+        audio_input = np.concatenate([self._context, audio_f32.reshape(1, -1)], axis=1).astype(
+            np.float32
+        )
+        out, new_state = self._session.run(
+            None,
+            {
+                "input": audio_input,
+                "state": self._state,
+                "sr": np.array(self._sample_rate, dtype=np.int64),
+            },
+        )
+        self._state = new_state
+        self._context = audio_input[:, -64:]
+        prob: float = float(out.item())
+        if prob >= self.THRESHOLD:
+            is_voice = True
+        elif prob <= self.THRESHOLD_LOW:
+            is_voice = False
+        else:
+            is_voice = self._last_is_voice
+        self._last_is_voice = is_voice
+        self._voice_window.append(is_voice)
+        if len(self._voice_window) > self.WINDOW_SIZE:
+            self._voice_window.pop(0)
+        return self._voice_window.count(True) >= self.WINDOW_THRESHOLD
+
+    def take_pcm(self) -> bytes:
+        """Return all accumulated raw PCM for this speech turn and reset."""
+        # Include any partial chunk still in the buffer
+        all_pcm = bytes(self._pcm_buf)
+        self._reset_state()
+        return all_pcm
+
+    def reset(self) -> None:
+        self._reset_state()
+
+
 class AudioRateController:
     """Paces Opus packet delivery at exactly frame_duration ms intervals.
 
