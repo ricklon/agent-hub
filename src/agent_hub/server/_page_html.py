@@ -29,6 +29,7 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 .badge{font-size:.7rem;background:#1a2a3a;color:#79c0ff;border-radius:3px;padding:.1rem .35rem}
 </style></head><body>
 <h1>Page Agent</h1>
+<div class="row"><a href="/dashboard/" style="color:#58a6ff">← Dashboard</a></div>
 <div id="status">initialising…</div>
 
 <h2>Camera (seeing)</h2>
@@ -45,7 +46,7 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 <button id="post">Send</button>
 <label style="display:inline-flex;align-items:center;gap:.2rem;font-size:.8rem">
 <input type="checkbox" id="speakReply" checked> speak reply</label></div>
-<pre id="log" data-empty="1">dialogue will appear here…</pre>
+<div id="log" data-empty="1" style="background:#010409;border:1px solid #30363d;padding:.6rem;overflow:auto;max-height:24rem;border-radius:4px;white-space:pre-wrap;font-family:monospace;color:#c9d1d9">dialogue will appear here…</div>
 
 <script>
 const LS_KEY = "agenthub.pageAgent.deviceId";
@@ -159,6 +160,11 @@ async function dispatch(name, args) {
       if (!stream) { stream = await navigator.mediaDevices.getUserMedia({video: true}); }
       const v = document.getElementById("video");
       v.srcObject = stream; v.style.display = "block"; v.play();
+      // Wait for the video to have a real frame ready to draw.
+      if (v.readyState < 2) {
+        await new Promise((resolve) => v.addEventListener("loadeddata", resolve, {once: true}));
+      }
+      await new Promise((r) => setTimeout(r, 200));
       const c = document.createElement("canvas");
       c.width = v.videoWidth || 320;
       c.height = v.videoHeight || 240;
@@ -211,7 +217,10 @@ async function askAgent() {
   btn.textContent = "…";
   const logEl = document.getElementById("log");
   if (logEl.dataset.empty) { logEl.textContent = ""; delete logEl.dataset.empty; }
-  logEl.textContent += "you: " + text + "\n";
+  const lineYou = document.createElement("div");
+  lineYou.textContent = "you: " + text;
+  lineYou.style.color = "#58a6ff";
+  logEl.appendChild(lineYou);
   input.value = "";
   try {
     const resp = await fetch("/page-agent/ask", {
@@ -221,15 +230,35 @@ async function askAgent() {
     });
     const data = await resp.json();
     if (data.ok && data.reply) {
-      logEl.textContent += "agent: " + data.reply + "\n";
+      if (data.images && data.images.length) {
+        for (const img of data.images) {
+          const imgEl = document.createElement("img");
+          imgEl.src = img;
+          imgEl.style.maxWidth = "320px";
+          imgEl.style.borderRadius = "4px";
+          imgEl.style.margin = "0.2rem 0";
+          imgEl.style.display = "block";
+          logEl.appendChild(imgEl);
+        }
+      }
+      const lineAgent = document.createElement("div");
+      lineAgent.textContent = "agent: " + data.reply;
+      lineAgent.style.color = "#3fb950";
+      logEl.appendChild(lineAgent);
       if (document.getElementById("speakReply").checked) {
         dispatch("page.audio_speaker.speak", {text: data.reply});
       }
     } else {
-      logEl.textContent += "agent: (error) " + (data.message || "no reply") + "\n";
+      const lineErr = document.createElement("div");
+      lineErr.textContent = "agent: (error) " + (data.message || "no reply");
+      lineErr.style.color = "#f85149";
+      logEl.appendChild(lineErr);
     }
   } catch (e) {
-    logEl.textContent += "agent: (error) " + e + "\n";
+    const lineErr = document.createElement("div");
+    lineErr.textContent = "agent: (error) " + e;
+    lineErr.style.color = "#f85149";
+    logEl.appendChild(lineErr);
   }
   logEl.scrollTop = logEl.scrollHeight;
   asking = false;

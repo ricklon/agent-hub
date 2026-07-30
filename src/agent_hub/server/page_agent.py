@@ -47,9 +47,17 @@ _VALID_ACTIVITIES = {"idle", "listening", "thinking", "speaking", "paused"}
 
 
 def _bridge_base(request: Request, settings: Settings) -> str:
-    """Base URL for the MCP bridge, honoring a dedicated bridge port."""
+    """Base URL for the MCP bridge.
+
+    When the bridge shares the dashboard port (the default), returns an empty
+    string so the browser uses its own origin (handles proxies/tailscale/Funnel
+    without leaking the container's internal address). When the bridge has a
+    dedicated port, constructs the URL from the request's visible host.
+    """
+    if settings.server.mcp_bridge_port == settings.server.dashboard_port:
+        return ""
     parsed = urlsplit(str(request.url))
-    scheme = parsed.scheme or "http"
+    scheme = parsed.scheme or "https"
     host = parsed.hostname or settings.server.host or "127.0.0.1"
     return f"{scheme}://{host}:{settings.server.mcp_bridge_port}"
 
@@ -231,14 +239,21 @@ def make_router(store: RegistryStore, settings: Settings, config: dict[str, Any]
 
         # Tool executor: route page tools via the bridge, skills via skills.run_result.
         page_tool_names = {d["function"]["name"] for d in page_tool_defs}
+        captured_images: list[str] = []
 
         async def _exec_tool(name: str, args: dict[str, Any]) -> str:
             if name in page_tool_names:
                 timeout = 60.0 if ("camera" in name or "photo" in name) else 30.0
-                return await mcp_bridge.call_page_tool(device_id, name, args, timeout=timeout)
+                page_result = await mcp_bridge.call_page_tool(
+                    device_id, name, args, timeout=timeout
+                )
+                # Track captured images so we can show them in the dialogue
+                if isinstance(page_result, str) and page_result.startswith("data:image"):
+                    captured_images.append(page_result)
+                return page_result
             if server_skills.has_skill(name):
-                result = await server_skills.run_result(name, args)
-                return result.text
+                skill_result = await server_skills.run_result(name, args)
+                return skill_result.text
             return f"unknown tool: {name!r}"
 
         # Run the LLM turn (non-streaming — the page displays the full text).
@@ -256,9 +271,18 @@ def make_router(store: RegistryStore, settings: Settings, config: dict[str, Any]
         reply = (reply or "").strip()
         if reply:
             await store.append_history(device_id, "user", text)
-            await store.append_history(device_id, "assistant", reply)
+            history_content = reply
+            if captured_images:
+                history_content = f"{reply}\n[image:captured]"
+            await store.append_history(device_id, "assistant", history_content)
 
-        logger.bind(tag=_TAG).info(f"Page agent {device_id!r} ask: {text!r} → {reply[:80]!r}")
-        return JSONResponse({"ok": True, "reply": reply}, headers=_CORS)
+        logger.bind(tag=_TAG).info(
+            f"Page agent {device_id!r} ask: {text!r} → {reply[:80]!r} "
+            f"({len(captured_images)} images)"
+        )
+        return JSONResponse(
+            {"ok": True, "reply": reply, "images": captured_images},
+            headers=_CORS,
+        )
 
     return router
