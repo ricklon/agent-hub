@@ -19,4 +19,7 @@ RUN uv sync --frozen --no-dev --extra full \
 
 EXPOSE 8000 8001 8003
 
-CMD ["uv", "run", "python", "-m", "agent_hub.server"]
+# --no-sync: the environment is already built above. Without it, every
+# container start re-resolves the project and re-fetches the KittenTTS wheel
+# from GitHub, so startup fails whenever the network or GitHub is unavailable.
+CMD ["uv", "run", "--no-sync", "python", "-m", "agent_hub.server"]

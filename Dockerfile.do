@@ -1,12 +1,11 @@
-# DigitalOcean-optimized Dockerfile — Moonshine ASR + Edge TTS, no torch.
+# DigitalOcean-optimized Dockerfile — Moonshine ASR + KittenTTS, no torch.
 #
-# Everything that needs torch lives in the `full` extra, which this image
-# skips: SenseVoice/FunASR ASR, and KittenTTS, which pulls torch in through
-# misaki[en] -> spacy-curated-transformers. Moonshine runs on onnxruntime
-# instead. Measured: 390MB image (vs ~4GB) and ~95MB idle RAM.
+# Both run on onnxruntime, so speech stays local on the droplet. What this
+# image skips is the `full` extra: SenseVoice/FunASR ASR and the silero-vad
+# package, which need torch (~700MB). Measured: 690MB image (vs ~4GB).
 #
-# Both provider registries import lazily, so selecting a provider that isn't
-# installed fails at that provider's construction, not at startup.
+# The ASR registry imports lazily, so selecting funasr here fails at that
+# provider's construction, not at startup.
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.do.yml build
@@ -37,11 +36,16 @@ RUN uv sync --frozen --no-dev \
     && uv run python scripts/copy_silero.py \
     && uv pip uninstall silero-vad
 
-# Bake the Moonshine model (~70MB) into the image so the first transcription
-# doesn't stall on a download. models/ is deliberately NOT a bind mount in
-# docker-compose.do.yml — mounting it would shadow these files.
-RUN uv run python scripts/download_moonshine.py
+# Bake the speech models into the image so the first request doesn't stall on
+# a download. models/ is deliberately NOT a bind mount in
+# docker-compose.do.yml — mounting it would shadow the Moonshine/Silero files.
+# KittenTTS caches under ~/.cache/huggingface, which is not mounted either.
+RUN uv run python scripts/download_moonshine.py \
+    && uv run python scripts/download_kittentts.py
 
 EXPOSE 8000 8001 8003
 
-CMD ["uv", "run", "python", "-m", "agent_hub.server"]
+# --no-sync: the environment is already built above. Without it, every
+# container start re-resolves the project and re-fetches the KittenTTS wheel
+# from GitHub, so a droplet reboot fails whenever GitHub is unreachable.
+CMD ["uv", "run", "--no-sync", "python", "-m", "agent_hub.server"]

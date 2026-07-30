@@ -1,4 +1,4 @@
-# DigitalOcean deployment override — Moonshine ASR + Edge TTS, no torch.
+# DigitalOcean deployment override — Moonshine ASR + KittenTTS, no torch.
 #
 # Usage (or `just do-build` / `just do-up`):
 #   docker compose -f docker-compose.yml -f docker-compose.do.yml build
@@ -29,6 +29,10 @@ services:
       - AGENT_HUB_ASR_DEFAULT_PROVIDER=moonshine
       - AGENT_HUB_ASR_MOONSHINE_LANGUAGE=en
       - AGENT_HUB_ASR_MOONSHINE_MODEL_ARCH=tiny
+      # Edge TTS by default: KittenTTS is installed and its model is baked in,
+      # but it needs ~4 vCPU to synthesize faster than real time. See
+      # docs/deployment.md before flipping this to `kitten`.
+      - AGENT_HUB_TTS_DEFAULT_PROVIDER=edge
     env_file:
       - path: .env.do
         required: false

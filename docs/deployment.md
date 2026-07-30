@@ -248,23 +248,53 @@ from the internet the moment the container starts. Read
 [Remaining Work Before Public Internet](#remaining-work-before-public-internet)
 before leaving one running.
 
-The droplet stack swaps both heavy providers for light ones:
+The droplet swaps SenseVoice for a lighter ASR but keeps speech local at both
+ends:
 
 | | Local (`Dockerfile`) | Droplet (`Dockerfile.do`) |
 | --- | --- | --- |
 | ASR | SenseVoice via FunASR (torch) | Moonshine (onnxruntime) |
-| TTS | KittenTTS (torch, via `misaki[en]`) | Edge TTS (cloud) |
-| Image | ~4GB | 390MB |
-| Idle RAM | ~650MB | ~95MB |
+| TTS | KittenTTS or Edge | Edge by default, KittenTTS installed |
+| Image | ~4GB | 532MB |
 
-Everything needing torch lives in the `full` extra. Both provider registries
-import lazily, so the droplet image runs fine without it — but selecting
-`funasr`, `funasr_onnx`, or `kitten` there fails when that provider is
-constructed. ASR stays local; only TTS becomes a cloud call.
+Torch is confined to the `full` extra — SenseVoice/FunASR and the `silero-vad`
+package. The droplet skips it, running the Silero VAD from the bundled `.onnx`
+through onnxruntime instead. The ASR registry imports lazily, so the droplet
+image starts fine; selecting `funasr` there fails when that provider is
+constructed.
 
-The Moonshine and Silero models are baked into the image, so `models/` is
-deliberately **not** a bind mount in `docker-compose.do.yml` — mounting it
-would shadow them with the host's empty directory on a fresh droplet.
+KittenTTS looks like it needs torch, but does not. Its `misaki[en]` dependency
+declares `spacy-curated-transformers`, which pulls torch, and the English G2P
+path never imports it — so `tool.uv.override-dependencies` in `pyproject.toml`
+drops it. `spacy` itself *is* used and stays. If a future misaki release starts
+using that package, the override is the first thing to revisit.
+
+The Moonshine, Silero, and KittenTTS models are baked into the image. `models/`
+is deliberately **not** a bind mount in `docker-compose.do.yml` — mounting it
+would shadow them with the host's empty directory on a fresh droplet — and the
+container starts with `uv run --no-sync` so a reboot never depends on GitHub
+being reachable. Verified with `--network none`.
+
+### Why the droplet defaults to Edge TTS
+
+KittenTTS is installed and its model is baked in, but it is **CPU-bound and
+scales hard with cores**. Measured in the droplet image, synthesizing a
+4.4-second reply:
+
+| vCPU | Synthesis time | Real-time factor |
+| --- | --- | --- |
+| 1 | 9.2s | 2.11 — unusable |
+| 2 | 4.1s | 0.94 — no headroom |
+| 4 | 0.7s | 0.16 — comfortable |
+
+A real-time factor above 1.0 means speech is generated slower than it plays,
+so streaming does not rescue it. On the recommended `s-1vcpu-2gb` droplet
+KittenTTS cannot keep up, and ASR and the LLM stream compete for the same
+core. Hence Edge TTS by default.
+
+On `s-4vcpu-8gb` or larger, `AGENT_HUB_TTS_DEFAULT_PROVIDER=kitten` makes the
+droplet fully local — no rebuild needed, since the package and model already
+ship in the image.
 
 ### Provisioning
 

@@ -20,6 +20,7 @@ dependencies = [
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
     "soundfile>=0.12",
+    "kittentts",
     "openai>=1.30",
     "opuslib-next>=1.1.5",
     "onnx>=1.18,<1.19",
@@ -30,12 +31,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Everything that needs torch (~700MB) — SenseVoice/FunASR ASR and KittenTTS,
-# which pulls torch transitively via misaki[en] -> spacy-curated-transformers.
-# Omitted on DigitalOcean, which uses Moonshine ASR + Edge TTS instead. Both
-# provider registries import lazily, so the code runs fine without these.
+# SenseVoice/FunASR ASR and the Silero VAD package, which need torch (~700MB).
+# Omitted on DigitalOcean, which runs Moonshine ASR instead; the VAD there uses
+# the bundled .onnx through onnxruntime. The ASR registry imports lazily, so
+# the code runs fine without these — selecting funasr without them fails when
+# that provider is constructed.
 full = [
-    "kittentts",
     "silero-vad>=5.0",
     "funasr>=1.2.7",
     "funasr-onnx>=0.4.1",
@@ -51,6 +52,12 @@ dev = [
     "ruff>=0.5",
     "types-pyyaml",
 ]
+
+[tool.uv]
+# misaki[en] declares spacy-curated-transformers, which pulls torch (~700MB).
+# The English G2P path never imports it — verified by generating audio with
+# torch absent. Dropping it keeps KittenTTS local on the droplet image.
+override-dependencies = ["spacy-curated-transformers; sys_platform == 'never'"]
 
 [tool.uv.sources]
 kittentts = { url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" }
