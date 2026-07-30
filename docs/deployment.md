@@ -273,7 +273,45 @@ metadata: `sensevoice_bin.py` imports torch for the CTC decode path, and
 imports `jieba` without declaring it at all. Dependency-graph tools will tell
 you otherwise — the local image cannot drop torch while SenseVoice is its
 default ASR. Switching the default to Moonshine is what would make a
-torch-free local image possible.
+torch-free local image possible; see the benchmark below for why we don't.
+
+### ASR benchmark: Moonshine vs SenseVoice
+
+Measured with `scripts/bench_asr.py` over 73 LibriSpeech utterances (481s of
+real speech with ground-truth transcripts), through the actual provider
+interfaces:
+
+| Provider | WER | Median latency (many-core) | Peak RSS |
+| --- | --- | --- | --- |
+| Moonshine tiny | 13.22% | 0.332s | 272MB |
+| Moonshine base | 8.17% | 0.511s | 534MB |
+| **SenseVoice (`funasr_onnx`)** | **7.22%** | **0.292s** | 744MB |
+
+Constrained to 1 vCPU, the droplet case (25 utterances, 206s):
+
+| Provider | WER | Median latency | Real-time factor |
+| --- | --- | --- | --- |
+| Moonshine tiny | 13.17% | 4.10s | **0.73** |
+| Moonshine base | 8.18% | 6.19s | 1.06 — too slow |
+| SenseVoice | **6.99%** | 5.50s | 0.88 |
+
+**SenseVoice stays the default.** It is the most accurate of the three *and*
+the fastest on a normal machine — the model-size numbers suggest the opposite,
+which is why this was worth measuring. Moonshine tiny makes roughly twice as
+many errors; Moonshine base nearly closes the accuracy gap but exceeds
+real time on 1 vCPU.
+
+The droplet still uses Moonshine tiny, for headroom rather than speed: 272MB
+against 744MB peak RSS, a 532MB image against 1.1GB, and RTF 0.73 against
+0.88 leaves room for the LLM and TTS on the same core. On an `s-2vcpu-4gb`
+droplet or larger, `AGENT_HUB_ASR_DEFAULT_PROVIDER=funasr_onnx` buys roughly
+half the error rate — but needs the torch-bearing image, so build with the
+default `Dockerfile` rather than `Dockerfile.do`.
+
+Caveat: LibriSpeech is clean, read audiobook speech, and its utterances
+average 6.6s — far longer than a device command. Field accuracy on ESP32 mic
+audio will be worse for every provider, and device latencies proportionally
+lower. Treat this as a relative ranking, not a prediction.
 
 KittenTTS looks like it needs torch, but does not. Its `misaki[en]` dependency
 declares `spacy-curated-transformers`, which pulls torch, and the English G2P
