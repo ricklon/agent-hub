@@ -98,18 +98,30 @@ class OpenAILLMProvider(LLMProvider):
                     continue
                 args = json.loads(tc.function.arguments or "{}")
                 result = await tool_executor(tc.function.name or "", args)
-                # Image results (data URLs) need multimodal content blocks
+                # Image results (data URLs) need multimodal content blocks.
+                # Some providers reject image_url in a tool-role message, so
+                # send it as a user message alongside the tool acknowledgement.
                 if isinstance(result, str) and result.startswith("data:"):
-                    content: Any = [{"type": "image_url", "image_url": {"url": result}}]
+                    working.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id or "",
+                            "content": "Image captured and attached.",
+                        }
+                    )
+                    content: Any = [
+                        {"type": "text", "text": "Here is the image you requested:"},
+                        {"type": "image_url", "image_url": {"url": result}},
+                    ]
+                    working.append({"role": "user", "content": content})
                 else:
-                    content = result
-                working.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id or "",
-                        "content": content,
-                    }
-                )
+                    working.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id or "",
+                            "content": result,
+                        }
+                    )
 
         # Exhausted rounds — final call without tools
         resp = await completions.create(
@@ -202,16 +214,26 @@ class OpenAILLMProvider(LLMProvider):
                     args = {}
                 result = await tool_executor(str(fn.get("name") or ""), args)
                 if isinstance(result, str) and result.startswith("data:"):
-                    tool_content: Any = [{"type": "image_url", "image_url": {"url": result}}]
+                    working.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": "Image captured and attached.",
+                        }
+                    )
+                    tool_content: Any = [
+                        {"type": "text", "text": "Here is the image you requested:"},
+                        {"type": "image_url", "image_url": {"url": result}},
+                    ]
+                    working.append({"role": "user", "content": tool_content})
                 else:
-                    tool_content = result
-                working.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call["id"],
-                        "content": tool_content,
-                    }
-                )
+                    working.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": result,
+                        }
+                    )
 
         async for delta in self.stream(cast(list[dict[str, str]], working), system_prompt=""):
             yield delta
