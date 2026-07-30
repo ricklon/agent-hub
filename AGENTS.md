@@ -56,7 +56,9 @@ agent-hub/
 │   │   ├── protocol.py      ← message types and JSON schemas
 │   │   ├── audio.py         ← Opus encode/decode, VAD, rate control
 │   │   ├── session_state.py ← per-connection state
-│   │   ├── mcp_bridge.py    ← MCP tool routing between agents
+│   │   ├── mcp_bridge.py    ← page-agent MCP bridge (SSE-down / POST-up JSON-RPC)
+│   │   ├── page_agent.py    ← page-agent register/heartbeat + the page route
+│   │   ├── _page_html.py    ← the page-agent browser page (E501-suppressed)
 │   │   ├── mcp_client.py    ← device-side MCP-over-WS JSON-RPC client
 │   │   ├── tool_policy.py   ← which tools a persona may call
 │   │   ├── image_explain.py ← camera upload + background vision inference
@@ -87,7 +89,8 @@ Two naming traps:
   currently empty. `src/agent_hub/skills/` holds **runtime tools the LLM
   can call** and is real code. They are unrelated.
 - `mcp_bridge.py` and `mcp_client.py` are different layers. The client
-  speaks JSON-RPC to one device; the bridge routes tools between agents.
+  speaks JSON-RPC to one xiaozhi device over the voice WebSocket; the bridge
+  speaks JSON-RPC to a browser page agent over SSE-down / POST-up.
 
 `ws_session.py` and `dashboard/app.py` are each ~1000 lines and together are
 about a third of the codebase. Prefer extracting into a sibling module over
@@ -221,7 +224,7 @@ elsewhere in Rick's projects.
 | `xiaozhi-protocol`          | working in `src/agent_hub/server/protocol.py` or any file that reads/writes the device wire protocol | Message shapes for check-in, WS hello, audio frames, MCP-over-WS, tool calls; firmware compatibility constraints; known gotchas (Opus framing, sample rates, endianness) |
 | `registry-model`            | working in `src/agent_hub/registry/`              | The Agent / Device / Persona / Template data model; lifecycle states (DISCOVERED → CLAIMED → ACTIVE → IDLE → OFFLINE); memory scoping rules; SQLite schema migrations |
 | `providers`                 | adding or modifying an LLM/TTS/ASR provider       | Abstract base classes; auth conventions (env var naming); streaming vs blocking patterns; cost tracking; how to add a new provider in <100 lines |
-| `mcp-bridge`                | working in `src/agent_hub/server/mcp_bridge.py`   | MCP tool discovery on device connect; cross-agent tool routing rules; auth model (which agents can call which device's tools); error propagation |
+| `mcp-bridge`                | working in `src/agent_hub/server/mcp_bridge.py`, `server/page_agent.py`, `_page_html.py`, or the `page_speak`/`page_see` skills | SSE-down / POST-up JSON-RPC bridge for browser page agents; page-agent registration (AgentKind.PAGE, no activation gate); how `call_page_tool` resolves via `/mcp/v1/respond`; port placement (mcp_bridge_port defaults to dashboard port); do not poll `request.is_disconnected()` |
 | `dashboard-htmx`            | working in `src/agent_hub/dashboard/`             | HTMX patterns used in this repo; component conventions; how to add a new page without a build step; auth model |
 | `deployment-edge`           | working in deployment playbooks or compose files  | Bind-mount layout (survives Docker wipe); Tailscale sidecar pattern; Cloudflare Tunnel pattern; secrets handling; NFS conventions from the homelab |
 | `class-day`                 | preparing for a teaching session at FUBAR or 4-H  | Pre-class checklist; common builder mistakes; smoke test sequence; what "it worked" looks like; recovery playbook for flaky wifi |

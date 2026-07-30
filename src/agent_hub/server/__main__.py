@@ -24,6 +24,8 @@ from agent_hub.registry.store import RegistryStore
 from agent_hub.server.checkin import make_router as make_checkin_router
 from agent_hub.server.heartbeat import make_router as make_heartbeat_router
 from agent_hub.server.image_explain import make_router as make_image_router
+from agent_hub.server.mcp_bridge import make_router as make_mcp_bridge_router
+from agent_hub.server.page_agent import make_router as make_page_agent_router
 from agent_hub.server.ws_session import make_router as make_ws_router
 
 _prewarmed = False
@@ -101,7 +103,8 @@ def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any
             f"agent-hub ready — "
             f"check-in on :{settings.server.http_port}, "
             f"WS on :{settings.server.ws_port}, "
-            f"dashboard on :{settings.server.dashboard_port}"
+            f"dashboard on :{settings.server.dashboard_port}, "
+            f"MCP bridge on :{settings.server.mcp_bridge_port}"
         )
         app.state.prewarm_task = asyncio.create_task(_prewarm_providers(raw_config))
 
@@ -144,7 +147,19 @@ def build_apps() -> dict[int, FastAPI]:
             [make_checkin_router(store, settings), make_heartbeat_router(store, settings)],
             False,
         ),
-        (settings.server.dashboard_port, [make_dashboard_router(store, raw_config)], True),
+        (
+            settings.server.dashboard_port,
+            [
+                make_dashboard_router(store, raw_config),
+                make_page_agent_router(store, settings, raw_config),
+            ],
+            True,
+        ),
+        (
+            settings.server.mcp_bridge_port,
+            [make_mcp_bridge_router(store, settings)],
+            False,
+        ),
     ]
 
     apps: dict[int, FastAPI] = {}
@@ -204,6 +219,8 @@ def build_app() -> FastAPI:
     app.include_router(make_image_router(raw_config, store))
     app.include_router(make_ws_router(store, raw_config))
     app.include_router(make_dashboard_router(store, raw_config))
+    app.include_router(make_page_agent_router(store, settings, raw_config))
+    app.include_router(make_mcp_bridge_router(store, settings))
 
     return app
 

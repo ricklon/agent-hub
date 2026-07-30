@@ -84,7 +84,14 @@ def test_checkin_port_serves_checkin_and_ota(monkeypatch, tmp_path) -> None:
 
 def test_collapsed_ports_keep_every_route(monkeypatch, tmp_path) -> None:
     """Single-port setups are common in local dev and must not lose routes."""
-    _configure(monkeypatch, tmp_path, ws_port=8000, http_port=8000, dashboard_port=8000)
+    _configure(
+        monkeypatch,
+        tmp_path,
+        ws_port=8000,
+        http_port=8000,
+        dashboard_port=8000,
+        mcp_bridge_port=8000,
+    )
 
     apps = server_main.build_apps()
 
@@ -95,6 +102,8 @@ def test_collapsed_ports_keep_every_route(monkeypatch, tmp_path) -> None:
     assert "/xiaozhi/heartbeat/" in paths
     assert "/xiaozhi/v1/" in paths
     assert any(p.startswith("/dashboard") for p in paths)
+    assert "/mcp/v1/events" in paths
+    assert "/mcp/v1/respond" in paths
 
 
 def test_partially_collapsed_ports_merge_only_those_apps(monkeypatch, tmp_path) -> None:
@@ -129,6 +138,8 @@ def test_build_app_still_mounts_everything(monkeypatch, tmp_path) -> None:
     assert "/checkin/" in paths
     assert "/xiaozhi/v1/" in paths
     assert any(p.startswith("/dashboard") for p in paths)
+    assert "/mcp/v1/events" in paths
+    assert "/page-agent/register" in paths
 
 
 def test_allowed_hosts_installs_trusted_host_middleware(monkeypatch, tmp_path) -> None:
