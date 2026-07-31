@@ -106,7 +106,9 @@ fi
 # Setting AGENT_HUB_PUBLIC_HOST in .env.do selects the public ingress overlay:
 # Caddy terminates TLS for devices and a Cloudflare Tunnel carries the
 # dashboard, so the app ports are not published on the host at all.
-COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.do.yml)
+# --env-file: env_file: only reaches the container, but ${VAR} interpolation
+# in the compose files reads the default .env, which does not exist here.
+COMPOSE_FILES=(--env-file .env.do -f docker-compose.yml -f docker-compose.do.yml)
 PUBLIC_INGRESS=false
 if grep -qE "^AGENT_HUB_PUBLIC_HOST=.+" .env.do; then
   COMPOSE_FILES+=(-f docker-compose.public.yml)
