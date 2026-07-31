@@ -25,18 +25,35 @@ dependencies = [
     "opuslib-next>=1.1.5",
     "onnx>=1.18,<1.19",
     "onnxruntime>=1.18",
-    "silero-vad>=5.0",
-    "funasr>=1.2.7",
-    "funasr-onnx>=0.4.1",
-    "moonshine-voice>=0.1.0",
-    "modelscope>=1.32",
-    "torch>=2.2",
-    "torchaudio>=2.2",
     "python-dotenv>=1.0",
     "pyserial>=3.5",
+    "moonshine-voice>=0.1.0",
 ]
 
 [project.optional-dependencies]
+# SenseVoice ASR in either form, plus everything torch it drags along (~700MB).
+#
+# funasr-onnx looks torch-free — its metadata declares only onnxruntime — but
+# sensevoice_bin.py imports torch and uses it in the CTC decode path, and it
+# imports jieba without declaring it (that used to arrive via funasr). Verified
+# by running a transcription with the base deps alone: it fails with
+# ModuleNotFoundError. So the ONNX provider belongs here too.
+#
+# The base install is therefore the torch-free stack: Moonshine ASR, KittenTTS
+# or Edge TTS. That is exactly what Dockerfile.do ships.
+#
+# The ASR registry imports lazily, so selecting a SenseVoice provider without
+# these fails when that provider is constructed, not at startup.
+full = [
+    "silero-vad>=5.0",
+    "funasr>=1.2.7",
+    "funasr-onnx>=0.4.1",
+    "jieba>=0.42",
+    "modelscope>=1.32",
+    "torch>=2.2",
+    "torchaudio>=2.2",
+]
+
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
@@ -44,6 +61,12 @@ dev = [
     "ruff>=0.5",
     "types-pyyaml",
 ]
+
+[tool.uv]
+# misaki[en] declares spacy-curated-transformers, which pulls torch (~700MB).
+# The English G2P path never imports it — verified by generating audio with
+# torch absent. Dropping it keeps KittenTTS local on the droplet image.
+override-dependencies = ["spacy-curated-transformers; sys_platform == 'never'"]
 
 [tool.uv.sources]
 kittentts = { url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" }

@@ -1,0 +1,60 @@
+# Public ingress overlay: Caddy for devices, Cloudflare Tunnel for the
+# dashboard. Layers on top of the droplet stack.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.do.yml \
+#                  -f docker-compose.public.yml up -d
+#
+# Split by trust boundary, mirroring the one-app-per-port separation:
+#
+#   devices    hub.<domain>   -> Caddy :443 -> 8000 (wss, image), 8003 (checkin)
+#   dashboard  admin.<domain> -> Cloudflare Tunnel -> 8001, behind Access
+#
+# Device traffic goes direct because it is latency-critical and devices cannot
+# complete an interactive Access login — they authenticate with the enrollment
+# token, their per-device WebSocket token, and the image token. The dashboard
+# takes the opposite trade: it is latency-insensitive and the highest-value
+# target, so it gets no public port at all and real SSO in front of it.
+#
+# agent-hub itself publishes nothing on the host here; both proxies reach it
+# over the compose network.
+
+services:
+  agent-hub:
+    ports: !reset []
+    environment:
+      # Drives the device WebSocket URL handed out at check-in, and the camera
+      # upload URL derived from it.
+      AGENT_HUB_SERVER_WEBSOCKET: "wss://${AGENT_HUB_PUBLIC_HOST:?Set AGENT_HUB_PUBLIC_HOST in .env.do}/xiaozhi/v1/"
+      # Enforced on the dashboard port. This is the host the browser uses, so
+      # it is the tunnel hostname rather than the device one.
+      AGENT_HUB_SERVER_ALLOWED_HOSTS: "${AGENT_HUB_DASHBOARD_HOST:?Set AGENT_HUB_DASHBOARD_HOST in .env.do}"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      AGENT_HUB_PUBLIC_HOST: "${AGENT_HUB_PUBLIC_HOST:?Set AGENT_HUB_PUBLIC_HOST in .env.do}"
+      # Let's Encrypt expiry notices. ACME still works if unset, but you get
+      # no warning when renewal has been failing.
+      ACME_EMAIL: "${ACME_EMAIL:-}"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here. Losing this volume means re-issuing on every
+      # restart, which will hit Let's Encrypt rate limits.
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+    depends_on:
+      - agent-hub
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # No ports: the tunnel dials out to Cloudflare, which is the point.
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env.do}"
+    depends_on:
+      - agent-hub

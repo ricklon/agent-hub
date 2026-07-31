@@ -18,6 +18,7 @@ from fastapi.responses import RedirectResponse
 from loguru import logger
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from agent_hub import spend
 from agent_hub.config import Settings, load_config, load_settings
 from agent_hub.dashboard.app import make_router as make_dashboard_router
 from agent_hub.registry.store import RegistryStore
@@ -95,10 +96,10 @@ def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any
 
     @app.on_event("startup")
     async def _startup() -> None:
-        # Safe to run per app: create_all is idempotent, the migration
-        # statements are suppressed on re-run, and the default persona is
-        # only seeded when absent.
+        # Safe to run per app: initialize() is guarded by a lock and a
+        # done-flag, so only the first app to start does the work.
         await store.initialize()
+        spend.configure(store, raw_config)
         logger.info(
             f"agent-hub ready — "
             f"check-in on :{settings.server.http_port}, "
@@ -134,7 +135,12 @@ def build_apps() -> dict[int, FastAPI]:
     """
     raw_config = load_config()
     settings = load_settings()
-    store = RegistryStore(settings.registry.db_path)
+    store = RegistryStore(
+        settings.registry.db_path,
+        default_asr_provider=str(
+            (raw_config.get("asr") or {}).get("default_provider") or "funasr_onnx"
+        ),
+    )
 
     groups: list[tuple[int, list[APIRouter], bool]] = [
         (
@@ -210,7 +216,12 @@ def build_app() -> FastAPI:
     """
     raw_config = load_config()
     settings = load_settings()
-    store = RegistryStore(settings.registry.db_path)
+    store = RegistryStore(
+        settings.registry.db_path,
+        default_asr_provider=str(
+            (raw_config.get("asr") or {}).get("default_provider") or "funasr_onnx"
+        ),
+    )
 
     app = _new_app(store, settings, raw_config)
     _add_dashboard_root(app)

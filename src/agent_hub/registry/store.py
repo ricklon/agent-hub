@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from agent_hub.registry.models import Agent, AgentKind, AgentStatus, Base, ConversationTurn, Persona
+from agent_hub.providers.asr import is_available as asr_is_available
+from agent_hub.registry.models import (
+    Agent,
+    AgentKind,
+    AgentStatus,
+    Base,
+    ConversationTurn,
+    LLMSpend,
+    Persona,
+)
 
 _DEFAULT_PERSONA_NAME = "hub-default"
 _DEFAULT_SYSTEM_PROMPT = (
@@ -36,26 +47,46 @@ class RegistryStore:
     once at startup before any other method.
     """
 
-    def __init__(self, db_path: str | Path = "data/registry.db") -> None:
+    def __init__(
+        self,
+        db_path: str | Path = "data/registry.db",
+        default_asr_provider: str = "funasr_onnx",
+    ) -> None:
         """Create the store.
 
         Args:
             db_path: Path to the SQLite database file. Parent dirs are
                 created automatically.
+            default_asr_provider: ASR provider for the seeded default persona,
+                and the fallback when a persona names one this build cannot
+                run. Should match asr.default_provider in the config.
         """
+        self._default_asr_provider = default_asr_provider
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", echo=False)
         self._sessions = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._init_lock = asyncio.Lock()
+        self._initialized = False
 
     async def initialize(self) -> None:
-        """Create tables and seed the hub-default persona if missing."""
-        async with self._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        await self._migrate()
-        async with self._sessions() as session:
-            await self._ensure_default_persona(session)
-        logger.info("Registry store initialized")
+        """Create tables and seed the hub-default persona if missing.
+
+        Safe to call concurrently and repeatedly: the server binds one app per
+        port and every app's startup hook calls this against the shared store.
+        Without the lock, a fresh database lets all of them pass create_all's
+        existence check together and the losers fail with "table already exists".
+        """
+        async with self._init_lock:
+            if self._initialized:
+                return
+            async with self._engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            await self._migrate()
+            async with self._sessions() as session:
+                await self._ensure_default_persona(session)
+            self._initialized = True
+            logger.info("Registry store initialized")
 
     async def _migrate(self) -> None:
         """Add columns introduced after the initial schema without Alembic."""
@@ -83,7 +114,7 @@ class RegistryStore:
                     name=_DEFAULT_PERSONA_NAME,
                     llm_provider="openai",
                     tts_provider="edge",
-                    asr_provider="funasr_onnx",
+                    asr_provider=self._default_asr_provider,
                     system_prompt=_DEFAULT_SYSTEM_PROMPT,
                 )
             )
@@ -101,6 +132,20 @@ class RegistryStore:
             if persona.asr_provider in {"funasr", "fun_local"}:
                 persona.asr_provider = "funasr_onnx"
                 updates.append("ASR provider")
+            # Same failure one generation on: the slim container images ship
+            # only one ASR provider, so a persona naming an absent one leaves
+            # the microphone live while every transcription silently returns
+            # nothing. Fall back to a provider this build can actually run.
+            if not asr_is_available(persona.asr_provider) and asr_is_available(
+                self._default_asr_provider
+            ):
+                logger.warning(
+                    f"Persona '{persona.name}' uses ASR provider "
+                    f"{persona.asr_provider!r}, which is not installed in this build — "
+                    f"falling back to {self._default_asr_provider!r}."
+                )
+                persona.asr_provider = self._default_asr_provider
+                updates.append("ASR provider (not installed)")
             if updates:
                 await session.commit()
                 logger.info(f"Updated persona '{_DEFAULT_PERSONA_NAME}' {', '.join(updates)}")
@@ -296,6 +341,73 @@ class RegistryStore:
                 .where(Agent.device_id == device_id)
             )
             return result.scalar_one_or_none()
+
+    async def record_llm_spend(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float,
+        cost_estimated: bool,
+        device_id: str | None = None,
+    ) -> None:
+        """Append one billed LLM call to the spend ledger."""
+        async with self._sessions() as session:
+            session.add(
+                LLMSpend(
+                    device_id=device_id,
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost_usd,
+                    cost_estimated=cost_estimated,
+                )
+            )
+            await session.commit()
+
+    async def llm_spend_summary(self, since: datetime | None = None) -> dict[str, float | int]:
+        """Aggregate the spend ledger, optionally only rows at or after `since`.
+
+        Returns cost_usd, prompt_tokens, completion_tokens, calls, and
+        estimated_calls — the last so callers can tell how much of the total
+        came from the local price table rather than the provider.
+        """
+        async with self._sessions() as session:
+            query = select(
+                func.coalesce(func.sum(LLMSpend.cost_usd), 0.0),
+                func.coalesce(func.sum(LLMSpend.prompt_tokens), 0),
+                func.coalesce(func.sum(LLMSpend.completion_tokens), 0),
+                func.count(LLMSpend.id),
+                func.coalesce(func.sum(LLMSpend.cost_estimated), 0),
+            )
+            if since is not None:
+                query = query.where(LLMSpend.created_at >= since)
+            cost, prompt, completion, calls, estimated = (await session.execute(query)).one()
+            return {
+                "cost_usd": float(cost),
+                "prompt_tokens": int(prompt),
+                "completion_tokens": int(completion),
+                "calls": int(calls),
+                "estimated_calls": int(estimated),
+            }
+
+    async def llm_spend_by_model(self, since: datetime | None = None) -> list[dict[str, Any]]:
+        """Per-model spend breakdown, most expensive first."""
+        async with self._sessions() as session:
+            query = select(
+                LLMSpend.model,
+                func.coalesce(func.sum(LLMSpend.cost_usd), 0.0),
+                func.count(LLMSpend.id),
+            ).group_by(LLMSpend.model)
+            if since is not None:
+                query = query.where(LLMSpend.created_at >= since)
+            rows = (await session.execute(query)).all()
+            out = [
+                {"model": model, "cost_usd": float(cost), "calls": int(calls)}
+                for model, cost, calls in rows
+            ]
+            out.sort(key=lambda row: float(row["cost_usd"]), reverse=True)
+            return out
 
     async def list_personas(self) -> list[Persona]:
         """Return all personas ordered by name."""

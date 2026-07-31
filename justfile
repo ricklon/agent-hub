@@ -59,6 +59,34 @@ tailnet-status:
 tailnet-down:
     docker compose -f docker-compose.yml -f docker-compose.tailnet.yml down
 
+# DigitalOcean stack: Moonshine ASR + Edge TTS, no torch (390MB image).
+do-build:
+    docker compose -f docker-compose.yml -f docker-compose.do.yml build
+
+do-up:
+    docker compose -f docker-compose.yml -f docker-compose.do.yml up -d
+
+do-logs:
+    docker compose -f docker-compose.yml -f docker-compose.do.yml logs -f
+
+do-down:
+    docker compose -f docker-compose.yml -f docker-compose.do.yml down
+
+# Same stack behind public ingress: Caddy for devices, Cloudflare Tunnel for
+# the dashboard. Needs AGENT_HUB_PUBLIC_HOST, AGENT_HUB_DASHBOARD_HOST and
+# CLOUDFLARE_TUNNEL_TOKEN in .env.do.
+# --env-file is required, not cosmetic: env_file: only injects into the
+# container, while ${VAR} interpolation in the compose files themselves reads
+# the default .env. Without it the hostnames resolve empty and compose aborts.
+public-up:
+    docker compose --env-file .env.do -f docker-compose.yml -f docker-compose.do.yml -f docker-compose.public.yml up -d
+
+public-logs:
+    docker compose --env-file .env.do -f docker-compose.yml -f docker-compose.do.yml -f docker-compose.public.yml logs -f
+
+public-down:
+    docker compose --env-file .env.do -f docker-compose.yml -f docker-compose.do.yml -f docker-compose.public.yml down
+
 deploy-edge:
     ansible-playbook deploy-agent-hub.yml
 

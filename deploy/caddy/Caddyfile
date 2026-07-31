@@ -1,0 +1,34 @@
+# Public device ingress. Terminates TLS for the device-facing hostname and
+# routes to the port that owns each route.
+#
+# The dashboard is deliberately NOT served here. It reaches the internet
+# through a Cloudflare Tunnel on its own hostname, so it has no public port
+# and can sit behind Cloudflare Access. Anything not matched below returns
+# 404, so a stray request to /dashboard/ on the device hostname finds nothing
+# even though the app is listening on 8001 inside the compose network.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$AGENT_HUB_PUBLIC_HOST} {
+	encode zstd gzip
+
+	# Voice sessions (WebSocket upgrade) and the image explain endpoint.
+	# Both are mounted on ws_port.
+	handle /xiaozhi/v1/* {
+		reverse_proxy agent-hub:8000
+	}
+
+	# Device check-in and OTA, mounted on http_port.
+	handle /checkin/* {
+		reverse_proxy agent-hub:8003
+	}
+	handle /xiaozhi/ota/* {
+		reverse_proxy agent-hub:8003
+	}
+
+	handle {
+		respond "not found" 404
+	}
+}

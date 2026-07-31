@@ -61,6 +61,53 @@ def _bridge_base(request: Request, settings: Settings) -> str:
     return f"{scheme}://{host}:{settings.server.mcp_bridge_port}"
 
 
+def classify_utterance(raw: str, wake_word: str) -> tuple[str, str]:
+    """Decide what one ASR result means for the voice loop.
+
+    Returns (kind, text) where kind is:
+      "ignore"     — drop it silently; almost certainly ASR noise
+      "command"    — run an LLM turn with `text`
+      "transcript" — heard, but not addressed to us; show it and do nothing
+
+    One-word results are usually noise, so they are dropped — except a bare
+    wake word, which is precisely how someone asks for attention. That case
+    used to be filtered out before the wake-word check ran, which made the
+    "yes?" prompt unreachable: saying just "computer" did nothing at all.
+
+    An empty wake word means open-mic: every utterance is addressed to the
+    agent. The noise filter still applies, so stray one-word ASR artefacts do
+    not each cost an LLM call.
+
+    Args:
+        raw: Raw ASR transcript.
+        wake_word: Configured wake word; empty means open-mic.
+
+    Returns:
+        (kind, text) as described above.
+    """
+    transcript = raw.strip()
+    if not transcript:
+        return ("ignore", "")
+
+    lower = transcript.lower()
+    has_wake = bool(wake_word) and wake_word in lower
+
+    if len(transcript.split()) < 2 and not has_wake:
+        return ("ignore", transcript)
+
+    if not wake_word:
+        return ("command", transcript)
+
+    if not has_wake:
+        return ("transcript", transcript)
+
+    idx = lower.index(wake_word)
+    command = transcript[idx + len(wake_word) :].strip().lstrip(",.?!").strip()
+    # Bare wake word: answer it rather than dropping it, so the obvious first
+    # thing a user tries gets a response.
+    return ("command", command or "yes?")
+
+
 def _new_device_id() -> str:
     return "page-" + secrets.token_hex(8)
 
@@ -454,34 +501,26 @@ def make_router(store: RegistryStore, settings: Settings, config: dict[str, Any]
                         result = await asr.transcribe(wav_bytes)
                         if not result.is_speech or not result.text:
                             continue
-                        transcript = result.text.strip()
-                        if len(transcript.split()) < 2:
+                        kind, text = classify_utterance(result.text, wake_word)
+                        if kind == "ignore":
                             continue
-                        # Wake word check
-                        lower = transcript.lower()
-                        if wake_word and wake_word in lower:
-                            # Strip the wake word and send the command
-                            idx = lower.index(wake_word)
-                            command = transcript[idx + len(wake_word) :].strip().lstrip(",.?!")
-                            if not command:
-                                # Just "computer" — prompt for input
-                                command = "yes?"
+                        if kind == "command":
                             await websocket.send_text(
                                 json.dumps(
                                     {
                                         "type": "wake",
                                         "word": wake_word,
-                                        "command": command,
+                                        "command": text,
                                     }
                                 )
                             )
-                            await _run_turn(command)
+                            await _run_turn(text)
                         else:
                             await websocket.send_text(
                                 json.dumps(
                                     {
                                         "type": "transcript",
-                                        "text": transcript,
+                                        "text": text,
                                     }
                                 )
                             )

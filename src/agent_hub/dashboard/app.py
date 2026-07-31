@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
+from agent_hub import spend
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import session_state, tool_policy
 
@@ -103,6 +104,9 @@ input[type=number]{width:6rem}
 .doc-card h3{margin-top:0;color:#58a6ff}
 .doc-flow{background:#010409;border:1px solid #30363d;border-radius:6px;
   padding:1rem;white-space:pre-wrap;overflow:auto}
+.spend-ok{color:#3fb950}
+.spend-warn{color:#d29922}
+.spend-over{color:#f85149}
 """
 
 _PAGE = """\
@@ -265,8 +269,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(request: Request) -> HTMLResponse:
         rows = await _render_agent_rows(store, heartbeat_timeout_seconds)
-        body = _agent_table(rows)
+        body = await _spend_panel() + _agent_table(rows)
         return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+
+    async def _spend_panel() -> str:
+        """Spend summary for the dashboard header, or nothing if unmetered."""
+        tracker = spend.get_tracker()
+        if tracker is None:
+            return ""
+        totals = await tracker.totals()
+        return _render_spend_panel(totals)
 
     @router.get("/dashboard/agents", response_class=HTMLResponse)
     async def dashboard_agents_partial(request: Request) -> HTMLResponse:
@@ -394,6 +406,19 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
   <tr><th>MCP</th><td>{mcp_html}</td></tr>
   <tr><th>Registration</th><td>{db_status}</td></tr>
 </table>""")
+
+    @router.get("/dashboard/spend.json")
+    async def spend_json() -> dict[str, Any]:
+        """LLM spend so far, against the configured caps."""
+        tracker = spend.get_tracker()
+        if tracker is None:
+            # Metering is wired up at server startup; a dashboard mounted
+            # standalone (as in tests) has none.
+            return {"enabled": False}
+        totals = await tracker.totals()
+        totals["enabled"] = True
+        totals["by_model_today"] = await store.llm_spend_by_model(since=spend.day_start())
+        return totals
 
     @router.get("/dashboard/agents/{device_id}/status.json")
     async def agent_status_json(device_id: str) -> dict[str, Any]:
@@ -1043,6 +1068,49 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _render_spend_panel(totals: dict[str, Any]) -> str:
+    """Render the LLM spend summary shown above the agent table."""
+    today = totals["today"]
+    total = totals["total"]
+    limits = totals["limits"]
+
+    def _cap(spent: float, limit: float, fraction: float | None) -> str:
+        if not limit:
+            return f"${spent:.4f} <span class='doc-muted'>(no cap)</span>"
+        pct = 0.0 if fraction is None else fraction * 100
+        # Colour tracks the same thresholds the server enforces, so the
+        # dashboard and the guard never disagree about what state we're in.
+        if pct >= 100:
+            cls = "spend-over"
+        elif pct >= limits["warn_at"] * 100:
+            cls = "spend-warn"
+        else:
+            cls = "spend-ok"
+        return f"<span class='{cls}'>${spent:.4f} / ${limit:.2f} ({pct:.0f}%)</span>"
+
+    estimated = int(today["estimated_calls"])
+    estimate_note = (
+        f" <span class='doc-muted'>· {estimated} estimated from the local price table</span>"
+        if estimated
+        else ""
+    )
+    blocked = (
+        "<p class='spend-over'>LLM calls are blocked — a spend cap has been reached.</p>"
+        if totals["blocked"]
+        else ""
+    )
+    return f"""\
+<section class="form-section">
+<h3>LLM spend</h3>
+{blocked}
+<p>today: {_cap(float(today["cost_usd"]), limits["daily_usd"], totals["utilisation"]["daily"])}
+ <span class="doc-muted">· {today["calls"]} calls ·
+ {int(today["prompt_tokens"]) + int(today["completion_tokens"])} tokens</span>{estimate_note}</p>
+<p>total: {_cap(float(total["cost_usd"]), limits["total_usd"], totals["utilisation"]["total"])}
+ <span class="doc-muted">· {total["calls"]} calls</span></p>
+</section>"""
 
 
 def _agent_table(rows: str) -> str:

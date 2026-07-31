@@ -40,6 +40,9 @@ data/*.jsonl
 # Runtime device captures
 data/images/
 data/tailscale/
+# Caddy's certificates and ACME account keys.
+data/caddy/
+data/caddy-config/
 
 # Claude Code local session state
 .claude/
@@ -64,3 +67,4 @@ docker-compose.override.yml
 # Model files — download separately with `just download-models`
 models/
 !models/.gitkeep
+.env.do

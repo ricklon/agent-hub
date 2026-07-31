@@ -240,6 +240,268 @@ something else, add that value to `dashboard_allowed_origins` too — once
 either allowlist is set it becomes exhaustive, and the request's own `Host` is
 no longer trusted implicitly.
 
+## DigitalOcean Droplet
+
+A public cloud droplet is the least trusted environment `agent-hub` runs in:
+there is no LAN boundary, so the device ports and the dashboard are reachable
+from the internet the moment the container starts. Read
+[Remaining Work Before Public Internet](#remaining-work-before-public-internet)
+before leaving one running.
+
+The droplet swaps SenseVoice for a lighter ASR but keeps speech local at both
+ends:
+
+| | Local (`Dockerfile`) | Droplet (`Dockerfile.do`) |
+| --- | --- | --- |
+| ASR | SenseVoice via funasr_onnx (torch) | Moonshine (onnxruntime) |
+| TTS | KittenTTS or Edge | Edge by default, KittenTTS installed |
+| Image | 1.1GB | 532MB |
+| Idle RAM | — | 79MB |
+
+Image sizes are `docker image inspect --format '{{.Size}}'`. The `docker images`
+"disk usage" column reads much higher for both (4.08GB and 2.08GB) because it
+counts build cache and shared layers — the two are not comparable.
+
+Torch is confined to the `full` extra — SenseVoice in either form, plus the
+`silero-vad` package. The droplet skips it, running the Silero VAD from the
+bundled `.onnx` through onnxruntime instead. The ASR registry imports lazily,
+so the droplet image starts fine; selecting `funasr` or `funasr_onnx` there
+fails when that provider is constructed.
+
+**`funasr-onnx` is not torch-free**, despite declaring only onnxruntime in its
+metadata: `sensevoice_bin.py` imports torch for the CTC decode path, and
+imports `jieba` without declaring it at all. Dependency-graph tools will tell
+you otherwise — the local image cannot drop torch while SenseVoice is its
+default ASR. Switching the default to Moonshine is what would make a
+torch-free local image possible; see the benchmark below for why we don't.
+
+### ASR benchmark: Moonshine vs SenseVoice
+
+Measured with `scripts/bench_asr.py` over 73 LibriSpeech utterances (481s of
+real speech with ground-truth transcripts), through the actual provider
+interfaces:
+
+| Provider | WER | Median latency (many-core) | Peak RSS |
+| --- | --- | --- | --- |
+| Moonshine tiny | 13.22% | 0.332s | 272MB |
+| Moonshine base | 8.17% | 0.511s | 534MB |
+| **SenseVoice (`funasr_onnx`)** | **7.22%** | **0.292s** | 744MB |
+
+Constrained to 1 vCPU, the droplet case (25 utterances, 206s):
+
+| Provider | WER | Median latency | Real-time factor |
+| --- | --- | --- | --- |
+| Moonshine tiny | 13.17% | 4.10s | **0.73** |
+| Moonshine base | 8.18% | 6.19s | 1.06 — too slow |
+| SenseVoice | **6.99%** | 5.50s | 0.88 |
+
+**SenseVoice stays the default.** It is the most accurate of the three *and*
+the fastest on a normal machine — the model-size numbers suggest the opposite,
+which is why this was worth measuring. Moonshine tiny makes roughly twice as
+many errors; Moonshine base nearly closes the accuracy gap but exceeds
+real time on 1 vCPU.
+
+The droplet still uses Moonshine tiny, for headroom rather than speed: 272MB
+against 744MB peak RSS, a 532MB image against 1.1GB, and RTF 0.73 against
+0.88 leaves room for the LLM and TTS on the same core. On an `s-2vcpu-4gb`
+droplet or larger, `AGENT_HUB_ASR_DEFAULT_PROVIDER=funasr_onnx` buys roughly
+half the error rate — but needs the torch-bearing image, so build with the
+default `Dockerfile` rather than `Dockerfile.do`.
+
+Caveat: LibriSpeech is clean, read audiobook speech, and its utterances
+average 6.6s — far longer than a device command. Field accuracy on ESP32 mic
+audio will be worse for every provider, and device latencies proportionally
+lower. Treat this as a relative ranking, not a prediction.
+
+KittenTTS looks like it needs torch, but does not. Its `misaki[en]` dependency
+declares `spacy-curated-transformers`, which pulls torch, and the English G2P
+path never imports it — so `tool.uv.override-dependencies` in `pyproject.toml`
+drops it. `spacy` itself *is* used and stays. If a future misaki release starts
+using that package, the override is the first thing to revisit.
+
+The Moonshine, Silero, and KittenTTS models are baked into the image. `models/`
+is deliberately **not** a bind mount in `docker-compose.do.yml` — mounting it
+would shadow them with the host's empty directory on a fresh droplet — and the
+container starts with `uv run --no-sync` so a reboot never depends on GitHub
+being reachable. Verified with `--network none`.
+
+### Why the droplet defaults to Edge TTS
+
+KittenTTS is installed and its model is baked in, but it is **CPU-bound and
+scales hard with cores**. Measured in the droplet image, synthesizing a
+4.4-second reply:
+
+| vCPU | Synthesis time | Real-time factor |
+| --- | --- | --- |
+| 1 | 9.2s | 2.11 — unusable |
+| 2 | 4.1s | 0.94 — no headroom |
+| 4 | 0.7s | 0.16 — comfortable |
+
+A real-time factor above 1.0 means speech is generated slower than it plays,
+so streaming does not rescue it. On the recommended `s-1vcpu-2gb` droplet
+KittenTTS cannot keep up, and ASR and the LLM stream compete for the same
+core. Hence Edge TTS by default.
+
+On `s-4vcpu-8gb` or larger, `AGENT_HUB_TTS_DEFAULT_PROVIDER=kitten` makes the
+droplet fully local — no rebuild needed, since the package and model already
+ship in the image.
+
+### Provisioning
+
+```sh
+doctl compute droplet create agent-hub \
+  --image docker-20-04 --size s-1vcpu-2gb --region nyc1 \
+  --user-data-file deploy/cloud-init.sh
+```
+
+Use at least 2GB: the server needs ~250MB with a session live, but building
+the image on the droplet needs more. First boot takes ~5 minutes.
+
+`deploy/cloud-init.sh` installs Docker, clones the repo to `/opt/agent-hub`,
+generates a random dashboard password **and enrollment token**, sets
+`allowed_hosts` to the droplet's public IP, and writes them all to
+`/root/agent-hub-credentials.txt`. It never deploys the template's placeholder
+password, and aborts rather than starting if a substitution failed to match.
+
+Because the token is generated, **devices must present it to check in** — a
+droplet is not a LAN, so open enrollment would let anyone who finds port 8003
+register against your hub. The credentials file lists the three ways to send
+it. To go back to open enrollment, clear `AGENT_HUB_SERVER_ENROLLMENT_TOKEN`
+and restart; only do that behind a firewall.
+
+The LLM key is deliberately left unset — add it and restart:
+
+```sh
+ssh root@<droplet-ip>
+cat /root/agent-hub-credentials.txt
+vi /opt/agent-hub/.env.do          # AGENT_HUB_LLM_OPENAI_API_KEY=sk-or-...
+cd /opt/agent-hub && docker compose -f docker-compose.yml -f docker-compose.do.yml restart
+```
+
+Locally, `just do-build` / `do-up` / `do-logs` / `do-down` drive the same
+stack. It builds as `agent-hub-do:latest` so it does not overwrite the
+full-stack local image.
+
+### Public ingress: Caddy for devices, Cloudflare Tunnel for the dashboard
+
+`docker-compose.public.yml` puts the droplet behind TLS and stops publishing
+the app ports entirely. It splits the two kinds of traffic because they want
+opposite things — the same split the one-app-per-port separation already
+encodes:
+
+```
+devices    hub.<domain>    -> Caddy :443 -> 8000 (wss, image), 8003 (checkin)
+dashboard  admin.<domain>  -> Cloudflare Tunnel -> 8001, behind Access
+```
+
+**Devices go direct.** Voice is latency-critical — ASR alone runs at RTF 0.73
+on one vCPU — so an extra edge hop is expensive, and vision over a tunnel is
+already the flakiest part of the pipeline. Devices also cannot complete an
+interactive Access login. They do not need to: they present the enrollment
+token, then a per-device WebSocket token, plus the image token for camera
+uploads.
+
+**The dashboard goes through the tunnel.** It is latency-insensitive and the
+highest-value target in the system — it can change personas, drive device
+tools, and read every transcript and photo. Through a tunnel it has no public
+port at all, and Cloudflare Access puts real SSO in front of it, replacing
+Basic auth over plain HTTP. Put an Access policy on that hostname; without one
+the tunnel has simply published your dashboard.
+
+The Caddyfile returns 404 for anything it does not route, so `/dashboard/` on
+the device hostname finds nothing even though the app is listening on 8001
+inside the compose network.
+
+Set in `.env.do`:
+
+```sh
+AGENT_HUB_PUBLIC_HOST=hub.example.com       # devices
+AGENT_HUB_DASHBOARD_HOST=admin.example.com  # dashboard, via the tunnel
+CLOUDFLARE_TUNNEL_TOKEN=...                 # from the Cloudflare dashboard
+ACME_EMAIL=you@example.com
+```
+
+`AGENT_HUB_PUBLIC_HOST` is what selects this mode — cloud-init detects it,
+adds the overlay, and opens only 80 and 443 in ufw instead of the app ports.
+Port 80 is needed for the ACME http-01 challenge; the tunnel needs no inbound
+port.
+
+Create the tunnel under Zero Trust → Networks → Tunnels, add a public hostname
+routing your dashboard host to `http://agent-hub:8001`, and paste the token
+into `.env.do`. Then `just public-up`, or let cloud-init do it on a fresh
+droplet.
+
+Certificates live in `./data/caddy`. Keep that directory across restarts or
+Caddy re-issues every time and will hit Let's Encrypt rate limits.
+
+### Before pointing devices at it
+
+The droplet's ports are open to the internet, not a LAN, so the LAN-first
+assumptions above do not hold:
+
+1. `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` is generated for you by cloud-init —
+   configure each device with it. If you provisioned by hand, set it, or
+   anyone who finds `8003` can register a device.
+2. Set `AGENT_HUB_SERVER_IMAGE_TOKEN` before enabling camera tools.
+3. Put the droplet behind the HTTPS proxy pattern above, or restrict the
+   ports with a DO cloud firewall. The dashboard is Basic auth over plain
+   HTTP until you do — see [Why Basic auth, and its
+   limits](#why-basic-auth-and-its-limits).
+4. Cap spend at the LLM provider **and** set `llm.spend` limits — see below.
+   An exposed hub with a working API key bills whoever finds it.
+
+## LLM Spend
+
+Every LLM call is metered: model, tokens, cost, and the device it came from.
+Two independent caps are checked before each request, so a cap can be exceeded
+by at most one call and no billable request goes out once one is reached.
+
+```yaml
+llm:
+  spend:
+    daily_limit_usd: 5.0     # 0 disables this cap
+    total_limit_usd: 50.0    # 0 disables this cap
+    warn_at: 0.8             # warn from 80% of either cap
+    limit_message: ""        # what the device says when blocked
+```
+
+At `warn_at` the hub logs a warning once per window. At the cap it refuses
+further calls and the device *speaks* a notice rather than going silent —
+a dropped turn is indistinguishable from a device or network fault, which is
+the worst way to discover you hit a limit mid-demo.
+
+Current spend is at `/dashboard/spend.json`, with a per-model breakdown for
+the day.
+
+**This is a backstop, not the real limit.** It only counts what it sees: a
+crash between the API call and the ledger write loses that call. Keep a hard
+spend cap at the provider — on OpenRouter, a credit limit on the key.
+
+### Where cost figures come from
+
+OpenRouter reports the real charge when asked for it, and the hub asks. Other
+OpenAI-compatible endpoints do not, so cost falls back to a local price table
+and is flagged as estimated — the dashboard distinguishes the two rather than
+presenting a guess as billing truth.
+
+```yaml
+llm:
+  spend:
+    pricing:                       # USD per 1M tokens
+      "some/model":
+        input: 0.10
+        output: 0.20
+```
+
+An unpriced model still records its tokens, just with zero cost — so tokens
+are always trustworthy even when dollars are not.
+
+Usage-reporting request fields go only to endpoints known to accept them
+(OpenRouter, api.openai.com). Local servers like Ollama reject unknown fields,
+so they are metered by token count and the price table instead. Note that
+streamed responses carry no usage block unless it is explicitly requested,
+which is why streaming spend would otherwise silently record as zero.
+
 ## Current Hardening
 
 The app currently includes:

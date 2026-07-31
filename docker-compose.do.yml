@@ -1,0 +1,38 @@
+# DigitalOcean deployment override — Moonshine ASR + KittenTTS, no torch.
+#
+# Usage (or `just do-build` / `just do-up`):
+#   docker compose -f docker-compose.yml -f docker-compose.do.yml build
+#   docker compose -f docker-compose.yml -f docker-compose.do.yml up -d
+#
+# Secrets come from .env.do — copy .env.do.example and fill it in. On a
+# droplet, deploy/cloud-init.sh generates one. See docs/deployment.md; the
+# ports below are public on a droplet, so read the hardening notes first.
+
+services:
+  agent-hub:
+    # Distinct tag so building this doesn't overwrite the local full-stack image.
+    image: agent-hub-do:latest
+    build:
+      dockerfile: Dockerfile.do
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "8003:8003"
+    volumes:
+      # models/ is intentionally not mounted — the Moonshine and Silero models
+      # are baked into the image, and a bind mount would shadow them with the
+      # host's empty directory on a fresh droplet.
+      - ./data:/app/data
+    environment:
+      - AGENT_HUB_SERVER_HOST=0.0.0.0
+      - AGENT_HUB_ASR_DEFAULT_PROVIDER=moonshine
+      - AGENT_HUB_ASR_MOONSHINE_LANGUAGE=en
+      - AGENT_HUB_ASR_MOONSHINE_MODEL_ARCH=tiny
+      # Edge TTS by default: KittenTTS is installed and its model is baked in,
+      # but it needs ~4 vCPU to synthesize faster than real time. See
+      # docs/deployment.md before flipping this to `kitten`.
+      - AGENT_HUB_TTS_DEFAULT_PROVIDER=edge
+    env_file:
+      - path: .env.do
+        required: false

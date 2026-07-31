@@ -54,6 +54,28 @@ llm:
   anthropic:
     api_key: "YOUR_ANTHROPIC_API_KEY"
     model: "claude-haiku-4-5-20251001"
+  # LLM spend metering. Every call is recorded; these caps decide when to warn
+  # and when to stop. A hub reachable from the internet with a working API key
+  # can otherwise run up an unbounded bill.
+  #
+  # This is a local backstop that only counts what it sees — keep a hard spend
+  # cap at the provider as the real limit.
+  spend:
+    # 0 disables that cap. Both are checked independently.
+    daily_limit_usd: 0
+    total_limit_usd: 0
+    # Warn from this fraction of a cap (0.8 = warn from 80%).
+    warn_at: 0.8
+    # What the device says when a cap blocks a turn. Defaults to a generic
+    # "I've reached my spending limit" line.
+    limit_message: ""
+    # Fallback prices in USD per 1M tokens, used only when the endpoint does
+    # not report a cost. OpenRouter reports real costs, so this is for
+    # OpenAI-compatible endpoints that don't.
+    pricing: {}
+    #  "google/gemma-3-27b-it":
+    #    input: 0.10
+    #    output: 0.20
 
 tts:
   default_provider: edge
