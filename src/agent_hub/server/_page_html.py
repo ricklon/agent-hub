@@ -39,6 +39,12 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
    is answerable without reading anything. */
 .voice-live #voicedot{animation:voicepulse 1.4s ease-in-out infinite}
 @keyframes voicepulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+/* Input level. The audio callback fires every 256ms, which is too slow to
+   look live, so RMS is sampled there and animated on rAF. */
+#meter{width:12rem;height:.6rem;background:#010409;border:1px solid #30363d;
+  border-radius:3px;overflow:hidden;flex:none}
+#meterbar{height:100%;width:0%;background:#3fb950;transition:width .08s linear}
+#meterlabel{font-size:.75rem;color:#8b949e}
 </style></head><body>
 <h1>Page Agent</h1>
 <div class="row"><a href="/dashboard/" style="color:#58a6ff">← Dashboard</a></div>
@@ -70,7 +76,9 @@ Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
   <span id="voicedot"></span>
   <span id="voicelabel">off</span>
   <span id="voicehint">press Listen to start</span>
-</div></div>
+</div>
+<div id="meter" title="microphone input level"><div id="meterbar"></div></div>
+<span id="meterlabel">mic</span></div>
 
 <script>
 const LS_KEY = "agenthub.pageAgent.deviceId";
@@ -332,6 +340,36 @@ const VOICE_STATES = {
               hint: () => "replying — wait for it to finish"},
 };
 
+// ── Microphone level meter ──────────────────────────────────────────────
+// Answers "is it hearing me?" without needing the agent to respond, which
+// separates a mic problem from a wake-word problem.
+let micLevel = 0;        // smoothed 0..1
+let micPeak = 0;         // recent peak, for clip detection
+let meterRaf = null;
+
+function pumpMeter() {
+  const bar = document.getElementById("meterbar");
+  const pct = Math.round(Math.min(1, micLevel) * 100);
+  bar.style.width = pct + "%";
+  // Red only when actually clipping — otherwise the meter reads as an alarm.
+  bar.style.background = micPeak >= 0.99 ? "#f85149" : (pct > 4 ? "#3fb950" : "#30363d");
+  micLevel *= 0.86;      // decay between audio callbacks so it falls smoothly
+  micPeak *= 0.9;
+  meterRaf = requestAnimationFrame(pumpMeter);
+}
+
+function startMeter() {
+  if (meterRaf === null) meterRaf = requestAnimationFrame(pumpMeter);
+  document.getElementById("meterlabel").textContent = "mic";
+}
+
+function stopMeter() {
+  if (meterRaf !== null) { cancelAnimationFrame(meterRaf); meterRaf = null; }
+  micLevel = 0; micPeak = 0;
+  document.getElementById("meterbar").style.width = "0%";
+  document.getElementById("meterlabel").textContent = "mic off";
+}
+
 let voiceStateTimer = null;
 function setVoiceState(name, revertAfterMs) {
   const s = VOICE_STATES[name] || VOICE_STATES.off;
@@ -398,11 +436,21 @@ async function startListening() {
       if (!listening || !voiceWs || voiceWs.readyState !== 1) return;
       const input = e.inputBuffer.getChannelData(0);
       const pcm = new Int16Array(input.length);
+      let sumSq = 0, peak = 0;
       for (let i = 0; i < input.length; i++) {
-        let s = input[i] * 32768;
+        const v = input[i];
+        sumSq += v * v;
+        const a = v < 0 ? -v : v;
+        if (a > peak) peak = a;
+        let s = v * 32768;
         s = Math.max(-32768, Math.min(32767, s));
         pcm[i] = s;
       }
+      // RMS is quiet for speech, so scale it into a usable range rather than
+      // showing a bar that never leaves the left edge.
+      const level = Math.min(1, Math.sqrt(sumSq / input.length) * 5);
+      if (level > micLevel) micLevel = level;   // fast attack, rAF handles decay
+      if (peak > micPeak) micPeak = peak;
       voiceWs.send(pcm.buffer);
     };
     micSource.connect(processor);
@@ -410,6 +458,7 @@ async function startListening() {
     listening = true;
     document.getElementById("listen").textContent = "Stop";
     setVoiceState("listening");
+    startMeter();
     voiceLog("listening" + (wakeWord ? " for wake word '" + wakeWord + "'" : ""), "#3fb950");
   };
   voiceWs.onmessage = async (ev) => {
@@ -470,6 +519,7 @@ function stopListening() {
   if (voiceWs) { voiceWs.close(); voiceWs = null; }
   document.getElementById("listen").textContent = "Listen";
   setVoiceState("off");
+  stopMeter();
 }
 
 document.getElementById("listen").onclick = () => {
