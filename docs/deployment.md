@@ -275,6 +275,33 @@ you otherwise — the local image cannot drop torch while SenseVoice is its
 default ASR. Switching the default to Moonshine is what would make a
 torch-free local image possible; see the benchmark below for why we don't.
 
+### Debugging ASR accuracy in the field
+
+Field accuracy is worse than the benchmark below, and transcripts alone cannot
+tell you whether the model is weak or the audio was already degraded before it
+reached the model. Setting `server.debug_audio_dir` captures the exact WAV each
+provider received, plus what it returned:
+
+```sh
+AGENT_HUB_SERVER_DEBUG_AUDIO_DIR=data/asr-captures
+```
+
+Then replay real utterances through providers side by side:
+
+```sh
+PROVIDERS=moonshine,funasr_onnx uv run --extra full python \
+    scripts/compare_asr_captures.py data/asr-captures
+```
+
+It prints per-clip signal statistics next to each provider's transcript.
+`peak` near 1.0 with `clipped%` above ~0.1 means the input gain is too high;
+`rms` below ~0.01 means too quiet or too far from the microphone. Either points
+at capture rather than the model — worth ruling out before paying for a larger
+droplet.
+
+**Capture is off by default and should stay off.** It records everything said
+to a device, so it is a privacy decision rather than a debug flag.
+
 ### ASR benchmark: Moonshine vs SenseVoice
 
 Measured with `scripts/bench_asr.py` over 73 LibriSpeech utterances (481s of
