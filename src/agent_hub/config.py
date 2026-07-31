@@ -37,6 +37,9 @@ class ServerConfig:
     dashboard_allowed_origins: str = ""
     allowed_hosts: str = ""
     image_token: str = ""
+    # Directory to capture ASR input audio into. Empty disables capture; it
+    # records everything said to a device, so it is off by default.
+    debug_audio_dir: str = ""
     heartbeat_interval_seconds: int = 60
     heartbeat_timeout_seconds: int = 180
 
@@ -130,6 +133,7 @@ class Settings:
                 dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),
                 allowed_hosts=str(srv.get("allowed_hosts", "")),
                 image_token=str(srv.get("image_token", "")),
+                debug_audio_dir=str(srv.get("debug_audio_dir", "")),
                 heartbeat_interval_seconds=int(srv.get("heartbeat_interval_seconds", 60)),
                 heartbeat_timeout_seconds=int(srv.get("heartbeat_timeout_seconds", 180)),
             ),

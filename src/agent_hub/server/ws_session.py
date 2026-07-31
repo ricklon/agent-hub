@@ -34,8 +34,8 @@ from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.tts import get_provider as get_tts
 from agent_hub.registry.models import AgentStatus, Persona
 from agent_hub.registry.store import RegistryStore
+from agent_hub.server import debug_audio, session_state, tool_policy, transcript_log
 from agent_hub.server import emotion as emotion_utils
-from agent_hub.server import session_state, tool_policy, transcript_log
 from agent_hub.server.audio import (
     AudioRateController,
     OpusDecoder,
@@ -647,6 +647,19 @@ async def _run_voice_turn(
     asr = get_asr(persona.asr_provider, config)
     result = await asr.transcribe(wav_bytes)
     asr_ms = int((time.monotonic() - t0) * 1000)
+    # Opt-in: keep the exact audio the provider saw, so poor field accuracy can
+    # be attributed to the model or to the capture path instead of guessed at.
+    capture = debug_audio.capture_dir(config)
+    if capture is not None:
+        debug_audio.save(
+            capture,
+            device_id,
+            wav_bytes,
+            transcript=result.text,
+            provider=persona.asr_provider,
+            asr_ms=asr_ms,
+            is_speech=result.is_speech,
+        )
     rtf = _asr_realtime_factor(asr_ms, len(opus_frames), audio_params_frame_duration)
     if rtf > _MAX_ASR_REALTIME_FACTOR:
         logger.bind(tag=_TAG).warning(
