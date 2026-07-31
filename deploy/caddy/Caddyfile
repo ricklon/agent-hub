@@ -20,11 +20,24 @@
 		reverse_proxy agent-hub:8000
 	}
 
-	# Device check-in and OTA, mounted on http_port.
+	# Device check-in, OTA and heartbeat, all mounted on http_port.
+	#
+	# Every device-facing route needs a block here — anything unlisted falls
+	# through to the 404 below, which looks like a server fault rather than a
+	# missing proxy rule. Current set, from the routers grouped onto ws_port
+	# and http_port in server/__main__.py:
+	#   /xiaozhi/v1/         WebSocket session      (8000)
+	#   /xiaozhi/v1/image/   camera upload          (8000)
+	#   /checkin/            check-in               (8003)
+	#   /xiaozhi/ota/        check-in / OTA         (8003)
+	#   /xiaozhi/heartbeat/  liveness + health      (8003)
 	handle /checkin/* {
 		reverse_proxy agent-hub:8003
 	}
 	handle /xiaozhi/ota/* {
+		reverse_proxy agent-hub:8003
+	}
+	handle /xiaozhi/heartbeat/* {
 		reverse_proxy agent-hub:8003
 	}
 
