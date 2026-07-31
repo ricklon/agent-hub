@@ -71,6 +71,7 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 <button id="listen">Listen</button>
 <label style="display:inline-flex;align-items:center;gap:.2rem;font-size:.8rem">
 Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
+<span style="font-size:.75rem;color:#8b949e">clear it for open mic</span>
 </div>
 <div class="row"><div id="voicestate">
   <span id="voicedot"></span>
@@ -329,7 +330,7 @@ const VOICE_STATES = {
   listening: {label: "listening",     color: "#3fb950", live: true,
               hint: () => { const w = currentWakeWord();
                 return w ? "say “" + w + "”, then your question"
-                         : "just speak — no wake word set"; }},
+                         : "open mic — everything you say is sent"; }},
   ignored:   {label: "heard you",     color: "#d29922", live: true,
               hint: () => { const w = currentWakeWord();
                 return w ? "ignored — start with “" + w + "”"

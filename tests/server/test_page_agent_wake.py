@@ -49,14 +49,22 @@ class TestIgnored:
 
 
 class TestNoWakeWordConfigured:
-    def test_utterances_are_reported_but_never_run(self):
-        """With gating disabled nothing is treated as a command.
+    """An empty wake word means open-mic: everything is addressed to us."""
 
-        This is the current behaviour, not necessarily the desired one — an
-        empty wake word arguably ought to mean "every utterance is for me".
-        """
+    def test_every_utterance_becomes_a_command(self):
         kind, text = classify_utterance("what a nice day", "")
-        assert (kind, text) == ("transcript", "what a nice day")
+        assert (kind, text) == ("command", "what a nice day")
+
+    def test_the_word_computer_is_not_special(self):
+        kind, text = classify_utterance("computer says no", "")
+        assert (kind, text) == ("command", "computer says no")
 
     def test_single_word_is_still_treated_as_noise(self):
+        """The noise filter stays: a stray one-word ASR artefact should not
+        cost an LLM call just because gating is off."""
         assert classify_utterance("hello", "") == ("ignore", "hello")
+
+    def test_nothing_is_ever_merely_reported(self):
+        """With no wake word there is no 'heard but not for me' case."""
+        for said in ["turn the light on", "what time is it", "stop that now"]:
+            assert classify_utterance(said, "")[0] == "command"

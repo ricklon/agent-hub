@@ -74,9 +74,13 @@ def classify_utterance(raw: str, wake_word: str) -> tuple[str, str]:
     used to be filtered out before the wake-word check ran, which made the
     "yes?" prompt unreachable: saying just "computer" did nothing at all.
 
+    An empty wake word means open-mic: every utterance is addressed to the
+    agent. The noise filter still applies, so stray one-word ASR artefacts do
+    not each cost an LLM call.
+
     Args:
         raw: Raw ASR transcript.
-        wake_word: Configured wake word; empty disables wake-word gating.
+        wake_word: Configured wake word; empty means open-mic.
 
     Returns:
         (kind, text) as described above.
@@ -90,6 +94,9 @@ def classify_utterance(raw: str, wake_word: str) -> tuple[str, str]:
 
     if len(transcript.split()) < 2 and not has_wake:
         return ("ignore", transcript)
+
+    if not wake_word:
+        return ("command", transcript)
 
     if not has_wake:
         return ("transcript", transcript)
