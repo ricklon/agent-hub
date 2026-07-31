@@ -41,7 +41,11 @@ services:
       # no warning when renewal has been failing.
       ACME_EMAIL: "${ACME_EMAIL:-}"
     volumes:
-      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Mount the directory, not the Caddyfile itself. A single-file bind mount
+      # pins Docker to that file's inode, and git rewrites the file rather than
+      # editing in place — so after a `git pull` the container keeps serving the
+      # old config and `caddy reload` succeeds while changing nothing.
+      - ./deploy/caddy:/etc/caddy:ro
       # Certificates live here. Losing this volume means re-issuing on every
       # restart, which will hit Let's Encrypt rate limits.
       - ./data/caddy:/data
