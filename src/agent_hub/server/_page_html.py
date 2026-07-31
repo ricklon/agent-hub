@@ -27,6 +27,18 @@ pre{background:#010409;border:1px solid #30363d;padding:.6rem;overflow:auto;
   max-height:18rem;border-radius:4px}
 video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 .badge{font-size:.7rem;background:#1a2a3a;color:#79c0ff;border-radius:3px;padding:.1rem .35rem}
+/* Voice state. The old UI was a small grey span that named the state but
+   never said what to do about it, so "listening" and "ignored you" looked
+   identical. Dot + label + instruction, sized to be readable at a glance. */
+#voicestate{display:flex;align-items:center;gap:.5rem;padding:.45rem .7rem;
+  border:1px solid #30363d;border-radius:6px;background:#161b22;min-width:20rem}
+#voicedot{width:.6rem;height:.6rem;border-radius:50%;background:#6e7681;flex:none}
+#voicelabel{font-weight:bold;font-size:.9rem}
+#voicehint{font-size:.8rem;color:#8b949e}
+/* Only pulses when the microphone is actually open, so "is it hearing me?"
+   is answerable without reading anything. */
+.voice-live #voicedot{animation:voicepulse 1.4s ease-in-out infinite}
+@keyframes voicepulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
 </style></head><body>
 <h1>Page Agent</h1>
 <div class="row"><a href="/dashboard/" style="color:#58a6ff">← Dashboard</a></div>
@@ -53,7 +65,12 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 <button id="listen">Listen</button>
 <label style="display:inline-flex;align-items:center;gap:.2rem;font-size:.8rem">
 Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
-<span id="voicestate" style="font-size:.85rem;color:#8b949e">off</span></div>
+</div>
+<div class="row"><div id="voicestate">
+  <span id="voicedot"></span>
+  <span id="voicelabel">off</span>
+  <span id="voicehint">press Listen to start</span>
+</div></div>
 
 <script>
 const LS_KEY = "agenthub.pageAgent.deviceId";
@@ -288,6 +305,54 @@ document.getElementById("cam").onclick = async () => {
   }
 };
 
+// ── Voice state display ─────────────────────────────────────────────────
+// One place decides what the voice UI says. Previously five call sites built
+// the string inline, which is how "listening" ended up meaning both "waiting
+// for the wake word" and "heard you and ignored it".
+function currentWakeWord() {
+  return document.getElementById("wakeWord").value.trim();
+}
+
+const VOICE_STATES = {
+  off:       {label: "off",           color: "#6e7681", live: false,
+              hint: () => "press Listen to start"},
+  starting:  {label: "starting…",     color: "#d29922", live: false,
+              hint: () => "allow microphone access when prompted"},
+  listening: {label: "listening",     color: "#3fb950", live: true,
+              hint: () => { const w = currentWakeWord();
+                return w ? "say “" + w + "”, then your question"
+                         : "just speak — no wake word set"; }},
+  ignored:   {label: "heard you",     color: "#d29922", live: true,
+              hint: () => { const w = currentWakeWord();
+                return w ? "ignored — start with “" + w + "”"
+                         : "ignored — no speech recognised"; }},
+  thinking:  {label: "thinking…",     color: "#d29922", live: false,
+              hint: () => "working on it — mic paused"},
+  speaking:  {label: "speaking…",     color: "#58a6ff", live: false,
+              hint: () => "replying — wait for it to finish"},
+};
+
+let voiceStateTimer = null;
+function setVoiceState(name, revertAfterMs) {
+  const s = VOICE_STATES[name] || VOICE_STATES.off;
+  const box = document.getElementById("voicestate");
+  document.getElementById("voicelabel").textContent = s.label;
+  document.getElementById("voicelabel").style.color = s.color;
+  document.getElementById("voicehint").textContent = s.hint();
+  document.getElementById("voicedot").style.background = s.color;
+  box.classList.toggle("voice-live", s.live);
+  if (voiceStateTimer) { clearTimeout(voiceStateTimer); voiceStateTimer = null; }
+  // Transient states (like "heard you, ignored") fall back to the real one.
+  if (revertAfterMs) {
+    voiceStateTimer = setTimeout(() => setVoiceState(listening ? "listening" : "off"), revertAfterMs);
+  }
+}
+
+// Keep the hint honest while the wake word is edited mid-session.
+document.getElementById("wakeWord").addEventListener("input", () => {
+  if (listening) setVoiceState("listening");
+});
+
 // ── Voice WebSocket: hands-free with wake word ──────────────────────────
 let voiceWs = null;
 let audioCtx = null;
@@ -308,6 +373,9 @@ function voiceLog(msg, color) {
 
 async function startListening() {
   if (listening) return;
+  // The mic permission prompt and WS handshake take a moment; without this the
+  // badge sits on "off" and the button says "Stop", which reads as broken.
+  setVoiceState("starting");
   const wakeWord = document.getElementById("wakeWord").value.trim().toLowerCase();
   const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host
     + "/page-agent/voice?device_id=" + encodeURIComponent(deviceId)
@@ -341,9 +409,7 @@ async function startListening() {
     processor.connect(audioCtx.destination);
     listening = true;
     document.getElementById("listen").textContent = "Stop";
-    document.getElementById("voicestate").textContent = "listening"
-      + (wakeWord ? " for '" + wakeWord + "'" : "");
-    document.getElementById("voicestate").style.color = "#3fb950";
+    setVoiceState("listening");
     voiceLog("listening" + (wakeWord ? " for wake word '" + wakeWord + "'" : ""), "#3fb950");
   };
   voiceWs.onmessage = async (ev) => {
@@ -360,11 +426,9 @@ async function startListening() {
         line.style.color = "#58a6ff";
         logEl.appendChild(line);
       } else if (msg.type === "thinking") {
-        document.getElementById("voicestate").textContent = "thinking…";
-        document.getElementById("voicestate").style.color = "#d29922";
+        setVoiceState("thinking");
       } else if (msg.type === "tts" && msg.state === "start") {
-        document.getElementById("voicestate").textContent = "speaking…";
-        document.getElementById("voicestate").style.color = "#3fb950";
+        setVoiceState("speaking");
         const logEl = document.getElementById("log");
         const line = document.createElement("div");
         line.textContent = "agent: " + msg.text;
@@ -372,11 +436,10 @@ async function startListening() {
         logEl.appendChild(line);
         logEl.scrollTop = logEl.scrollHeight;
       } else if (msg.type === "tts" && msg.state === "stop") {
-        document.getElementById("voicestate").textContent = "listening"
-          + (document.getElementById("wakeWord").value ? " for '" + document.getElementById("wakeWord").value + "'" : "");
-        document.getElementById("voicestate").style.color = "#3fb950";
+        setVoiceState("listening");
       } else if (msg.type === "transcript") {
         voiceLog("(not wake word) " + msg.text, "#6e7681");
+        setVoiceState("ignored", 2500);
       } else if (msg.type === "error") {
         voiceLog("error: " + msg.message, "#f85149");
       }
@@ -406,8 +469,7 @@ function stopListening() {
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   if (voiceWs) { voiceWs.close(); voiceWs = null; }
   document.getElementById("listen").textContent = "Listen";
-  document.getElementById("voicestate").textContent = "off";
-  document.getElementById("voicestate").style.color = "#8b949e";
+  setVoiceState("off");
 }
 
 document.getElementById("listen").onclick = () => {
