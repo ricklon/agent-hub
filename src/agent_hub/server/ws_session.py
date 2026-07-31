@@ -204,6 +204,22 @@ async def _speak_segment(
             )
         )
 
+    # xiaozhi firmware reads reply text only from `sentence_start`; the `text`
+    # on `start` above is ignored by its OnIncomingJson handler, so without
+    # this the device speaks with a blank screen. Sent per segment rather than
+    # once per turn, because `start` is only sent for the first segment while
+    # every segment has its own text to display.
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "tts",
+                "session_id": session_id,
+                "state": "sentence_start",
+                "text": text,
+            }
+        )
+    )
+
     encoder = OpusEncoder(target_rate, frame_duration_ms=SERVER_TTS_AUDIO_PARAMS.frame_duration)
     rate_ctrl = AudioRateController(frame_duration_ms=SERVER_TTS_AUDIO_PARAMS.frame_duration)
     packets = encoder.encode(pcm_bytes)
@@ -272,11 +288,19 @@ async def _stream_reply_to_speech(
     config: dict[str, Any],
     session_id: str,
     on_first_delta: Callable[[], Awaitable[None]] | None = None,
-) -> tuple[str, int]:
-    """Consume LLM deltas and speak complete sentence chunks as soon as possible."""
+) -> tuple[str, int, int]:
+    """Consume LLM deltas and speak complete sentence chunks as soon as possible.
+
+    Returns (reply, tts_ms, first_delta_ms) where tts_ms is time actually spent
+    synthesising audio and first_delta_ms is how long the model took to produce
+    its first token. These overlap by design — synthesis starts while the model
+    is still streaming — so they are reported separately rather than as phases.
+    """
+    started = time.monotonic()
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     reply_parts: list[str] = []
     tts_ms = 0
+    first_delta_ms = 0
     spoke = False
     saw_delta = False
 
@@ -309,6 +333,7 @@ async def _stream_reply_to_speech(
                 continue
             if not saw_delta:
                 saw_delta = True
+                first_delta_ms = int((time.monotonic() - started) * 1000)
                 if on_first_delta:
                     await on_first_delta()
             reply_parts.append(delta)
@@ -336,7 +361,7 @@ async def _stream_reply_to_speech(
                 }
             )
         )
-    return "".join(reply_parts).strip(), tts_ms
+    return "".join(reply_parts).strip(), tts_ms, first_delta_ms
 
 
 _DEFAULT_SPEND_NOTICE = (
@@ -371,8 +396,13 @@ async def _run_llm_turn(
     device_id: str,
     supports_emoji: bool,
     emotion: str = "",
-) -> tuple[int, int, str]:
-    """LLM + TTS half of a voice turn. Mutates history. Returns (llm_ms, tts_ms, reply)."""
+) -> tuple[int, int, int, str]:
+    """LLM + TTS half of a voice turn. Mutates history.
+
+    Returns (llm_ms, tts_ms, turn_ms, reply): time to the model's first token,
+    time spent synthesising audio, and measured wall clock for the whole half.
+    The first two overlap, so turn_ms is measured rather than summed.
+    """
     history.append({"role": "user", "content": transcript})
     window = (persona.memory_window or 20) * 2
     if len(history) > window:
@@ -527,12 +557,10 @@ async def _run_llm_turn(
         )
     else:
         deltas = llm.stream(llm_history, system_prompt=system_prompt)
-    llm_ms = int((time.monotonic() - t1) * 1000)
 
     session_state.set_pipeline_status(device_id, "speaking", transcript)
-    t2 = time.monotonic()
     try:
-        reply, tts_ms = await _stream_reply_to_speech(
+        reply, tts_ms, first_delta_ms = await _stream_reply_to_speech(
             websocket,
             deltas,
             persona,
@@ -551,15 +579,22 @@ async def _run_llm_turn(
         await _speak(websocket, notice, persona, config, session_id)
         session_state.set_pipeline_status(device_id, "idle", transcript)
         history.pop()
-        return 0, 0, ""
+        return 0, 0, 0, ""
     finally:
         await slow_cue.close()
-    llm_ms = int((time.monotonic() - t1) * 1000)
-    tts_ms = max(tts_ms, int((time.monotonic() - t2) * 1000))
+    # Do not overwrite llm_ms here with elapsed-since-t1: that is the whole
+    # turn, and t2 sits a few ms after t1, so clamping tts_ms to elapsed-since-t2
+    # made both numbers report the same total. LLM streaming and TTS synthesis
+    # genuinely overlap, so they are measured independently instead:
+    #   llm_ms  — time until the model produced its first token
+    #   tts_ms  — time actually spent synthesising audio
+    #   turn_ms — measured wall clock for the whole LLM+TTS half
+    llm_ms = first_delta_ms
+    turn_ms = int((time.monotonic() - t1) * 1000)
 
     if not reply:
         history.pop()
-        return 0, 0, ""
+        return 0, 0, 0, ""
     # Embed captured image path as a marker so the history view can render it
     history_content = reply
     if captured_images:
@@ -585,7 +620,7 @@ async def _run_llm_turn(
                 )
             )
 
-    return llm_ms, tts_ms, reply
+    return llm_ms, tts_ms, turn_ms, reply
 
 
 async def _run_voice_turn(
@@ -663,7 +698,7 @@ async def _run_voice_turn(
             )
 
     # 3+4 — LLM + TTS
-    llm_ms, tts_ms, reply = await _run_llm_turn(
+    llm_ms, tts_ms, turn_ms, reply = await _run_llm_turn(
         websocket,
         transcript,
         session_id,
@@ -692,8 +727,8 @@ async def _run_voice_turn(
             tts_ms=tts_ms,
         )
     logger.bind(tag=_TAG).debug(
-        f"Turn latency — ASR:{asr_ms}ms LLM:{llm_ms}ms TTS:{tts_ms}ms "
-        f"total:{asr_ms + llm_ms + tts_ms}ms"
+        f"Turn latency — ASR:{asr_ms}ms first-token:{llm_ms}ms "
+        f"tts-synth:{tts_ms}ms reply:{turn_ms}ms total:{asr_ms + turn_ms}ms"
     )
 
 
@@ -775,7 +810,7 @@ async def _run_text_turn(
             )
         )
 
-    llm_ms, tts_ms, reply = await _run_llm_turn(
+    llm_ms, tts_ms, turn_ms, reply = await _run_llm_turn(
         websocket,
         transcript,
         session_id,
