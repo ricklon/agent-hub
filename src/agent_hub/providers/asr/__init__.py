@@ -40,6 +40,39 @@ class ASRProvider(abc.ABC):
 
 _cache: dict[str, ASRProvider] = {}
 
+# Third-party package each provider needs at transcription time. Providers are
+# imported lazily, so a build that omits one still starts cleanly and only
+# fails when that provider is used — which looks like a dead microphone rather
+# than a missing dependency.
+_PROVIDER_PACKAGES: dict[str, str] = {
+    "funasr_onnx": "funasr_onnx",
+    "fun_local_onnx": "funasr_onnx",
+    "funasr": "funasr",
+    "fun_local": "funasr",
+    "moonshine": "moonshine_voice",
+    "openai_whisper": "openai",
+}
+
+
+def is_available(name: str) -> bool:
+    """Whether this build can actually run the named ASR provider.
+
+    Args:
+        name: Provider name as used in config and persona records.
+
+    Returns:
+        True if the provider is known and its package is importable.
+    """
+    from importlib.util import find_spec
+
+    package = _PROVIDER_PACKAGES.get(name)
+    if package is None:
+        return False
+    try:
+        return find_spec(package) is not None
+    except (ImportError, ValueError):
+        return False
+
 
 def get_provider(name: str, config: dict[str, Any]) -> ASRProvider:
     """Instantiate an ASR provider by name from config.

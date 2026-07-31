@@ -135,7 +135,12 @@ def build_apps() -> dict[int, FastAPI]:
     """
     raw_config = load_config()
     settings = load_settings()
-    store = RegistryStore(settings.registry.db_path)
+    store = RegistryStore(
+        settings.registry.db_path,
+        default_asr_provider=str(
+            (raw_config.get("asr") or {}).get("default_provider") or "funasr_onnx"
+        ),
+    )
 
     groups: list[tuple[int, list[APIRouter], bool]] = [
         (
@@ -211,7 +216,12 @@ def build_app() -> FastAPI:
     """
     raw_config = load_config()
     settings = load_settings()
-    store = RegistryStore(settings.registry.db_path)
+    store = RegistryStore(
+        settings.registry.db_path,
+        default_asr_provider=str(
+            (raw_config.get("asr") or {}).get("default_provider") or "funasr_onnx"
+        ),
+    )
 
     app = _new_app(store, settings, raw_config)
     _add_dashboard_root(app)

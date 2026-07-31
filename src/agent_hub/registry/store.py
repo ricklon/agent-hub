@@ -14,6 +14,7 @@ from loguru import logger
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from agent_hub.providers.asr import is_available as asr_is_available
 from agent_hub.registry.models import (
     Agent,
     AgentKind,
@@ -46,13 +47,21 @@ class RegistryStore:
     once at startup before any other method.
     """
 
-    def __init__(self, db_path: str | Path = "data/registry.db") -> None:
+    def __init__(
+        self,
+        db_path: str | Path = "data/registry.db",
+        default_asr_provider: str = "funasr_onnx",
+    ) -> None:
         """Create the store.
 
         Args:
             db_path: Path to the SQLite database file. Parent dirs are
                 created automatically.
+            default_asr_provider: ASR provider for the seeded default persona,
+                and the fallback when a persona names one this build cannot
+                run. Should match asr.default_provider in the config.
         """
+        self._default_asr_provider = default_asr_provider
         db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", echo=False)
@@ -105,7 +114,7 @@ class RegistryStore:
                     name=_DEFAULT_PERSONA_NAME,
                     llm_provider="openai",
                     tts_provider="edge",
-                    asr_provider="funasr_onnx",
+                    asr_provider=self._default_asr_provider,
                     system_prompt=_DEFAULT_SYSTEM_PROMPT,
                 )
             )
@@ -123,6 +132,20 @@ class RegistryStore:
             if persona.asr_provider in {"funasr", "fun_local"}:
                 persona.asr_provider = "funasr_onnx"
                 updates.append("ASR provider")
+            # Same failure one generation on: the slim container images ship
+            # only one ASR provider, so a persona naming an absent one leaves
+            # the microphone live while every transcription silently returns
+            # nothing. Fall back to a provider this build can actually run.
+            if not asr_is_available(persona.asr_provider) and asr_is_available(
+                self._default_asr_provider
+            ):
+                logger.warning(
+                    f"Persona '{persona.name}' uses ASR provider "
+                    f"{persona.asr_provider!r}, which is not installed in this build — "
+                    f"falling back to {self._default_asr_provider!r}."
+                )
+                persona.asr_provider = self._default_asr_provider
+                updates.append("ASR provider (not installed)")
             if updates:
                 await session.commit()
                 logger.info(f"Updated persona '{_DEFAULT_PERSONA_NAME}' {', '.join(updates)}")
