@@ -22,6 +22,12 @@ services:
   agent-hub:
     ports: !reset []
     environment:
+      # Cloudflare Access is the sole human-authentication layer in public
+      # mode. The tunnel leaves no direct dashboard origin to bypass, so the
+      # generated app-level Basic password would only create a second,
+      # shared-credential prompt after Access has already authenticated the
+      # operator. Plain-IP and LAN deployments retain Basic auth.
+      AGENT_HUB_SERVER_DASHBOARD_PASSWORD: ""
       # Drives the device WebSocket URL handed out at check-in, and the camera
       # upload URL derived from it.
       AGENT_HUB_SERVER_WEBSOCKET: "wss://${AGENT_HUB_PUBLIC_HOST:?Set AGENT_HUB_PUBLIC_HOST in .env.do}/xiaozhi/v1/"

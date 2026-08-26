@@ -84,6 +84,10 @@ agent-hub dashboard
   username: admin
   password: ${DASHBOARD_PASSWORD}
 
+The dashboard password applies to plain-IP deployments. Public-ingress mode
+disables the Basic-auth prompt and relies on the Cloudflare Access policy;
+the dashboard has no direct public origin in that mode.
+
 Enrollment token (devices must send this to check in):
   ${ENROLLMENT_TOKEN}
 

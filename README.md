@@ -198,7 +198,8 @@ For always-on or remote access deployments, read
 [`docs/deployment.md`](docs/deployment.md) before exposing any ports. The
 dashboard supports optional HTTP Basic auth via
 `AGENT_HUB_SERVER_DASHBOARD_PASSWORD`; leave it empty only for trusted LAN
-development.
+development or when the public-ingress overlay puts the otherwise-unreachable
+dashboard behind a restrictive Cloudflare Access policy.
 
 To give only Agent Hub (not its Docker host) a private tailnet identity, use
 the `docker-compose.tailnet.yml` sidecar described in the deployment guide.
