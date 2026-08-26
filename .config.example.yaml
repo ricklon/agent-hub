@@ -11,6 +11,10 @@ server:
   # Leave password empty for local/LAN-only development.
   dashboard_username: "admin"
   dashboard_password: ""
+  # Optional Cloudflare Access identity. Configure both values to verify the
+  # signed Access JWT and show the authenticated operator in the dashboard.
+  dashboard_access_team_domain: ""  # e.g. example.cloudflareaccess.com
+  dashboard_access_audience: ""     # Access application AUD tag
   # Optional shared secret required during device check-in.
   # Leave empty for trusted LAN/classroom auto-registration.
   enrollment_token: ""

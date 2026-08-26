@@ -43,6 +43,11 @@ def test_env_overrides_hosting_auth_keys_stay_flat(monkeypatch, tmp_path):
     config_path.write_text("{}\n")
     monkeypatch.setenv("AGENT_HUB_SERVER_ENROLLMENT_TOKEN", "enroll-secret")
     monkeypatch.setenv("AGENT_HUB_SERVER_DASHBOARD_PASSWORD", "hunter2")
+    monkeypatch.setenv(
+        "AGENT_HUB_SERVER_DASHBOARD_ACCESS_TEAM_DOMAIN",
+        "team.cloudflareaccess.com",
+    )
+    monkeypatch.setenv("AGENT_HUB_SERVER_DASHBOARD_ACCESS_AUDIENCE", "app-audience")
     monkeypatch.setenv("AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT", "/srv/images")
     monkeypatch.setenv("AGENT_HUB_SERVER_IMAGE_TOKEN", "img-secret")
 
@@ -50,6 +55,8 @@ def test_env_overrides_hosting_auth_keys_stay_flat(monkeypatch, tmp_path):
 
     assert config["server"]["enrollment_token"] == "enroll-secret"
     assert config["server"]["dashboard_password"] == "hunter2"
+    assert config["server"]["dashboard_access_team_domain"] == "team.cloudflareaccess.com"
+    assert config["server"]["dashboard_access_audience"] == "app-audience"
     assert config["server"]["dashboard_image_root"] == "/srv/images"
     assert config["server"]["image_token"] == "img-secret"
     assert "dashboard" not in config["server"]
@@ -58,3 +65,5 @@ def test_env_overrides_hosting_auth_keys_stay_flat(monkeypatch, tmp_path):
     settings = Settings.from_dict(config)
     assert settings.server.enrollment_token == "enroll-secret"
     assert settings.server.dashboard_password == "hunter2"
+    assert settings.server.dashboard_access_team_domain == "team.cloudflareaccess.com"
+    assert settings.server.dashboard_access_audience == "app-audience"

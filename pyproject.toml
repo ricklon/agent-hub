@@ -28,6 +28,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyserial>=3.5",
     "moonshine-voice>=0.1.0",
+    "pyjwt[crypto]>=2.10",
 ]
 
 [project.optional-dependencies]

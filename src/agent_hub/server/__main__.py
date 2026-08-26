@@ -72,21 +72,29 @@ def parse_allowed_hosts(raw: str) -> list[str]:
 
 
 def _warn_if_dashboard_exposed(settings: Settings) -> None:
-    """Warn when the dashboard is reachable off-loopback with no password.
+    """Warn when the dashboard is reachable off-loopback with no authentication.
 
     Deliberately a warning rather than a hard failure: the zero-config
     classroom flow has to keep working. Anyone running this beyond their own
     machine needs to see it, though — an unauthenticated dashboard grants
     control of every device and read access to every transcript.
     """
-    if settings.server.host in _LOOPBACK_HOSTS or settings.server.dashboard_password:
+    access_identity_configured = bool(
+        settings.server.dashboard_access_team_domain and settings.server.dashboard_access_audience
+    )
+    if (
+        settings.server.host in _LOOPBACK_HOSTS
+        or settings.server.dashboard_password
+        or access_identity_configured
+    ):
         return
 
     logger.warning(
         f"Dashboard is bound to {settings.server.host}:{settings.server.dashboard_port} "
-        f"with no password. Any host that can reach it can control every device "
-        f"and read all transcripts. Set AGENT_HUB_SERVER_DASHBOARD_PASSWORD, and "
-        f"AGENT_HUB_SERVER_ALLOWED_HOSTS to block DNS-rebinding, or bind to 127.0.0.1."
+        f"with no authentication. Any host that can reach it can control every device "
+        f"and read all transcripts. Set AGENT_HUB_SERVER_DASHBOARD_PASSWORD or the "
+        f"Cloudflare Access identity settings, set AGENT_HUB_SERVER_ALLOWED_HOSTS to "
+        f"block DNS-rebinding, or bind to 127.0.0.1."
     )
 
 

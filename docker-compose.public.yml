@@ -28,6 +28,12 @@ services:
       # shared-credential prompt after Access has already authenticated the
       # operator. Plain-IP and LAN deployments retain Basic auth.
       AGENT_HUB_SERVER_DASHBOARD_PASSWORD: ""
+      # Optional signed operator identity. Configure both values to make the
+      # origin verify Access on every dashboard request and show the operator
+      # email/logout controls. Empty preserves compatibility for deployments
+      # that have not enabled origin-side identity yet.
+      AGENT_HUB_SERVER_DASHBOARD_ACCESS_TEAM_DOMAIN: "${CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}"
+      AGENT_HUB_SERVER_DASHBOARD_ACCESS_AUDIENCE: "${CLOUDFLARE_ACCESS_AUDIENCE:-}"
       # Drives the device WebSocket URL handed out at check-in, and the camera
       # upload URL derived from it.
       AGENT_HUB_SERVER_WEBSOCKET: "wss://${AGENT_HUB_PUBLIC_HOST:?Set AGENT_HUB_PUBLIC_HOST in .env.do}/xiaozhi/v1/"
