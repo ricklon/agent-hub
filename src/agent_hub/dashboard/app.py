@@ -37,8 +37,8 @@ header{display:flex;justify-content:space-between;align-items:flex-start;gap:1re
 .operator-role{border:1px solid #30363d;border-radius:999px;padding:0.15rem 0.45rem}
 .operator a{color:#58a6ff;text-decoration:none}
 .operator a:hover{text-decoration:underline}
-nav{margin-bottom:2rem}
-nav a{color:#58a6ff;margin-right:1.5rem;text-decoration:none}
+nav{display:flex;flex-wrap:wrap;gap:0.5rem 1.5rem;margin-bottom:2rem}
+nav a{color:#58a6ff;text-decoration:none}
 nav a:hover{text-decoration:underline}
 section{margin-bottom:2rem}
 table{border-collapse:collapse;width:100%}
@@ -65,9 +65,21 @@ input,select{background:#161b22;color:#c9d1d9;border:1px solid #30363d;
 button{background:#238636;color:#fff;border:none;padding:0.4rem 0.9rem;
   border-radius:4px;cursor:pointer}
 button:hover{background:#2ea043}
+button:disabled{cursor:wait;opacity:0.65}
 button.selected{background:#1f4a2e;color:#3fb950;border:1px solid #3fb950}
 .msg{color:#3fb950;margin-top:0.5rem}
 .controls{display:flex;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem}
+:where(a,button,input,select,textarea):focus-visible{outline:3px solid #58a6ff;
+  outline-offset:2px}
+.htmx-indicator{display:none}
+.htmx-request.htmx-indicator{display:block}
+#global-progress{position:fixed;z-index:100;top:0;left:0;right:0;padding:0.35rem 1rem;
+  text-align:center;background:#1f6feb;color:#fff}
+#global-feedback{position:fixed;z-index:101;right:1rem;bottom:1rem;max-width:28rem;
+  border:1px solid #f85149;border-radius:6px;padding:0.75rem 1rem;background:#2d1117;
+  color:#ff7b72;box-shadow:0 4px 20px #010409}
+#global-feedback:empty{display:none}
+form.htmx-request{opacity:0.78}
 """
 
 _CSS_EXTRA = """\
@@ -127,14 +139,37 @@ input[type=number]{width:6rem}
 .empty-state h2{color:#58a6ff}.empty-state p{line-height:1.6;color:#8b949e}
 .empty-icon{font-size:2.5rem;color:#58a6ff}.empty-actions{display:flex;gap:0.75rem;
   justify-content:center;margin-top:1.25rem}
+@media (max-width:760px){
+  body{padding:1rem}
+  header{align-items:flex-start;flex-direction:column}
+  .operator{align-items:flex-start;flex-wrap:wrap}
+  nav{gap:0.75rem 1.25rem;margin:1rem 0 1.5rem}
+  .overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .field-row{grid-template-columns:1fr}
+  .attention-item,.section-heading{align-items:flex-start;flex-direction:column}
+  .empty-actions{align-items:stretch;flex-direction:column}
+  table{display:block;max-width:100%;overflow-x:auto}
+  input:not([type=checkbox]),select,textarea{box-sizing:border-box;max-width:100%;width:100%}
+  form[style*="display:flex"],form[style*="display:inline-flex"]{align-items:stretch!important;
+    flex-direction:column}
+  button,.action-link{min-height:44px}
+}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 """
 
 _PAGE = """\
 <!doctype html><html><head>
-<meta charset="utf-8"><title>agent-hub</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-hub</title>
 <style>{css}</style>
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-</head><body hx-headers='{{"X-Requested-With":"XMLHttpRequest"}}'>
+</head><body hx-headers='{{"X-Requested-With":"XMLHttpRequest"}}'
+  hx-indicator="#global-progress">
+<div id="global-progress" class="htmx-indicator" role="status" aria-live="polite">
+  Working…
+</div>
+<div id="global-feedback" role="alert" aria-live="assertive"></div>
 <header><h1>agent-hub</h1>{operator}</header>
 <nav>
   <a href="/dashboard/">Agents</a>
@@ -145,6 +180,33 @@ _PAGE = """\
   <a href="/dashboard/docs">Docs</a>
 </nav>
 {body}
+<script>
+document.body.addEventListener("htmx:beforeRequest", function(event) {{
+  const source = event.detail.elt;
+  source.setAttribute("aria-busy", "true");
+  const buttons = source.matches("button") ? [source] : source.querySelectorAll("button");
+  buttons.forEach(function(button) {{
+    if (button.disabled) return;
+    button.dataset.requestDisabled = "true";
+    button.disabled = true;
+  }});
+  document.getElementById("global-feedback").textContent = "";
+}});
+document.body.addEventListener("htmx:afterRequest", function(event) {{
+  const source = event.detail.elt;
+  source.setAttribute("aria-busy", "false");
+  const buttons = source.matches("button") ? [source] : source.querySelectorAll("button");
+  buttons.forEach(function(button) {{
+    if (!button.dataset.requestDisabled) return;
+    button.disabled = false;
+    delete button.dataset.requestDisabled;
+  }});
+  if (!event.detail.successful) {{
+    document.getElementById("global-feedback").textContent =
+      "That action could not be completed. Check your connection and try again.";
+  }}
+}});
+</script>
 </body></html>
 """
 
@@ -264,7 +326,7 @@ def make_router(
 <h2>Operators</h2>
 <p class="doc-muted">Cloudflare Access decides who may sign in. Agent Hub assigns
 what each verified identity may do. New identities start as viewers.</p>
-<div id="operator-result"></div>
+<div id="operator-result" role="status" aria-live="polite"></div>
 <table>
 <thead><tr><th>email</th><th>authorization</th></tr></thead>
 <tbody>{rows or '<tr><td colspan="2">No operators have signed in.</td></tr>'}</tbody>
@@ -544,7 +606,8 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
   <select name="persona_name">{persona_options}</select>
   <button type="submit">Assign</button>
 </form>
-<span id="assign-result" style="margin-left:0.5rem"></span>"""
+<span id="assign-result" role="status" aria-live="polite"
+      style="margin-left:0.5rem"></span>"""
         if persona:
             model_str = (
                 persona.llm_model
@@ -619,16 +682,20 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
       hx-target="#capture-result" hx-swap="innerHTML" style="display:inline">
   <button type="submit" style="background:#1a4a6e">📷 Capture photo</button>
 </form>
-<div id="capture-result" style="margin-top:0.75rem"></div>"""
+<div id="capture-result" role="status" aria-live="polite"
+     style="margin-top:0.75rem"></div>"""
 
         # Reboot + send message
         speak_form = f"""\
 <form hx-post="/dashboard/agents/{device_id}/reboot"
-      hx-target="#reboot-result" hx-swap="innerHTML" style="display:inline">
+      hx-target="#reboot-result" hx-swap="innerHTML"
+      hx-confirm="Reboot this device now? Its active session will disconnect."
+      style="display:inline">
   <button type="submit" style="background:#6e3a1e">↺ Reboot device</button>
 </form>
 {camera_btn}
-<span id="reboot-result" style="margin-left:0.75rem"></span>
+<span id="reboot-result" role="status" aria-live="polite"
+      style="margin-left:0.75rem"></span>
 <h3>Inject utterance</h3>
 <p style="color:#8b949e;font-size:0.85rem">
   Simulate speech — runs the full LLM pipeline and speaks the reply on the device.
@@ -636,17 +703,20 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 <form hx-post="/dashboard/agents/{device_id}/inject"
       hx-target="#inject-result" hx-swap="innerHTML"
       style="display:flex;gap:0.5rem;align-items:center">
-  <input type="text" name="text" value="tell me what you see" style="width:360px">
+  <input type="text" name="text" value="tell me what you see"
+         aria-label="Utterance to inject" style="width:360px">
   <button type="submit" style="background:#1a4a6e">▶ Inject</button>
 </form>
-<div id="inject-result" style="margin-top:0.5rem"></div>
+<div id="inject-result" role="status" aria-live="polite"
+     style="margin-top:0.5rem"></div>
 <h3>Send message to device</h3>
 <form hx-post="/dashboard/agents/{device_id}/speak"
       hx-target="#speak-result" hx-swap="innerHTML">
-  <input type="text" name="text" placeholder="Say something..." style="width:400px">
+  <input type="text" name="text" placeholder="Say something..."
+         aria-label="Message to speak" style="width:400px">
   <button type="submit">Speak</button>
 </form>
-<div id="speak-result"></div>
+<div id="speak-result" role="status" aria-live="polite"></div>
 <h3>Conversation history</h3>
 <div style="margin-bottom:0.4rem;font-size:0.85rem">
   Pipeline:&nbsp;<span
@@ -826,7 +896,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 <tbody>{rows}</tbody>
 </table>
 <h3 style="margin-top:2rem">New persona</h3>
-<div id="new-persona-result"></div>
+<div id="new-persona-result" role="status" aria-live="polite"></div>
 <form hx-post="/dashboard/personas"
       hx-target="#new-persona-result" hx-swap="innerHTML">
   <div class="field-row">
@@ -888,7 +958,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         body = f"""\
 <p><a href="/dashboard/personas" style="color:#58a6ff">← personas</a></p>
 <h2>Edit persona: {name}</h2>
-<div id="save-result"></div>
+<div id="save-result" role="status" aria-live="polite"></div>
 <form hx-post="/dashboard/personas/{name}"
       hx-target="#save-result" hx-swap="innerHTML">
 
