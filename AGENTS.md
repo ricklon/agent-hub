@@ -79,7 +79,7 @@ agent-hub/
 │       └── app.py           ← FastAPI + HTMX (large; see note)
 ├── scripts/                 ← smoke.py, test_features.py, model downloads
 ├── tests/
-├── skills/                  ← agent instruction files — currently EMPTY
+├── skills/                  ← focused coding-agent instruction files
 └── docs/
 ```
 
@@ -215,7 +215,7 @@ having extra context materially improves output quality. Each skill is a
 is in that area.
 
 Skills with an existing `skills/<name>/SKILL.md` are available; the others
-below are planned. Create them as the corresponding code areas are touched, following the
+below are planned. Create planned skills as the corresponding code areas are touched, following the
 [Anthropic skill format](https://www.anthropic.com/news/agent-skills) used
 elsewhere in Rick's projects.
 

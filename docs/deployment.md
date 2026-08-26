@@ -451,16 +451,20 @@ AGENT_HUB_DASHBOARD_HOST=admin.example.com  # dashboard, via the tunnel
 CLOUDFLARE_TUNNEL_TOKEN=...                 # from the Cloudflare dashboard
 CLOUDFLARE_ACCESS_TEAM_DOMAIN=example.cloudflareaccess.com
 CLOUDFLARE_ACCESS_AUDIENCE=...              # Access application AUD tag
+CLOUDFLARE_ACCESS_ADMIN_EMAILS=you@example.com
 ACME_EMAIL=you@example.com
 ```
 
-The two Access identity values are optional but recommended. When both are
-set, Agent Hub verifies Cloudflare's signed assertion on every dashboard
+The Access identity values are optional but recommended. When the team domain
+and audience are set, at least one bootstrap admin email is required. Agent Hub
+verifies Cloudflare's signed assertion on every dashboard
 request, displays the authenticated operator, and provides an Access logout
 link. Find the team domain in the Access login URL and the AUD tag under
 Access controls → Applications → your dashboard application. Configure both
-or neither; a partial configuration stops dashboard startup rather than
-silently trusting an incomplete identity setup.
+or neither; incomplete identity configuration stops dashboard startup rather
+than silently trusting an incomplete identity setup. Bootstrap emails become
+admins, while every other verified identity starts as a read-only viewer and
+can be promoted or disabled from the Operators page.
 
 `AGENT_HUB_PUBLIC_HOST` is what selects this mode — cloud-init detects it,
 adds the overlay, and opens only 80 and 443 in ufw instead of the app ports.

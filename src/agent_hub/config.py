@@ -36,6 +36,8 @@ class ServerConfig:
     # Cloudflare Access assertion for this team and application.
     dashboard_access_team_domain: str = ""
     dashboard_access_audience: str = ""
+    # Comma-separated verified emails granted admin during provisioning/login.
+    dashboard_admin_emails: str = ""
     enrollment_token: str = ""
     dashboard_image_root: str = "data/images"
     dashboard_allowed_origins: str = ""
@@ -134,6 +136,7 @@ class Settings:
                 dashboard_password=str(srv.get("dashboard_password", "")),
                 dashboard_access_team_domain=str(srv.get("dashboard_access_team_domain", "")),
                 dashboard_access_audience=str(srv.get("dashboard_access_audience", "")),
+                dashboard_admin_emails=str(srv.get("dashboard_admin_emails", "")),
                 enrollment_token=str(srv.get("enrollment_token", "")),
                 dashboard_image_root=str(srv.get("dashboard_image_root", "data/images")),
                 dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),

@@ -34,6 +34,7 @@ services:
       # that have not enabled origin-side identity yet.
       AGENT_HUB_SERVER_DASHBOARD_ACCESS_TEAM_DOMAIN: "${CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}"
       AGENT_HUB_SERVER_DASHBOARD_ACCESS_AUDIENCE: "${CLOUDFLARE_ACCESS_AUDIENCE:-}"
+      AGENT_HUB_SERVER_DASHBOARD_ADMIN_EMAILS: "${CLOUDFLARE_ACCESS_ADMIN_EMAILS:-}"
       # Drives the device WebSocket URL handed out at check-in, and the camera
       # upload URL derived from it.
       AGENT_HUB_SERVER_WEBSOCKET: "wss://${AGENT_HUB_PUBLIC_HOST:?Set AGENT_HUB_PUBLIC_HOST in .env.do}/xiaozhi/v1/"
