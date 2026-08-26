@@ -432,8 +432,12 @@ uploads.
 highest-value target in the system — it can change personas, drive device
 tools, and read every transcript and photo. Through a tunnel it has no public
 port at all, and Cloudflare Access puts real SSO in front of it, replacing
-Basic auth over plain HTTP. Put an Access policy on that hostname; without one
-the tunnel has simply published your dashboard.
+Basic auth. The public overlay explicitly clears the app-level dashboard
+password, so operators see only the Access login rather than a second shared-
+password popup. Put a default-deny Access policy on the entire dashboard
+hostname, allow only the intended accounts or email addresses, and do not add
+an `Everyone` or `Bypass` policy. Without an Access policy the tunnel has
+simply published your dashboard.
 
 The Caddyfile returns 404 for anything it does not route, so `/dashboard/` on
 the device hostname finds nothing even though the app is listening on 8001
@@ -566,11 +570,13 @@ Its weaknesses are worth knowing:
   file or environment. Prefer the environment over `data/.config.yaml`.
 
 For anything internet-facing, do not rely on Basic as the primary control.
-Put an identity-aware proxy in front — Cloudflare Access supports passkeys,
-SSO, per-person audit, and revocation with no application changes — and keep
-Basic underneath as a backstop. WebAuthn cannot be implemented in the app as
-it stands: the server is HTTP-only, and passkeys require a secure context and
-a stable origin.
+Put an identity-aware proxy in front. The public-ingress overlay uses
+Cloudflare Access as the sole human-authentication layer: its tunnel leaves no
+direct dashboard origin, and it provides per-person audit and revocation
+without application changes. Basic remains available for plain-IP, LAN, and
+other deployments that do not have an identity-aware proxy. WebAuthn cannot
+be implemented in the app as it stands: the server is HTTP-only, and passkeys
+require a secure context and a stable origin.
 
 ## Remaining Work Before Public Internet
 
