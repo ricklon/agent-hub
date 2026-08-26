@@ -21,7 +21,8 @@ from agent_hub import spend
 from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
-from agent_hub.registry.models import OperatorRole
+from agent_hub.dashboard.overview import render_fleet_overview
+from agent_hub.registry.models import Agent, OperatorRole, Persona
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import session_state, tool_policy
 
@@ -53,6 +54,7 @@ tr:hover td{background:#161b22}
 .badge-kind{background:#3a2a1a;color:#f0883e}
 .status-active{color:#3fb950}
 .status-idle{color:#d29922}
+.status-degraded{color:#d29922}
 .status-offline{color:#6e7681}
 .status-discovered{color:#58a6ff}
 .lat{font-size:0.75rem;color:#8b949e}
@@ -95,6 +97,36 @@ input[type=number]{width:6rem}
 .spend-over{color:#f85149}
 .audit-success{color:#3fb950}
 .audit-failure{color:#f85149}
+.section-heading{display:flex;justify-content:space-between;align-items:center;gap:1rem}
+.section-heading h2,.section-heading p{margin:0 0 0.35rem}
+.action-link{display:inline-block;color:#58a6ff;border:1px solid #30363d;border-radius:4px;
+  padding:0.4rem 0.7rem;text-decoration:none;white-space:nowrap}
+.action-link:hover{border-color:#58a6ff;background:#161b22;text-decoration:none}
+.action-link.primary{color:#fff;background:#238636;border-color:#238636}
+.overview-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:0.75rem;
+  margin-top:0.75rem}
+.overview-card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem}
+.overview-value{font-size:1.8rem;display:block;color:#c9d1d9}
+.overview-label{font-size:0.75rem;color:#8b949e}
+.overview-good .overview-value{color:#3fb950}
+.overview-warn .overview-value{color:#d29922}
+.overview-muted .overview-value{color:#8b949e}
+.attention-panel{border:1px solid #5a4217;background:#17130b;border-radius:6px;padding:1rem}
+.attention-count{font-size:0.75rem;background:#5a4217;color:#f2cc60;border-radius:999px;
+  padding:0.15rem 0.45rem;vertical-align:middle}
+.attention-list{display:grid;gap:0.6rem;margin-top:0.75rem}
+.attention-item{display:flex;justify-content:space-between;align-items:center;gap:1rem;
+  background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:0.75rem}
+.attention-status{font-size:0.72rem;margin-left:0.5rem}
+.attention-detail{font-size:0.75rem;color:#8b949e;margin-top:0.25rem}
+.attention-clear{display:flex;gap:0.75rem;align-items:center;border:1px solid #1f4a2e;
+  background:#0e1711;border-radius:6px;padding:0.8rem 1rem;color:#3fb950}
+.attention-clear span{color:#8b949e;font-size:0.8rem}
+.empty-state{text-align:center;max-width:650px;margin:4rem auto;padding:2rem;
+  border:1px dashed #30363d;border-radius:8px;background:#161b22}
+.empty-state h2{color:#58a6ff}.empty-state p{line-height:1.6;color:#8b949e}
+.empty-icon{font-size:2.5rem;color:#58a6ff}.empty-actions{display:flex;gap:0.75rem;
+  justify-content:center;margin-top:1.25rem}
 """
 
 _PAGE = """\
@@ -190,8 +222,8 @@ def make_router(
 
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(request: Request) -> HTMLResponse:
-        rows = await _render_agent_rows(store, heartbeat_timeout_seconds)
-        body = await _spend_panel() + _agent_table(rows)
+        overview = await _render_agent_overview(store, heartbeat_timeout_seconds)
+        body = await _spend_panel() + overview
         return HTMLResponse(_render_page(request, body))
 
     async def _spend_panel() -> str:
@@ -206,6 +238,10 @@ def make_router(
     async def dashboard_agents_partial(request: Request) -> HTMLResponse:
         rows = await _render_agent_rows(store, heartbeat_timeout_seconds)
         return HTMLResponse(_agent_table(rows))
+
+    @router.get("/dashboard/overview", response_class=HTMLResponse)
+    async def dashboard_overview_partial(request: Request) -> HTMLResponse:
+        return HTMLResponse(await _render_agent_overview(store, heartbeat_timeout_seconds))
 
     # ── Project docs ─────────────────────────────────────────────────────────
 
@@ -1142,9 +1178,12 @@ def _render_spend_panel(totals: dict[str, Any]) -> str:
 </section>"""
 
 
-def _agent_table(rows: str) -> str:
+def _agent_table(rows: str, *, poll: bool = True) -> str:
+    poll_attributes = (
+        ' hx-get="/dashboard/agents" hx-trigger="every 5s" hx-swap="outerHTML"' if poll else ""
+    )
     return f"""\
-<div hx-get="/dashboard/agents" hx-trigger="every 5s" hx-swap="outerHTML">
+<div{poll_attributes}>
 <table>
 <thead><tr>
   <th>device</th><th>health · activity</th><th>persona / model</th>
@@ -1280,6 +1319,37 @@ async def _render_agent_rows(store: RegistryStore, heartbeat_timeout_seconds: in
         logger.error(f"Dashboard agent query failed: {exc}")
         return "<tr><td colspan=8>error loading agents</td></tr>"
 
+    return _render_agent_rows_data(rows_data, heartbeat_timeout_seconds)
+
+
+async def _render_agent_overview(
+    store: RegistryStore,
+    heartbeat_timeout_seconds: int,
+) -> str:
+    try:
+        rows_data = await store.list_agents_with_personas()
+    except Exception as exc:
+        logger.error(f"Dashboard overview query failed: {exc}")
+        return '<p class="audit-failure">Could not load fleet status.</p>'
+    overview = render_fleet_overview(rows_data, heartbeat_timeout_seconds)
+    if not rows_data:
+        return _overview_poll_wrapper(overview)
+    rows = _render_agent_rows_data(rows_data, heartbeat_timeout_seconds)
+    return _overview_poll_wrapper(overview + "<h2>All agents</h2>" + _agent_table(rows, poll=False))
+
+
+def _overview_poll_wrapper(content: str) -> str:
+    return (
+        '<div id="fleet-overview" hx-get="/dashboard/overview" '
+        'hx-trigger="every 5s" hx-swap="outerHTML">'
+        f"{content}</div>"
+    )
+
+
+def _render_agent_rows_data(
+    rows_data: list[tuple[Agent, Persona | None]],
+    heartbeat_timeout_seconds: int,
+) -> str:
     if not rows_data:
         return "<tr><td colspan=8>no agents registered yet</td></tr>"
 

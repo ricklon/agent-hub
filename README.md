@@ -171,7 +171,10 @@ appear there as they connect. With Cloudflare Access identity enabled, verified
 people are provisioned as read-only viewers unless their email is configured as
 an admin. Admins can manage roles from **Operators** and review the latest 200
 authenticated dashboard changes from **Audit**. Audit records contain action
-metadata only, never prompts, transcripts, tokens, or submitted form values.
+metadata only, never prompts, transcripts, tokens, or submitted form values. The
+home view summarizes fleet health, prioritizes degraded and offline agents with
+direct inspection links, and guides an empty installation through first-device
+setup.
 
 Three ports are used, and each serves only its own routes:
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -85,6 +86,70 @@ async def test_agents_list_displays_escaped_device_label(store: RegistryStore) -
     assert "Healthy" in resp.text
     assert "Idle" in resp.text
     assert "offline" not in resp.text.lower()
+
+
+async def test_dashboard_home_guides_first_device_setup(store: RegistryStore) -> None:
+    app = FastAPI()
+    app.include_router(make_router(store, {}))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/dashboard/")
+
+    assert response.status_code == 200
+    assert "Connect your first agent" in response.text
+    assert 'href="/dashboard/docs">Open setup guide</a>' in response.text
+    assert 'href="/dashboard/personas">Prepare a persona</a>' in response.text
+    assert "All agents" not in response.text
+
+
+async def test_dashboard_home_prioritizes_agents_needing_attention(
+    store: RegistryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    healthy_id = "AA:BB:CC:DD:EE:10"
+    degraded_id = "AA:BB:CC:DD:EE:11"
+    offline_id = "AA:BB:CC:DD:EE:12"
+    await store.get_or_create_agent(healthy_id, label="Healthy device")
+    await store.get_or_create_agent(degraded_id, label="Broken <microphone>")
+    await store.get_or_create_agent(offline_id, label="Sleeping device")
+    degraded_token = await store.issue_websocket_token(degraded_id)
+    assert await store.record_authenticated_heartbeat(
+        degraded_id,
+        degraded_token,
+        "microphone <unavailable>",
+        "paused",
+        [],
+    )
+
+    health: dict[str, session_state.DeviceHealth] = {
+        healthy_id: "healthy",
+        degraded_id: "degraded",
+        offline_id: "offline",
+    }
+
+    def _device_health(device_id: str, *_args: Any, **_kwargs: Any) -> session_state.DeviceHealth:
+        return health[device_id]
+
+    monkeypatch.setattr(session_state, "get_device_health", _device_health)
+    app = FastAPI()
+    app.include_router(make_router(store, {}))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/dashboard/")
+
+    assert response.status_code == 200
+    assert "Fleet health" in response.text
+    assert '<span class="overview-value">3</span>' in response.text
+    assert '<span class="overview-label">Healthy</span>' in response.text
+    assert '<span class="overview-label">Degraded</span>' in response.text
+    assert '<span class="overview-label">Offline</span>' in response.text
+    assert "Needs attention" in response.text
+    assert '<span class="attention-count">2</span>' in response.text
+    assert "Broken &lt;microphone&gt;" in response.text
+    assert "microphone &lt;unavailable&gt;" in response.text
+    assert "Sleeping device" in response.text
+    assert response.text.count(">Inspect</a>") == 2
+    assert "All agents" in response.text
 
 
 async def test_status_json_reports_capabilities_and_safe_effective_tools(
