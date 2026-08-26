@@ -229,6 +229,8 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_TIMEZONE_OFFSET` | `-8` | Fallback fixed UTC offset in hours |
 | `AGENT_HUB_SERVER_DASHBOARD_USERNAME` | `admin` | Dashboard Basic auth username |
 | `AGENT_HUB_SERVER_DASHBOARD_PASSWORD` | — | Dashboard Basic auth password; empty disables dashboard auth |
+| `AGENT_HUB_SERVER_DASHBOARD_ACCESS_TEAM_DOMAIN` | — | Cloudflare Access team domain; set with the audience to verify operator identity |
+| `AGENT_HUB_SERVER_DASHBOARD_ACCESS_AUDIENCE` | — | Cloudflare Access application AUD tag; set with the team domain |
 | `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` | — | Optional shared check-in secret; empty allows LAN/classroom auto-registration |
 | `AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT` | `data/images` | Directory the dashboard may serve captured images from |
 | `AGENT_HUB_SERVER_DASHBOARD_ALLOWED_ORIGINS` | — | Extra origins allowed to submit dashboard forms, comma-separated; only needed behind a Host-rewriting proxy |

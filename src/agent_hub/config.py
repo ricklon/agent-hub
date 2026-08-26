@@ -32,6 +32,10 @@ class ServerConfig:
     # rather than nesting into server.dashboard.password.
     dashboard_username: str = "admin"
     dashboard_password: str = ""
+    # When both are set, dashboard requests must carry a valid signed
+    # Cloudflare Access assertion for this team and application.
+    dashboard_access_team_domain: str = ""
+    dashboard_access_audience: str = ""
     enrollment_token: str = ""
     dashboard_image_root: str = "data/images"
     dashboard_allowed_origins: str = ""
@@ -128,6 +132,8 @@ class Settings:
                 timezone=str(srv.get("timezone", "")),
                 dashboard_username=str(srv.get("dashboard_username", "admin")),
                 dashboard_password=str(srv.get("dashboard_password", "")),
+                dashboard_access_team_domain=str(srv.get("dashboard_access_team_domain", "")),
+                dashboard_access_audience=str(srv.get("dashboard_access_audience", "")),
                 enrollment_token=str(srv.get("enrollment_token", "")),
                 dashboard_image_root=str(srv.get("dashboard_image_root", "data/images")),
                 dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),

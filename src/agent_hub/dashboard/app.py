@@ -19,6 +19,11 @@ from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
 from agent_hub import spend
+from agent_hub.dashboard.access_identity import (
+    AccessIdentityError,
+    AccessIdentityVerifier,
+    OperatorIdentity,
+)
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import session_state, tool_policy
 
@@ -50,6 +55,12 @@ def _normalise_hosts(raw: Any) -> set[str]:
 _CSS = """\
 body{font-family:monospace;padding:2rem;background:#0d1117;color:#c9d1d9;margin:0}
 h1{color:#58a6ff;margin-bottom:0.25rem}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}
+.operator{display:flex;align-items:center;gap:0.6rem;color:#8b949e;font-size:0.8rem}
+.operator-email{color:#c9d1d9}
+.operator-role{border:1px solid #30363d;border-radius:999px;padding:0.15rem 0.45rem}
+.operator a{color:#58a6ff;text-decoration:none}
+.operator a:hover{text-decoration:underline}
 nav{margin-bottom:2rem}
 nav a{color:#58a6ff;margin-right:1.5rem;text-decoration:none}
 nav a:hover{text-decoration:underline}
@@ -114,8 +125,8 @@ _PAGE = """\
 <meta charset="utf-8"><title>agent-hub</title>
 <style>{css}</style>
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-</head><body>
-<h1>agent-hub</h1>
+</head><body hx-headers='{{"X-Requested-With":"XMLHttpRequest"}}'>
+<header><h1>agent-hub</h1>{operator}</header>
 <nav>
   <a href="/dashboard/">Agents</a>
   <a href="/dashboard/personas">Personas</a>
@@ -132,6 +143,18 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     server_config = config.get("server") or {}
     dashboard_username = str(server_config.get("dashboard_username") or "admin")
     dashboard_password = str(server_config.get("dashboard_password") or "")
+    access_team_domain = str(server_config.get("dashboard_access_team_domain") or "")
+    access_audience = str(server_config.get("dashboard_access_audience") or "")
+    if bool(access_team_domain) != bool(access_audience):
+        raise ValueError(
+            "server.dashboard_access_team_domain and dashboard_access_audience "
+            "must be configured together"
+        )
+    access_verifier = (
+        AccessIdentityVerifier(access_team_domain, access_audience)
+        if access_team_domain and access_audience
+        else None
+    )
     heartbeat_timeout_seconds = max(
         1,
         int(server_config.get("heartbeat_timeout_seconds") or 180),
@@ -147,7 +170,17 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     ) | _normalise_hosts(server_config.get("allowed_hosts"))
 
     async def _require_dashboard_auth(request: Request) -> None:
-        """Require HTTP Basic auth when a dashboard password is configured."""
+        """Require verified Access identity or configured HTTP Basic auth."""
+        if access_verifier is not None:
+            assertion = request.headers.get("cf-access-jwt-assertion", "")
+            try:
+                request.state.operator_identity = await access_verifier.verify(assertion)
+            except AccessIdentityError:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Valid Cloudflare Access identity required",
+                ) from None
+            return
         if not dashboard_password:
             return
 
@@ -266,11 +299,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
     _full_css = _CSS + _CSS_EXTRA
 
+    def _render_page(request: Request, body: str) -> str:
+        identity = getattr(request.state, "operator_identity", None)
+        operator = _render_operator(identity)
+        return _PAGE.format(css=_full_css, operator=operator, body=body)
+
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(request: Request) -> HTMLResponse:
         rows = await _render_agent_rows(store, heartbeat_timeout_seconds)
         body = await _spend_panel() + _agent_table(rows)
-        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+        return HTMLResponse(_render_page(request, body))
 
     async def _spend_panel() -> str:
         """Spend summary for the dashboard header, or nothing if unmetered."""
@@ -290,7 +328,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     @router.get("/dashboard/docs", response_class=HTMLResponse)
     async def dashboard_docs(request: Request) -> HTMLResponse:
         body = _project_docs()
-        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+        return HTMLResponse(_render_page(request, body))
 
     # ── Agent detail ─────────────────────────────────────────────────────────
 
@@ -498,7 +536,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     async def agent_detail(device_id: str, request: Request) -> HTMLResponse:
         agent = await store.get_agent(device_id)
         if agent is None:
-            return HTMLResponse(_PAGE.format(css=_full_css, body="<p>Agent not found.</p>"))
+            return HTMLResponse(_render_page(request, "<p>Agent not found.</p>"))
         persona = await store.get_persona_for_device(device_id)
         all_personas = await store.list_personas()
         dev = session_state.get_state(device_id)
@@ -660,7 +698,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 <h3>Latency</h3>
 {lat_html}
 {speak_form}"""
-        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+        return HTMLResponse(_render_page(request, body))
 
     @router.post("/dashboard/agents/{device_id}/reboot", response_class=HTMLResponse)
     async def agent_reboot(device_id: str) -> HTMLResponse:
@@ -820,7 +858,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     placeholder="You are a helpful voice assistant..."></textarea>
   <button type="submit">Create</button>
 </form>"""
-        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+        return HTMLResponse(_render_page(request, body))
 
     @router.post("/dashboard/personas", response_class=HTMLResponse)
     async def persona_create(
@@ -848,7 +886,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
         persona = await store.get_persona_by_name(name)
         if persona is None:
-            return HTMLResponse(_PAGE.format(css=_full_css, body="<p>Persona not found.</p>"))
+            return HTMLResponse(_render_page(request, "<p>Persona not found.</p>"))
 
         all_skills = [d["function"]["name"] for d in _skills.get_definitions()]
         enabled = persona.server_skills_list  # None = all
@@ -922,7 +960,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
   <button type="submit">Save</button>
 </form>"""
-        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+        return HTMLResponse(_render_page(request, body))
 
     @router.post("/dashboard/personas/{name}", response_class=HTMLResponse)
     async def persona_save(
@@ -994,7 +1032,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
   Loading…
 </div>
 """
-        return HTMLResponse(_PAGE.format(css=_full_css, body=body))
+        return HTMLResponse(_render_page(request, body))
 
     @router.get("/dashboard/models/list", response_class=HTMLResponse)
     async def models_list(
@@ -1068,6 +1106,18 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _render_operator(identity: OperatorIdentity | None) -> str:
+    if identity is None:
+        return '<div class="operator"><span>Local session</span></div>'
+    return (
+        '<div class="operator">'
+        f'<span class="operator-email">{html.escape(identity.email)}</span>'
+        '<span class="operator-role">Operator</span>'
+        '<a href="/cdn-cgi/access/logout">Sign out</a>'
+        "</div>"
+    )
 
 
 def _render_spend_panel(totals: dict[str, Any]) -> str:

@@ -185,7 +185,7 @@ def test_warns_when_dashboard_exposed_without_password(monkeypatch, tmp_path) ->
 
     server_main.build_apps()
 
-    assert any("no password" in m for m in messages)
+    assert any("no authentication" in m for m in messages)
 
 
 def test_no_exposure_warning_on_loopback(monkeypatch, tmp_path) -> None:
@@ -196,7 +196,7 @@ def test_no_exposure_warning_on_loopback(monkeypatch, tmp_path) -> None:
 
     server_main.build_apps()
 
-    assert not any("no password" in m for m in messages)
+    assert not any("no authentication" in m for m in messages)
 
 
 def test_no_exposure_warning_when_password_set(monkeypatch, tmp_path) -> None:
@@ -207,4 +207,21 @@ def test_no_exposure_warning_when_password_set(monkeypatch, tmp_path) -> None:
 
     server_main.build_apps()
 
-    assert not any("no password" in m for m in messages)
+    assert not any("no authentication" in m for m in messages)
+
+
+def test_no_exposure_warning_when_access_identity_set(monkeypatch, tmp_path) -> None:
+    _configure(
+        monkeypatch,
+        tmp_path,
+        host="0.0.0.0",
+        dashboard_access_team_domain="team.cloudflareaccess.com",
+        dashboard_access_audience="app-audience",
+    )
+
+    messages: list[str] = []
+    monkeypatch.setattr(server_main.logger, "warning", lambda msg: messages.append(str(msg)))
+
+    server_main.build_apps()
+
+    assert not any("no authentication" in m for m in messages)

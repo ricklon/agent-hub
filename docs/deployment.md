@@ -449,8 +449,18 @@ Set in `.env.do`:
 AGENT_HUB_PUBLIC_HOST=hub.example.com       # devices
 AGENT_HUB_DASHBOARD_HOST=admin.example.com  # dashboard, via the tunnel
 CLOUDFLARE_TUNNEL_TOKEN=...                 # from the Cloudflare dashboard
+CLOUDFLARE_ACCESS_TEAM_DOMAIN=example.cloudflareaccess.com
+CLOUDFLARE_ACCESS_AUDIENCE=...              # Access application AUD tag
 ACME_EMAIL=you@example.com
 ```
+
+The two Access identity values are optional but recommended. When both are
+set, Agent Hub verifies Cloudflare's signed assertion on every dashboard
+request, displays the authenticated operator, and provides an Access logout
+link. Find the team domain in the Access login URL and the AUD tag under
+Access controls → Applications → your dashboard application. Configure both
+or neither; a partial configuration stops dashboard startup rather than
+silently trusting an incomplete identity setup.
 
 `AGENT_HUB_PUBLIC_HOST` is what selects this mode — cloud-init detects it,
 adds the overlay, and opens only 80 and 443 in ufw instead of the app ports.
@@ -549,7 +559,8 @@ The app currently includes:
   ports, so opening them to the LAN does not expose it.
 - Host allowlisting on the dashboard when `server.allowed_hosts` is set,
   which blocks DNS rebinding.
-- A startup warning when the dashboard is bound off-loopback with no password.
+- A startup warning when the dashboard is bound off-loopback with neither
+  Basic auth nor verified Cloudflare Access identity.
 
 ### Why Basic auth, and its limits
 
