@@ -22,12 +22,13 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 
 from agent_hub import skills as server_skills
 from agent_hub.config import Settings
+from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.providers.llm import get_provider
 from agent_hub.registry.models import AgentKind
 from agent_hub.registry.store import RegistryStore
@@ -112,20 +113,32 @@ def _new_device_id() -> str:
     return "page-" + secrets.token_hex(8)
 
 
-def make_router(store: RegistryStore, settings: Settings, config: dict[str, Any]) -> APIRouter:
+def make_router(
+    store: RegistryStore,
+    settings: Settings,
+    config: dict[str, Any],
+    authorization: DashboardAuthorization | None = None,
+) -> APIRouter:
     """Build the page-agent router (mounted on the dashboard port).
 
     Args:
         store: Registry store used to create the page-agent row and issue tokens.
         settings: Server settings for URL construction and heartbeat cadence.
         config: Raw config dict (for LLM provider instantiation).
+        authorization: Shared dashboard policy. Constructed locally for tests
+            and embedding when omitted.
 
     Returns:
         FastAPI router serving the page HTML plus register/heartbeat/ask endpoints.
     """
     router = APIRouter()
+    auth = authorization or DashboardAuthorization(store, config)
 
-    @router.get("/dashboard/page-agent", response_class=HTMLResponse)
+    @router.get(
+        "/dashboard/page-agent",
+        response_class=HTMLResponse,
+        dependencies=[Depends(auth.authenticate), Depends(auth.require_operator)],
+    )
     async def page_agent_page() -> HTMLResponse:
         return HTMLResponse(_PAGE_AGENT_HTML)
 
@@ -133,7 +146,14 @@ def make_router(store: RegistryStore, settings: Settings, config: dict[str, Any]
     async def register_preflight() -> JSONResponse:
         return JSONResponse({}, headers=_CORS)
 
-    @router.post("/page-agent/register")
+    @router.post(
+        "/page-agent/register",
+        dependencies=[
+            Depends(auth.authenticate),
+            Depends(auth.require_same_origin),
+            Depends(auth.require_operator),
+        ],
+    )
     async def register(request: Request) -> JSONResponse:
         try:
             payload = await request.json()
@@ -210,7 +230,14 @@ def make_router(store: RegistryStore, settings: Settings, config: dict[str, Any]
     async def ask_preflight() -> JSONResponse:
         return JSONResponse({}, headers=_CORS)
 
-    @router.post("/page-agent/ask")
+    @router.post(
+        "/page-agent/ask",
+        dependencies=[
+            Depends(auth.authenticate),
+            Depends(auth.require_same_origin),
+            Depends(auth.require_operator),
+        ],
+    )
     async def ask(request: Request) -> JSONResponse:
         """Run a text LLM turn for a page agent, routing tool calls to the page.
 
@@ -347,6 +374,12 @@ def make_router(store: RegistryStore, settings: Settings, config: dict[str, Any]
         full LLM turn; non-wake utterances are shown as transcripts but not
         sent to the LLM.
         """
+        try:
+            await auth.authorize_websocket(websocket)
+        except HTTPException:
+            await websocket.close(code=1008, reason="operator authorization required")
+            return
+
         device_id = websocket.query_params.get("device_id", "")
         token = websocket.query_params.get("token", "")
         if not device_id or not await store.validate_websocket_token(device_id, token):

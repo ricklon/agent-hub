@@ -15,6 +15,9 @@ server:
   # signed Access JWT and show the authenticated operator in the dashboard.
   dashboard_access_team_domain: ""  # e.g. example.cloudflareaccess.com
   dashboard_access_audience: ""     # Access application AUD tag
+  # Required with Access identity. These verified emails are promoted to
+  # administrator; every other new identity starts as a read-only viewer.
+  dashboard_admin_emails: ""         # comma-separated
   # Optional shared secret required during device check-in.
   # Leave empty for trusted LAN/classroom auto-registration.
   enrollment_token: ""

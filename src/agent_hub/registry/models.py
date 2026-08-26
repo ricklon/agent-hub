@@ -33,6 +33,14 @@ class AgentStatus(StrEnum):
     OFFLINE = "offline"  # has not checked in recently
 
 
+class OperatorRole(StrEnum):
+    """Dashboard authorization levels for authenticated human operators."""
+
+    ADMIN = "admin"
+    OPERATOR = "operator"
+    VIEWER = "viewer"
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -100,6 +108,21 @@ class LLMSpend(Base):
     # says so rather than presenting a guess as billing truth.
     cost_estimated: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
+
+
+class DashboardOperator(Base):
+    """A Cloudflare Access identity authorized to use the dashboard."""
+
+    __tablename__ = "dashboard_operators"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    role: Mapped[str] = mapped_column(String(16), default=OperatorRole.VIEWER.value)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 
 class Agent(Base):

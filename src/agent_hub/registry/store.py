@@ -6,7 +6,7 @@ import asyncio
 import json
 import secrets
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +21,9 @@ from agent_hub.registry.models import (
     AgentStatus,
     Base,
     ConversationTurn,
+    DashboardOperator,
     LLMSpend,
+    OperatorRole,
     Persona,
 )
 
@@ -67,6 +69,7 @@ class RegistryStore:
         self._engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", echo=False)
         self._sessions = async_sessionmaker(self._engine, expire_on_commit=False)
         self._init_lock = asyncio.Lock()
+        self._operator_lock = asyncio.Lock()
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -212,6 +215,139 @@ class RegistryStore:
 
             await session.commit()
             return agent
+
+    async def get_or_create_dashboard_operator(
+        self,
+        subject: str,
+        email: str,
+        admin_emails: set[str],
+    ) -> DashboardOperator:
+        """Resolve a verified Access identity to its dashboard authorization row.
+
+        New identities are viewers unless their normalized email is in the
+        configured bootstrap-admin set. A configured bootstrap admin is also
+        promoted on a later login, which makes initial deployment recoverable
+        without granting elevated access to the first arbitrary visitor.
+
+        Args:
+            subject: Stable Cloudflare Access subject identifier.
+            email: Verified email claim from the Access assertion.
+            admin_emails: Normalized emails explicitly configured as admins.
+
+        Returns:
+            Persisted operator row with current email and last-seen time.
+        """
+        async with self._operator_lock:
+            return await self._get_or_create_dashboard_operator(subject, email, admin_emails)
+
+    async def _get_or_create_dashboard_operator(
+        self,
+        subject: str,
+        email: str,
+        admin_emails: set[str],
+    ) -> DashboardOperator:
+        """Provision one operator while the process-local identity lock is held."""
+        normalized_email = email.strip().lower()
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(DashboardOperator).where(DashboardOperator.subject == subject)
+            )
+            operator = result.scalar_one_or_none()
+            now = datetime.now(UTC)
+            if operator is None:
+                role = (
+                    OperatorRole.ADMIN if normalized_email in admin_emails else OperatorRole.VIEWER
+                )
+                operator = DashboardOperator(
+                    subject=subject,
+                    email=normalized_email,
+                    role=role.value,
+                    enabled=True,
+                    last_seen_at=now,
+                )
+                session.add(operator)
+                logger.info(f"Provisioned dashboard operator {normalized_email!r} as {role.value}")
+                changed = True
+            else:
+                changed = operator.email != normalized_email
+                operator.email = normalized_email
+                previous_seen = operator.last_seen_at
+                if previous_seen.tzinfo is None:
+                    previous_seen = previous_seen.replace(tzinfo=UTC)
+                if now - previous_seen >= timedelta(minutes=1):
+                    operator.last_seen_at = now
+                    changed = True
+                if normalized_email in admin_emails and operator.role != OperatorRole.ADMIN.value:
+                    operator.role = OperatorRole.ADMIN.value
+                    changed = True
+                    logger.info(f"Promoted bootstrap dashboard admin {normalized_email!r}")
+            if changed:
+                await session.commit()
+                await session.refresh(operator)
+            return operator
+
+    async def list_dashboard_operators(self) -> list[DashboardOperator]:
+        """Return dashboard operators ordered by email."""
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(DashboardOperator).order_by(DashboardOperator.email)
+            )
+            return list(result.scalars().all())
+
+    async def update_dashboard_operator(
+        self,
+        subject: str,
+        role: OperatorRole,
+        *,
+        enabled: bool,
+    ) -> bool:
+        """Update an operator while preserving at least one enabled admin.
+
+        Args:
+            subject: Stable Cloudflare Access subject identifier.
+            role: New authorization role.
+            enabled: Whether this identity may use the dashboard.
+
+        Returns:
+            True when updated. False means the row was missing or the change
+            would remove the final enabled administrator.
+        """
+        async with self._operator_lock:
+            return await self._update_dashboard_operator(subject, role, enabled=enabled)
+
+    async def _update_dashboard_operator(
+        self,
+        subject: str,
+        role: OperatorRole,
+        *,
+        enabled: bool,
+    ) -> bool:
+        """Apply an operator update while the process-local role lock is held."""
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(DashboardOperator).where(DashboardOperator.subject == subject)
+            )
+            operator = result.scalar_one_or_none()
+            if operator is None:
+                return False
+            removes_admin = (
+                operator.enabled
+                and operator.role == OperatorRole.ADMIN.value
+                and (not enabled or role != OperatorRole.ADMIN)
+            )
+            if removes_admin:
+                count = await session.scalar(
+                    select(func.count(DashboardOperator.id)).where(
+                        DashboardOperator.enabled.is_(True),
+                        DashboardOperator.role == OperatorRole.ADMIN.value,
+                    )
+                )
+                if int(count or 0) <= 1:
+                    return False
+            operator.role = role.value
+            operator.enabled = enabled
+            await session.commit()
+            return True
 
     async def record_authenticated_heartbeat(
         self,

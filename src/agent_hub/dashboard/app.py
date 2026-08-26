@@ -8,49 +8,23 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-import secrets
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
 from agent_hub import spend
-from agent_hub.dashboard.access_identity import (
-    AccessIdentityError,
-    AccessIdentityVerifier,
-    OperatorIdentity,
-)
+from agent_hub.dashboard.access_identity import OperatorIdentity
+from agent_hub.dashboard.authorization import DashboardAuthorization
+from agent_hub.registry.models import OperatorRole
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import session_state, tool_policy
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
-
-_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-
-def _normalise_hosts(raw: Any) -> set[str]:
-    """Parse a host/origin allowlist into a set of bare lowercase hosts.
-
-    Accepts a YAML list or a comma-separated string (the env-override form),
-    with or without a scheme. Wildcard entries are discarded — they would make
-    the Origin check vacuous rather than merely permissive.
-    """
-    if not raw:
-        return set()
-    items = [o.strip() for o in raw.split(",")] if isinstance(raw, str) else [str(o) for o in raw]
-    hosts: set[str] = set()
-    for item in items:
-        value = item.strip().lower()
-        if not value or "*" in value:
-            continue
-        # urlsplit only populates netloc when a scheme is present.
-        hosts.add(urlsplit(value).netloc or value)
-    return hosts
-
 
 _CSS = """\
 body{font-family:monospace;padding:2rem;background:#0d1117;color:#c9d1d9;margin:0}
@@ -131,7 +105,8 @@ _PAGE = """\
   <a href="/dashboard/">Agents</a>
   <a href="/dashboard/personas">Personas</a>
   <a href="/dashboard/models">Models</a>
-  <a href="/dashboard/page-agent">Page Agent</a>
+  {admin_nav}
+  {operator_nav}
   <a href="/dashboard/docs">Docs</a>
 </nav>
 {body}
@@ -139,133 +114,18 @@ _PAGE = """\
 """
 
 
-def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
+def make_router(
+    store: RegistryStore,
+    config: dict[str, Any],
+    authorization: DashboardAuthorization | None = None,
+) -> APIRouter:
     server_config = config.get("server") or {}
-    dashboard_username = str(server_config.get("dashboard_username") or "admin")
-    dashboard_password = str(server_config.get("dashboard_password") or "")
-    access_team_domain = str(server_config.get("dashboard_access_team_domain") or "")
-    access_audience = str(server_config.get("dashboard_access_audience") or "")
-    if bool(access_team_domain) != bool(access_audience):
-        raise ValueError(
-            "server.dashboard_access_team_domain and dashboard_access_audience "
-            "must be configured together"
-        )
-    access_verifier = (
-        AccessIdentityVerifier(access_team_domain, access_audience)
-        if access_team_domain and access_audience
-        else None
-    )
+    auth = authorization or DashboardAuthorization(store, config)
     heartbeat_timeout_seconds = max(
         1,
         int(server_config.get("heartbeat_timeout_seconds") or 180),
     )
     image_root = Path(str(server_config.get("dashboard_image_root") or "data/images")).resolve()
-    # Hosts allowed as a request Origin on state changes. Drawn from both
-    # dashboard_allowed_origins (dashboard-specific) and allowed_hosts (the
-    # server-wide host allowlist), since anything valid as a Host is valid as
-    # an Origin. Wildcards are dropped: they constrain nothing, and treating
-    # "*" as an allowed origin would silently disable the check.
-    configured_origin_hosts = _normalise_hosts(
-        server_config.get("dashboard_allowed_origins")
-    ) | _normalise_hosts(server_config.get("allowed_hosts"))
-
-    async def _require_dashboard_auth(request: Request) -> None:
-        """Require verified Access identity or configured HTTP Basic auth."""
-        if access_verifier is not None:
-            assertion = request.headers.get("cf-access-jwt-assertion", "")
-            try:
-                request.state.operator_identity = await access_verifier.verify(assertion)
-            except AccessIdentityError:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Valid Cloudflare Access identity required",
-                ) from None
-            return
-        if not dashboard_password:
-            return
-
-        auth = request.headers.get("authorization", "")
-        scheme, _, encoded = auth.partition(" ")
-        if scheme.lower() != "basic" or not encoded:
-            raise _auth_error()
-
-        import base64
-        import binascii
-
-        try:
-            decoded = base64.b64decode(encoded).decode("utf-8")
-        except (binascii.Error, UnicodeDecodeError):
-            raise _auth_error() from None
-
-        username, sep, password = decoded.partition(":")
-        if not sep or not (
-            secrets.compare_digest(username, dashboard_username)
-            and secrets.compare_digest(password, dashboard_password)
-        ):
-            raise _auth_error()
-
-    def _auth_error() -> HTTPException:
-        return HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Dashboard authentication required",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-
-    async def _require_same_origin(request: Request) -> None:
-        """Reject cross-origin state-changing requests (CSRF defence).
-
-        HTTP Basic auth is replayed by the browser on cross-origin form POSTs,
-        and there is no cookie to carry a SameSite flag, so a malicious page
-        could otherwise drive /reboot, /speak, or /inject on a logged-in
-        operator's browser. This runs regardless of whether a dashboard
-        password is set: an unauthenticated LAN dashboard is still worth
-        protecting from drive-by POSTs.
-
-        A missing Origin header is allowed. Browsers always send Origin on
-        cross-origin POSTs, so absence means a non-browser client (curl,
-        scripts/smoke.py), which cannot be a CSRF vector.
-        """
-        if request.method not in _STATE_CHANGING_METHODS:
-            return
-
-        origin = request.headers.get("origin")
-        if not origin:
-            return
-
-        parsed = urlsplit(origin)
-        # Match on host-with-port and bare host, since an allowlist may be
-        # written either way ("hub.local" vs "https://hub.local:8443").
-        candidates = {parsed.netloc.lower()}
-        if parsed.hostname:
-            candidates.add(parsed.hostname.lower())
-        candidates.discard("")
-
-        if candidates & _allowed_origin_hosts(request):
-            return
-
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cross-origin request rejected",
-        )
-
-    def _allowed_origin_hosts(request: Request) -> set[str]:
-        """Hosts an Origin header may name.
-
-        Prefers the configured allowlist. Falls back to the request's own Host
-        header only when nothing is configured, because a Host-derived
-        allowlist is self-referential: under DNS rebinding the attacker
-        controls both Host and Origin, so they match and the check passes.
-        Setting server.allowed_hosts (which also installs Starlette's
-        TrustedHostMiddleware) is what actually closes that.
-
-        Note the allowlist is exhaustive once set — the request's own Host is
-        no longer trusted implicitly, so every name the dashboard is reached
-        by must appear in it.
-        """
-        if configured_origin_hosts:
-            return configured_origin_hosts
-        host_header = request.headers.get("host")
-        return {host_header.lower()} if host_header else set()
 
     def _dashboard_image_path(raw_path: str) -> Path | None:
         requested = Path(raw_path)
@@ -280,7 +140,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         return None
 
     router = APIRouter(
-        dependencies=[Depends(_require_dashboard_auth), Depends(_require_same_origin)]
+        dependencies=[
+            Depends(auth.authenticate),
+            Depends(auth.require_same_origin),
+            Depends(auth.require_write),
+        ]
     )
     api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
 
@@ -301,8 +165,25 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
     def _render_page(request: Request, body: str) -> str:
         identity = getattr(request.state, "operator_identity", None)
-        operator = _render_operator(identity)
-        return _PAGE.format(css=_full_css, operator=operator, body=body)
+        role = str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
+        operator = _render_operator(identity, role)
+        admin_nav = (
+            '<a href="/dashboard/operators">Operators</a>'
+            if role == OperatorRole.ADMIN.value
+            else ""
+        )
+        operator_nav = (
+            '<a href="/dashboard/page-agent">Page Agent</a>'
+            if role in {OperatorRole.ADMIN.value, OperatorRole.OPERATOR.value}
+            else ""
+        )
+        return _PAGE.format(
+            css=_full_css,
+            operator=operator,
+            admin_nav=admin_nav,
+            operator_nav=operator_nav,
+            body=body,
+        )
 
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(request: Request) -> HTMLResponse:
@@ -329,6 +210,60 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
     async def dashboard_docs(request: Request) -> HTMLResponse:
         body = _project_docs()
         return HTMLResponse(_render_page(request, body))
+
+    # ── Operators ────────────────────────────────────────────────────────────
+
+    @router.get(
+        "/dashboard/operators",
+        response_class=HTMLResponse,
+        dependencies=[Depends(auth.require_admin)],
+    )
+    async def operators_page(request: Request) -> HTMLResponse:
+        operators = await store.list_dashboard_operators()
+        rows = "".join(_render_operator_row(operator) for operator in operators)
+        body = f"""\
+<h2>Operators</h2>
+<p class="doc-muted">Cloudflare Access decides who may sign in. Agent Hub assigns
+what each verified identity may do. New identities start as viewers.</p>
+<div id="operator-result"></div>
+<table>
+<thead><tr><th>email</th><th>authorization</th></tr></thead>
+<tbody>{rows or '<tr><td colspan="2">No operators have signed in.</td></tr>'}</tbody>
+</table>
+<div class="doc-grid" style="margin-top:1.5rem">
+  <div class="doc-card"><h3>Admin</h3><p>Manage operators and all dashboard actions.</p></div>
+  <div class="doc-card"><h3>Operator</h3><p>Manage devices, personas, and models.</p></div>
+  <div class="doc-card"><h3>Viewer</h3><p>Read dashboard status and history only.</p></div>
+</div>"""
+        return HTMLResponse(_render_page(request, body))
+
+    @router.post(
+        "/dashboard/operators/{subject}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(auth.require_admin)],
+    )
+    async def operator_update(
+        subject: str,
+        role: str = Form(...),
+        enabled: str = Form(default=""),
+    ) -> HTMLResponse:
+        try:
+            parsed_role = OperatorRole(role)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Unknown operator role") from None
+        ok = await store.update_dashboard_operator(
+            subject,
+            parsed_role,
+            enabled=enabled == "1",
+        )
+        if not ok:
+            return HTMLResponse(
+                '<p style="color:#f85149">Not changed. The final enabled admin '
+                "cannot be disabled or demoted.</p>",
+                status_code=409,
+            )
+        logger.info(f"Dashboard operator {subject!r} updated to {parsed_role.value}")
+        return HTMLResponse('<p class="msg">✓ Operator updated. Refresh to confirm.</p>')
 
     # ── Agent detail ─────────────────────────────────────────────────────────
 
@@ -1108,16 +1043,41 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _render_operator(identity: OperatorIdentity | None) -> str:
+def _render_operator(identity: OperatorIdentity | None, role: str) -> str:
     if identity is None:
-        return '<div class="operator"><span>Local session</span></div>'
+        return (
+            '<div class="operator"><span>Local session</span>'
+            '<span class="operator-role">Admin</span></div>'
+        )
     return (
         '<div class="operator">'
         f'<span class="operator-email">{html.escape(identity.email)}</span>'
-        '<span class="operator-role">Operator</span>'
+        f'<span class="operator-role">{html.escape(role.title())}</span>'
         '<a href="/cdn-cgi/access/logout">Sign out</a>'
         "</div>"
     )
+
+
+def _render_operator_row(operator: Any) -> str:
+    """Render one operator-management table row."""
+    options = "".join(
+        f'<option value="{role.value}"'
+        f"{' selected' if operator.role == role.value else ''}>{role.value.title()}</option>"
+        for role in OperatorRole
+    )
+    checked = " checked" if operator.enabled else ""
+    last_seen = operator.last_seen_at.strftime("%Y-%m-%d %H:%M")
+    subject = quote(operator.subject, safe="")
+    return f"""\
+<tr><td>{html.escape(operator.email)}</td>
+<td><form class="controls" style="margin:0"
+  hx-post="/dashboard/operators/{subject}"
+  hx-target="#operator-result" hx-swap="innerHTML">
+  <select name="role">{options}</select>
+  <label style="margin:0"><input type="checkbox" name="enabled" value="1"{checked}> enabled</label>
+  <span class="doc-muted">last seen {last_seen}</span>
+  <button type="submit">Save</button>
+</form></td></tr>"""
 
 
 def _render_spend_panel(totals: dict[str, Any]) -> str:
