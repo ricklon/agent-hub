@@ -19,6 +19,7 @@ from agent_hub.registry.models import (
     Agent,
     AgentKind,
     AgentStatus,
+    AuditEvent,
     Base,
     ConversationTurn,
     DashboardOperator,
@@ -291,6 +292,52 @@ class RegistryStore:
         async with self._sessions() as session:
             result = await session.execute(
                 select(DashboardOperator).order_by(DashboardOperator.email)
+            )
+            return list(result.scalars().all())
+
+    async def record_audit_event(
+        self,
+        *,
+        operator_subject: str | None,
+        operator_email: str,
+        operator_role: str,
+        action: str,
+        target_type: str | None,
+        target_id: str | None,
+        outcome: str,
+        status_code: int,
+    ) -> None:
+        """Persist privacy-minimal metadata for one dashboard mutation.
+
+        Request bodies and arbitrary details are deliberately absent from this
+        API so prompts, transcripts, tokens, and form values cannot enter the
+        audit ledger accidentally.
+        """
+        async with self._sessions() as session:
+            session.add(
+                AuditEvent(
+                    operator_subject=operator_subject,
+                    operator_email=operator_email,
+                    operator_role=operator_role,
+                    action=action,
+                    target_type=target_type,
+                    target_id=target_id,
+                    outcome=outcome,
+                    status_code=status_code,
+                )
+            )
+            await session.commit()
+
+    async def list_audit_events(self, limit: int = 200) -> list[AuditEvent]:
+        """Return the newest dashboard audit events first.
+
+        Args:
+            limit: Maximum rows to return, clamped to 1–1000.
+        """
+        safe_limit = min(1000, max(1, limit))
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(AuditEvent).order_by(AuditEvent.id.desc()).limit(safe_limit)
             )
             return list(result.scalars().all())
 
