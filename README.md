@@ -167,7 +167,11 @@ uv run python -m agent_hub.server
 ```
 
 Open **`http://localhost:8001/dashboard/`** in a browser. Devices will
-appear there as they connect.
+appear there as they connect. With Cloudflare Access identity enabled, verified
+people are provisioned as read-only viewers unless their email is configured as
+an admin. Admins can manage roles from **Operators** and review the latest 200
+authenticated dashboard changes from **Audit**. Audit records contain action
+metadata only, never prompts, transcripts, tokens, or submitted form values.
 
 Three ports are used, and each serves only its own routes:
 

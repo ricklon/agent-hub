@@ -19,6 +19,7 @@ from loguru import logger
 
 from agent_hub import spend
 from agent_hub.dashboard.access_identity import OperatorIdentity
+from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.registry.models import OperatorRole
 from agent_hub.registry.store import RegistryStore
@@ -92,6 +93,8 @@ input[type=number]{width:6rem}
 .spend-ok{color:#3fb950}
 .spend-warn{color:#d29922}
 .spend-over{color:#f85149}
+.audit-success{color:#3fb950}
+.audit-failure{color:#f85149}
 """
 
 _PAGE = """\
@@ -168,7 +171,7 @@ def make_router(
         role = str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
         operator = _render_operator(identity, role)
         admin_nav = (
-            '<a href="/dashboard/operators">Operators</a>'
+            '<a href="/dashboard/operators">Operators</a><a href="/dashboard/audit">Audit</a>'
             if role == OperatorRole.ADMIN.value
             else ""
         )
@@ -264,6 +267,22 @@ what each verified identity may do. New identities start as viewers.</p>
             )
         logger.info(f"Dashboard operator {subject!r} updated to {parsed_role.value}")
         return HTMLResponse('<p class="msg">✓ Operator updated. Refresh to confirm.</p>')
+
+    # ── Audit timeline ───────────────────────────────────────────────────────
+
+    @router.get(
+        "/dashboard/audit",
+        response_class=HTMLResponse,
+        dependencies=[Depends(auth.require_admin)],
+    )
+    async def audit_page(request: Request) -> HTMLResponse:
+        events = await store.list_audit_events(limit=200)
+        body = f"""\
+<h2>Audit timeline</h2>
+<p class="doc-muted">The latest 200 authenticated dashboard changes. This log stores
+identity and action metadata only—not prompts, transcripts, tokens, or form values.</p>
+{render_audit_table(events)}"""
+        return HTMLResponse(_render_page(request, body))
 
     # ── Agent detail ─────────────────────────────────────────────────────────
 

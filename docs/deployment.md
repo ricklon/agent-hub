@@ -464,7 +464,11 @@ Access controls → Applications → your dashboard application. Configure both
 or neither; incomplete identity configuration stops dashboard startup rather
 than silently trusting an incomplete identity setup. Bootstrap emails become
 admins, while every other verified identity starts as a read-only viewer and
-can be promoted or disabled from the Operators page.
+can be promoted or disabled from the Operators page. Admins can review the
+latest authenticated dashboard mutations on the Audit page. The persistent
+audit ledger records identity, route action, path target, outcome, HTTP status,
+and timestamp; it deliberately excludes request bodies, prompts, transcripts,
+tokens, and form values.
 
 `AGENT_HUB_PUBLIC_HOST` is what selects this mode — cloud-init detects it,
 adds the overlay, and opens only 80 and 443 in ufw instead of the app ports.
@@ -565,6 +569,8 @@ The app currently includes:
   which blocks DNS rebinding.
 - A startup warning when the dashboard is bound off-loopback with neither
   Basic auth nor verified Cloudflare Access identity.
+- Persistent, admin-only audit history for authenticated dashboard mutations,
+  including denied changes, without storing request bodies or content values.
 
 ### Why Basic auth, and its limits
 
@@ -598,7 +604,6 @@ require a secure context and a stable origin.
 Before treating this as production internet-facing software, add:
 
 - Per-device enrollment tokens instead of one shared fleet enrollment secret.
-- Persistent audit logging for dashboard actions.
 - Rate limiting in the app or proxy.
 - A firewall or compose override that binds raw app ports to localhost when
   all access goes through a local reverse proxy.

@@ -125,6 +125,23 @@ class DashboardOperator(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 
+class AuditEvent(Base):
+    """Privacy-minimal record of one authenticated dashboard mutation."""
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    operator_subject: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    operator_email: Mapped[str] = mapped_column(String(320), index=True)
+    operator_role: Mapped[str] = mapped_column(String(16))
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    target_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), index=True)
+    status_code: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
+
+
 class Agent(Base):
     """A registered agent — ESP32 device, voice agent, or custom agent."""
 

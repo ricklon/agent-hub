@@ -15,6 +15,7 @@ Read `src/agent_hub/dashboard/app.py` and the relevant dashboard tests before ed
 - Preserve same-origin checks for every state-changing method. HTMX requests inherit the page-level `X-Requested-With` header.
 - Authorization is server-side: viewers are read-only, operators may run ordinary dashboard mutations, and admins alone manage human operators.
 - Local and Basic-auth sessions remain administrators for backward compatibility unless the product explicitly changes that contract.
+- Preserve central audit middleware for authenticated state-changing requests, including authorization denials. Audit metadata only; never inspect or persist request bodies, prompts, transcripts, tokens, or form values.
 - Keep the dashboard on its separate port/trust boundary. Do not expose dashboard routes on device ports.
 - Return small HTML fragments for HTMX mutations and complete pages through the shared page renderer.
 

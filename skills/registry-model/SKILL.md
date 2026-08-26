@@ -26,6 +26,7 @@ Keep identity stable, mutable metadata current, and first contact immediately us
 - New Cloudflare Access identities default to viewer unless their verified email is in the explicit bootstrap-admin configuration.
 - Keep authorization and integrity safeguards in the store when every caller must obey them, including retaining at least one enabled administrator.
 - Avoid writing last-seen state on every HTMX polling request; throttle persistence to prevent unnecessary SQLite contention.
+- Keep dashboard audit rows privacy-minimal: identity, route action, path target, result, and timestamp only. Never add request bodies, prompts, transcripts, tokens, or arbitrary form values to the audit model or store API.
 
 ## Schema changes
 
