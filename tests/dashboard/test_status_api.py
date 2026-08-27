@@ -102,6 +102,47 @@ async def test_dashboard_home_guides_first_device_setup(store: RegistryStore) ->
     assert "All agents" not in response.text
 
 
+async def test_dashboard_shell_has_responsive_and_request_feedback_hooks(
+    store: RegistryStore,
+) -> None:
+    app = FastAPI()
+    app.include_router(make_router(store, {}))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/dashboard/")
+
+    assert response.status_code == 200
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in response.text
+    assert 'hx-indicator="#global-progress"' in response.text
+    assert 'id="global-progress" class="htmx-indicator"' in response.text
+    assert 'id="global-feedback" role="alert" aria-live="assertive"' in response.text
+    assert "@media (max-width:760px)" in response.text
+    assert 'source.setAttribute("aria-busy", "true")' in response.text
+    assert "That action could not be completed." in response.text
+
+
+async def test_agent_actions_have_confirmations_and_accessible_feedback(
+    store: RegistryStore,
+) -> None:
+    device_id = "AA:BB:CC:DD:EE:13"
+    await store.get_or_create_agent(device_id, label="Workshop device")
+    app = FastAPI()
+    app.include_router(make_router(store, {}))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/dashboard/agents/{device_id}")
+
+    assert response.status_code == 200
+    assert (
+        'hx-confirm="Reboot this device now? Its active session will disconnect."' in response.text
+    )
+    assert 'hx-confirm="Clear all conversation history for this device?"' in response.text
+    assert 'id="reboot-result" role="status" aria-live="polite"' in response.text
+    assert 'id="speak-result" role="status" aria-live="polite"' in response.text
+    assert 'aria-label="Utterance to inject"' in response.text
+    assert 'aria-label="Message to speak"' in response.text
+
+
 async def test_dashboard_home_prioritizes_agents_needing_attention(
     store: RegistryStore,
     monkeypatch: pytest.MonkeyPatch,

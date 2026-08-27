@@ -174,7 +174,9 @@ authenticated dashboard changes from **Audit**. Audit records contain action
 metadata only, never prompts, transcripts, tokens, or submitted form values. The
 home view summarizes fleet health, prioritizes degraded and offline agents with
 direct inspection links, and guides an empty installation through first-device
-setup.
+setup. Dashboard actions show a shared working state, report request failures,
+confirm disruptive operations, and adapt the controls and tables for small
+screens and keyboard navigation.
 
 Three ports are used, and each serves only its own routes:
 
