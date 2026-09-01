@@ -26,6 +26,7 @@ from loguru import logger
 from agent_hub.config import Settings
 from agent_hub.registry.models import AgentKind
 from agent_hub.registry.store import RegistryStore
+from agent_hub.server.client_ip import parse_trusted_proxies, resolve_client_ip
 from agent_hub.server.protocol import CheckinRequest, CheckinResponse
 
 _TAG = "checkin"
@@ -102,6 +103,7 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
         FastAPI router exposing /checkin/ and /xiaozhi/ota/ on GET/POST/OPTIONS.
     """
     router = APIRouter()
+    trusted_proxies = parse_trusted_proxies(settings.server.trusted_proxies)
 
     @router.get("/checkin/")
     @router.get("/xiaozhi/ota/")
@@ -126,7 +128,11 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
                 body = await request.json()
 
         headers = dict(request.headers)
-        client_host = request.client.host if request.client else ""
+        client_host = resolve_client_ip(
+            socket_peer=request.client.host if request.client else "",
+            forwarded_for=headers.get("x-forwarded-for", ""),
+            trusted_proxies=trusted_proxies,
+        )
 
         try:
             req = CheckinRequest.from_http(

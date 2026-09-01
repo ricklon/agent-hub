@@ -232,7 +232,15 @@ AGENT_HUB_SERVER_DASHBOARD_PASSWORD=change-this-long-random-password
 AGENT_HUB_SERVER_ENROLLMENT_TOKEN=change-this-long-random-token
 AGENT_HUB_SERVER_IMAGE_TOKEN=change-this-long-random-token
 AGENT_HUB_SERVER_ALLOWED_HOSTS=agent-hub.example.com
+AGENT_HUB_SERVER_TRUSTED_PROXIES=127.0.0.1
 ```
+
+`trusted_proxies` is the proxy's own source address as `agent-hub` sees it —
+`127.0.0.1` for a proxy on the same host, or the bridge network range
+(`172.16.0.0/12`) when both run as containers. Only then is the device's real
+address read from `X-Forwarded-For` at check-in and shown on the dashboard;
+left empty, every device records the proxy's IP. Leave it empty on LAN-only
+deployments with no proxy, where the header would otherwise be spoofable.
 
 Behind a proxy, `allowed_hosts` must name the host the **browser** uses, since
 that is what arrives in the `Host` header. If the proxy rewrites `Host` to

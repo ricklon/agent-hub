@@ -41,6 +41,11 @@ services:
       # Enforced on the dashboard port. This is the host the browser uses, so
       # it is the tunnel hostname rather than the device one.
       AGENT_HUB_SERVER_ALLOWED_HOSTS: "${AGENT_HUB_DASHBOARD_HOST:?Set AGENT_HUB_DASHBOARD_HOST in .env.do}"
+      # Device traffic reaches the app through Caddy on the compose network, so
+      # the socket peer is Caddy's container IP (172.18.0.x). Trust that range
+      # so check-in records each device's real address from X-Forwarded-For,
+      # which Caddy sets, instead of showing every device as the proxy.
+      AGENT_HUB_SERVER_TRUSTED_PROXIES: "172.16.0.0/12"
 
   caddy:
     image: caddy:2-alpine
