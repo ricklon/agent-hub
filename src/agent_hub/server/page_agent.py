@@ -139,8 +139,10 @@ def make_router(
         response_class=HTMLResponse,
         dependencies=[Depends(auth.authenticate), Depends(auth.require_operator)],
     )
-    async def page_agent_page() -> HTMLResponse:
-        return HTMLResponse(_PAGE_AGENT_HTML)
+    async def page_agent_page(request: Request) -> HTMLResponse:
+        # ?persona=<name> pre-selects the persona the page registers with.
+        persona = request.query_params.get("persona", "").strip()
+        return HTMLResponse(_PAGE_AGENT_HTML.replace("%%PERSONA%%", json.dumps(persona)))
 
     @router.options("/page-agent/register")
     async def register_preflight() -> JSONResponse:
@@ -176,6 +178,12 @@ def make_router(
             ip_address=client_host,
             firmware_version="page-1.0",
         )
+
+        persona = str(payload.get("persona") or "").strip()
+        if persona and await store.get_persona_by_name(persona):
+            await store.assign_persona(device_id, persona)
+            logger.bind(tag=_TAG).info(f"Page agent {device_id!r} → persona {persona!r}")
+
         token = await store.issue_websocket_token(device_id)
         mcp_bridge.register_page_agent(device_id, token, tools)
         logger.bind(tag=_TAG).info(f"Page agent registered {device_id!r} ({label or 'unlabelled'})")

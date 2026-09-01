@@ -102,3 +102,38 @@ async def test_heartbeat_accepts_valid_token(store: RegistryStore) -> None:
     agent = await store.get_agent("page-hb")
     assert agent is not None
     assert agent.reported_mcp_tools_list == ["page.audio_speaker.speak"]
+
+
+async def test_register_with_persona_assigns_it(store: RegistryStore) -> None:
+    await store.create_persona("toaster3000", system_prompt="beep boop")
+    async with await _client(store) as client:
+        resp = await client.post(
+            "/page-agent/register",
+            json={"device_id": "page-persona", "tools": [], "persona": "toaster3000"},
+        )
+    assert resp.status_code == 200
+    persona = await store.get_persona_for_device("page-persona")
+    assert persona is not None
+    assert persona.name == "toaster3000"
+    mcp_bridge.unregister_page_agent("page-persona")
+
+
+async def test_register_with_unknown_persona_is_ignored(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        resp = await client.post(
+            "/page-agent/register",
+            json={"device_id": "page-nopersona", "tools": [], "persona": "does-not-exist"},
+        )
+    assert resp.status_code == 200
+    persona = await store.get_persona_for_device("page-nopersona")
+    assert persona is not None
+    assert persona.name == "hub-default"
+    mcp_bridge.unregister_page_agent("page-nopersona")
+
+
+async def test_page_agent_page_injects_the_persona_query(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        resp = await client.get("/dashboard/page-agent?persona=toaster3000")
+    assert resp.status_code == 200
+    assert "%%PERSONA%%" not in resp.text
+    assert '"toaster3000"' in resp.text
