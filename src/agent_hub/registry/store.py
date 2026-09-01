@@ -775,6 +775,47 @@ class RegistryStore:
             await session.commit()
         logger.info(f"Cleared conversation history for {device_id!r}")
 
+    async def conversation_turn_count(self) -> int:
+        """Return the total number of persisted conversation messages."""
+        async with self._sessions() as session:
+            return int(await session.scalar(select(func.count(ConversationTurn.id))) or 0)
+
+    async def clear_all_history(self) -> int:
+        """Delete every device's conversation history.
+
+        Used to wipe transcripts between public sessions. The registry itself —
+        agents, personas, tokens — is untouched, so devices stay enrolled.
+
+        Returns:
+            Number of messages removed.
+        """
+        from sqlalchemy import delete
+
+        async with self._sessions() as session:
+            removed = int(await session.scalar(select(func.count(ConversationTurn.id))) or 0)
+            await session.execute(delete(ConversationTurn))
+            await session.commit()
+        logger.info(f"Cleared all conversation history ({removed} messages)")
+        return removed
+
+    async def clear_llm_spend(self) -> int:
+        """Delete the entire LLM spend ledger.
+
+        The cumulative spend cap is enforced against this table, so wiping it
+        resets total-spend protection to zero. Callers must opt in explicitly.
+
+        Returns:
+            Number of ledger rows removed.
+        """
+        from sqlalchemy import delete
+
+        async with self._sessions() as session:
+            removed = int(await session.scalar(select(func.count(LLMSpend.id))) or 0)
+            await session.execute(delete(LLMSpend))
+            await session.commit()
+        logger.info(f"Cleared LLM spend ledger ({removed} rows)")
+        return removed
+
     async def get_agent(self, device_id: str) -> Agent | None:
         """Return the agent row for device_id, or None if not found.
 

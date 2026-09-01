@@ -14,6 +14,10 @@ download-models:
     uv run python scripts/download_models.py
     echo "Models ready."
 
+# Wipe transcripts, images and ASR captures between public sessions (keeps the registry). --dry-run / --yes / --clear-spend; see scripts/reset_data.py --help.
+reset-data *args:
+    uv run python scripts/reset_data.py {{args}}
+
 lint:
     uv run --extra dev ruff check src/ tests/ && uv run --extra dev ruff format --check src/ tests/
 

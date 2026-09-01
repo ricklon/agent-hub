@@ -21,6 +21,11 @@ def set_path(path: str | Path) -> None:
     _log_path = Path(path)
 
 
+def log_path() -> Path:
+    """Current transcript log destination."""
+    return _log_path
+
+
 def log_turn(
     *,
     device_id: str,

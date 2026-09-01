@@ -608,3 +608,23 @@ Before treating this as production internet-facing software, add:
 - A firewall or compose override that binds raw app ports to localhost when
   all access goes through a local reverse proxy.
 - Regular backups for `data/registry.db`, transcripts, and captured images.
+
+## Resetting Between Public Sessions
+
+A public device records everything said to it (`conversation_history`,
+`data/transcripts.jsonl`) and everything it sees (`data/images/<device-id>/`).
+Between sessions — for example between demos where strangers talk to a device —
+clear that with:
+
+```bash
+just reset-data            # prompts before deleting
+just reset-data --dry-run  # preview counts only
+just reset-data --yes      # non-interactive (deploy scripts)
+```
+
+It deletes conversation history, the transcript log, captured images, and any
+`server.debug_audio_dir` ASR captures. It keeps the registry — agents,
+personas, enrollment/WebSocket tokens, dashboard operators, and the audit log —
+so devices stay enrolled. The LLM spend ledger is kept too, because the
+cumulative spend cap is enforced against it; add `--clear-spend` only when you
+also want that counter reset to zero.

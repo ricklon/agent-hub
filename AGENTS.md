@@ -136,6 +136,7 @@ All commands run from repo root via `just`. List with `just`.
 | -------------------------- | ------------------------------------------------ |
 | `just install`             | `uv sync --all-extras`                           |
 | `just download-models`     | Fetch Silero VAD + SenseVoiceSmall into `models/`|
+| `just reset-data`          | Wipe transcripts/images between public sessions; keeps the registry |
 | `just lint`                | `ruff check src/ tests/ && ruff format --check`  |
 | `just format`              | `ruff format src/ tests/`                        |
 | `just typecheck`           | `mypy --strict src/agent_hub/`                   |
