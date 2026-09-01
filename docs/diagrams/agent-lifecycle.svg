@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 780" width="1200" height="780" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace">
+  <rect width="1200" height="780" fill="#0d1117"></rect>
+  <text x="48" y="60" font-size="22" font-weight="600" fill="#58a6ff">Agent lifecycle</text>
+  <text x="48" y="88" font-size="13" fill="#8b949e" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">Every device that has ever checked in has a status. No activation step — first contact is enough.</text>
+
+  <g transform="translate(48, 116)">
+    <defs>
+      <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#6e7681"></path>
+      </marker>
+    </defs>
+
+    <rect x="0" y="222" width="190" height="66" rx="33" fill="#161b22" stroke="#58a6ff"></rect>
+    <text x="95" y="261" text-anchor="middle" font-size="14" font-weight="600" fill="#58a6ff">DISCOVERED</text>
+    <text x="95" y="310" text-anchor="middle" font-size="10" fill="#8b949e">seen on check-in, no persona</text>
+
+    <rect x="228" y="222" width="190" height="66" rx="33" fill="#161b22" stroke="#a5a0ff"></rect>
+    <text x="323" y="261" text-anchor="middle" font-size="14" font-weight="600" fill="#a5a0ff">CLAIMED</text>
+    <text x="323" y="310" text-anchor="middle" font-size="10" fill="#8b949e">a persona is assigned</text>
+
+    <rect x="457" y="222" width="190" height="66" rx="33" fill="#161b22" stroke="#3fb950"></rect>
+    <text x="552" y="261" text-anchor="middle" font-size="14" font-weight="600" fill="#3fb950">ACTIVE</text>
+    <text x="552" y="310" text-anchor="middle" font-size="10" fill="#8b949e">in a voice session</text>
+
+    <rect x="686" y="222" width="190" height="66" rx="33" fill="#161b22" stroke="#d29922"></rect>
+    <text x="781" y="261" text-anchor="middle" font-size="14" font-weight="600" fill="#d29922">IDLE</text>
+    <text x="781" y="310" text-anchor="middle" font-size="10" fill="#8b949e">connected, not speaking</text>
+
+    <rect x="914" y="222" width="190" height="66" rx="33" fill="#161b22" stroke="#6e7681"></rect>
+    <text x="1009" y="261" text-anchor="middle" font-size="14" font-weight="600" fill="#8b949e">OFFLINE</text>
+    <text x="1009" y="310" text-anchor="middle" font-size="10" fill="#8b949e">not seen recently</text>
+
+    <line x1="190" y1="255" x2="226" y2="255" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah3)"></line>
+    <text x="208" y="212" text-anchor="middle" font-size="9" fill="#8b949e">assign</text>
+    <text x="208" y="200" text-anchor="middle" font-size="9" fill="#8b949e">persona</text>
+
+    <line x1="418" y1="255" x2="455" y2="255" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah3)"></line>
+    <text x="437" y="212" text-anchor="middle" font-size="9" fill="#8b949e">session</text>
+    <text x="437" y="200" text-anchor="middle" font-size="9" fill="#8b949e">opens</text>
+
+    <line x1="647" y1="246" x2="684" y2="246" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah3)"></line>
+    <text x="666" y="212" text-anchor="middle" font-size="9" fill="#8b949e">stops</text>
+    <text x="666" y="200" text-anchor="middle" font-size="9" fill="#8b949e">speaking</text>
+
+    <line x1="876" y1="255" x2="912" y2="255" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah3)"></line>
+    <text x="894" y="212" text-anchor="middle" font-size="9" fill="#8b949e">heartbeat</text>
+    <text x="894" y="200" text-anchor="middle" font-size="9" fill="#8b949e">timeout</text>
+
+    <path d="M700 290 C660 344 500 344 553 292" fill="none" stroke="#484f58" stroke-width="1.5" marker-end="url(#ah3)"></path>
+    <text x="610" y="360" text-anchor="middle" font-size="9" fill="#6e7681">speaks again</text>
+
+    <path d="M560 220 C660 116 880 116 1000 220" fill="none" stroke="#484f58" stroke-width="1.5" marker-end="url(#ah3)"></path>
+    <text x="780" y="120" text-anchor="middle" font-size="9" fill="#6e7681">disconnect</text>
+
+    <path d="M980 290 C700 452 300 452 92 300" fill="none" stroke="#484f58" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#ah3)"></path>
+    <text x="540" y="446" text-anchor="middle" font-size="9" fill="#6e7681">re-checks in → DISCOVERED  (or CLAIMED if it still has a persona)</text>
+  </g>
+
+  <text x="48" y="712" font-size="12" fill="#8b949e" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">AgentStatus in registry/models.py. The dashboard colours each state — green active, amber idle, grey offline, blue discovered.</text>
+</svg>

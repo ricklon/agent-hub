@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 860" width="1200" height="860" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace">
+  <rect width="1200" height="860" fill="#0d1117"></rect>
+  <text x="48" y="60" font-size="22" font-weight="600" fill="#58a6ff">Deployment topology</text>
+  <text x="48" y="88" font-size="13" fill="#8b949e" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">Two hostnames, two trust boundaries. Devices connect direct for low latency; the dashboard has no public port.</text>
+
+  <g transform="translate(48, 116)">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#6e7681"></path>
+      </marker>
+    </defs>
+
+    <rect x="150" y="14" width="300" height="94" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="176" y="48" font-size="16" font-weight="600" fill="#58a6ff">ESP32 devices</text>
+    <text x="176" y="72" font-size="12" fill="#8b949e">xiaozhi firmware · df-k10</text>
+    <text x="176" y="92" font-size="11" fill="#6e7681">wss · check-in · heartbeat · image</text>
+
+    <rect x="654" y="14" width="300" height="94" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="680" y="48" font-size="16" font-weight="600" fill="#58a6ff">Operator browser</text>
+    <text x="680" y="72" font-size="12" fill="#8b949e">signs in via Cloudflare Access</text>
+    <text x="680" y="92" font-size="11" fill="#6e7681">read / operate / admin roles</text>
+
+    <rect x="118" y="208" width="364" height="126" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="144" y="242" font-size="17" font-weight="600" fill="#58a6ff">hub.foofab.net</text>
+    <text x="144" y="266" font-size="12" fill="#8b949e">:443   Caddy reverse proxy</text>
+    <text x="144" y="290" font-size="11" fill="#6e7681">→ :8000   voice WS + image</text>
+    <text x="144" y="310" font-size="11" fill="#6e7681">→ :8003   check-in + heartbeat</text>
+
+    <rect x="622" y="208" width="364" height="126" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="648" y="242" font-size="17" font-weight="600" fill="#58a6ff">admin.foofab.net</text>
+    <text x="648" y="266" font-size="12" fill="#8b949e">Cloudflare Tunnel — no inbound port</text>
+    <rect x="648" y="282" width="256" height="34" rx="4" fill="#10243a" stroke="#1f6feb"></rect>
+    <text x="662" y="304" font-size="11" fill="#58a6ff">Cloudflare Access · email allowlist</text>
+
+    <rect x="86" y="418" width="932" height="184" rx="8" fill="none" stroke="#30363d" stroke-dasharray="6 5"></rect>
+    <text x="102" y="410" font-size="11" fill="#6e7681">DigitalOcean droplet · s-1vcpu-2gb · nyc1 · reserved IP · ufw allows 80 / 443 only</text>
+
+    <rect x="116" y="446" width="872" height="132" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="138" y="476" font-size="13" fill="#c9d1d9">agent-hub container   (docker compose)</text>
+
+    <rect x="138" y="492" width="268" height="66" rx="4" fill="#0d1117" stroke="#30363d"></rect>
+    <text x="156" y="518" font-size="13" font-weight="600" fill="#58a6ff">:8000</text>
+    <text x="156" y="540" font-size="10" fill="#6e7681">/xiaozhi/v1/ · image</text>
+
+    <rect x="422" y="492" width="268" height="66" rx="4" fill="#0d1117" stroke="#30363d"></rect>
+    <text x="440" y="518" font-size="13" font-weight="600" fill="#58a6ff">:8003</text>
+    <text x="440" y="540" font-size="10" fill="#6e7681">/checkin/ · /xiaozhi/ota/ · heartbeat</text>
+
+    <rect x="706" y="492" width="264" height="66" rx="4" fill="#0d1117" stroke="#30363d"></rect>
+    <text x="724" y="518" font-size="13" font-weight="600" fill="#58a6ff">:8001</text>
+    <text x="724" y="540" font-size="10" fill="#6e7681">/dashboard/ — Access-gated</text>
+
+    <line x1="300" y1="108" x2="300" y2="206" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah)"></line>
+    <text x="312" y="162" font-size="10" fill="#8b949e">wss / https</text>
+
+    <line x1="804" y1="108" x2="804" y2="206" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah)"></line>
+    <text x="816" y="162" font-size="10" fill="#8b949e">https</text>
+
+    <line x1="300" y1="334" x2="300" y2="490" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah)"></line>
+    <text x="312" y="400" font-size="10" fill="#8b949e">device routes</text>
+
+    <line x1="804" y1="334" x2="820" y2="490" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah)"></line>
+    <text x="828" y="400" font-size="10" fill="#8b949e">:8001 only</text>
+  </g>
+
+  <text x="48" y="802" font-size="11" fill="#8b949e" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">Solid line — request path      Dashed box — network boundary      <tspan fill="#58a6ff">Blue — Cloudflare Access identity gate</tspan></text>
+</svg>
