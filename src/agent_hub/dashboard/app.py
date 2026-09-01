@@ -25,7 +25,7 @@ from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.overview import render_fleet_overview
 from agent_hub.registry.models import Agent, OperatorRole, Persona
 from agent_hub.registry.store import RegistryStore
-from agent_hub.server import session_state, tool_policy
+from agent_hub.server import mcp_bridge, session_state, tool_policy
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
@@ -931,6 +931,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
                 name,
                 server_skills=base.server_skills or "",
                 mcp_tools_allowlist=base.mcp_tools_allowlist or "",
+                linked_agents=base.linked_agents or "",
                 memory_window=base.memory_window,
             )
         return HTMLResponse(
@@ -991,6 +992,26 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 
         allowed_tools = persona.mcp_tools_allowlist_list  # None = safe defaults
         tools_val = ", ".join(allowed_tools) if allowed_tools is not None else ""
+
+        linked_now = set(persona.linked_agents_list)
+        connected_now = set(mcp_bridge.connected_agent_ids())
+        linked_ids = list(dict.fromkeys([*connected_now, *persona.linked_agents_list]))
+        linked_rows: list[str] = []
+        for _aid in linked_ids:
+            _n = len(mcp_bridge.list_page_tool_definitions(_aid))
+            _off = "" if _aid in connected_now else ", offline"
+            linked_rows.append(
+                '<label style="display:flex;gap:0.5rem;align-items:center;'
+                'margin-top:0.5rem">'
+                f'<input type="checkbox" name="linked_agents" value="{html.escape(_aid)}"'
+                f'{" checked" if _aid in linked_now else ""} style="width:auto">'
+                f"<span><strong>{html.escape(_aid)}</strong>"
+                f'<span style="color:#6e7681"> — {_n} tools{_off}</span></span></label>'
+            )
+        linked_boxes = (
+            "".join(linked_rows)
+            or '<p style="color:#6e7681">No other agents connected right now.</p>'
+        )
 
         prompt_val = html.escape(persona.system_prompt or "")
         llm_model_val = html.escape(persona.llm_model or "")
@@ -1059,6 +1080,15 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
   </div>
 
   <div class="form-section">
+    <h3>Linked agents</h3>
+    <p style="color:#6e7681;font-size:0.8rem;margin:0">
+      Borrow the non-destructive MCP tools of other connected agents (a robot,
+      another page). Borrowed tool names are prefixed with the agent id.
+    </p>
+    {linked_boxes}
+  </div>
+
+  <div class="form-section">
     <h3>Memory</h3>
     <label>Conversation window (turns kept in LLM context)</label>
     <input type="number" name="memory_window" value="{persona.memory_window}" min="1" max="200">
@@ -1114,6 +1144,9 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         # "" clears the allowlist back to the safe defaults; a JSON list pins it.
         tools_arg = _json.dumps(tool_parts) if tool_parts else ""
 
+        linked = sorted({str(a).strip() for a in form.getlist("linked_agents") if str(a).strip()})
+        linked_arg = _json.dumps(linked) if linked else ""
+
         ok = await store.update_persona(
             name,
             system_prompt=system_prompt,
@@ -1124,6 +1157,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             asr_provider=asr_provider or None,
             server_skills=skills_arg,
             mcp_tools_allowlist=tools_arg,
+            linked_agents=linked_arg,
             memory_window=max(1, memory_window),
         )
         if ok:

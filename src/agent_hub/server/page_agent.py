@@ -30,10 +30,11 @@ from agent_hub import skills as server_skills
 from agent_hub.config import Settings
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.providers.llm import get_provider
-from agent_hub.registry.models import AgentKind
+from agent_hub.registry.models import AgentKind, Persona
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge
 from agent_hub.server._page_html import PAGE_HTML as _PAGE_AGENT_HTML
+from agent_hub.server.tool_policy import is_risky_tool
 
 _TAG = "page_agent"
 
@@ -111,6 +112,58 @@ def classify_utterance(raw: str, wake_word: str) -> tuple[str, str]:
 
 def _new_device_id() -> str:
     return "page-" + secrets.token_hex(8)
+
+
+# ── Linked-agent tools ───────────────────────────────────────────────────────
+#
+# A persona may borrow the *non-destructive* MCP tools of other connected
+# agents (persona.linked_agents). Borrowed tools are namespaced with the source
+# agent's id (``robot-01.grip``) so calls route back to it through the bridge.
+# Destructive tools — by MCP annotation, else the name heuristic — are excluded;
+# borrowing crosses an agent boundary.
+
+_LINKED_SEP = "."
+
+
+def linked_tool_defs(persona: Persona) -> list[dict[str, Any]]:
+    """OpenAI tool defs for the borrowable tools of every linked agent."""
+    out: list[dict[str, Any]] = []
+    for linked_id in persona.linked_agents_list:
+        for d in mcp_bridge.list_page_tool_definitions(linked_id):
+            fn = d["function"]
+            if is_risky_tool(fn["name"], mcp_bridge.tool_annotations(linked_id, fn["name"])):
+                continue
+            out.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": f"{linked_id}{_LINKED_SEP}{fn['name']}",
+                        "description": f"[{linked_id}] {fn['description']}",
+                        "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+                    },
+                }
+            )
+    return out
+
+
+def resolve_linked_call(persona: Persona, name: str) -> tuple[str, str] | None:
+    """Split a namespaced linked-tool name into ``(agent_id, tool)``, or None."""
+    for linked_id in persona.linked_agents_list:
+        prefix = f"{linked_id}{_LINKED_SEP}"
+        if name.startswith(prefix):
+            return linked_id, name[len(prefix) :]
+    return None
+
+
+async def call_linked_tool(linked_id: str, tool: str, args: dict[str, Any]) -> str:
+    """Run a borrowed tool on a linked agent; never raises."""
+    handle = mcp_bridge.get_page_agent(linked_id)
+    if handle is None or not handle.connected:
+        return f"{linked_id} is not connected — cannot run {tool!r}."
+    try:
+        return await mcp_bridge.call_page_tool(linked_id, tool, args, timeout=30.0)
+    except Exception as exc:  # noqa: BLE001 - surface any bridge failure to the model
+        return f"{linked_id}{_LINKED_SEP}{tool} failed: {exc}"
 
 
 def make_router(
@@ -297,7 +350,7 @@ def make_router(
             for d in server_skills.get_definitions()
             if d["function"]["name"] not in {"page_speak", "page_see"}
         ]
-        tools = page_tool_defs + skill_defs
+        tools = page_tool_defs + skill_defs + linked_tool_defs(persona)
 
         # Load conversation history.
         history = await store.load_history(device_id, limit=persona.memory_window * 2)
@@ -323,6 +376,9 @@ def make_router(
         captured_images: list[str] = []
 
         async def _exec_tool(name: str, args: dict[str, Any]) -> str:
+            linked = resolve_linked_call(persona, name)
+            if linked is not None:
+                return await call_linked_tool(linked[0], linked[1], args)
             if name in page_tool_names:
                 timeout = 60.0 if ("camera" in name or "photo" in name) else 30.0
                 page_result = await mcp_bridge.call_page_tool(
@@ -432,7 +488,7 @@ def make_router(
             for d in server_skills.get_definitions()
             if d["function"]["name"] not in {"page_speak", "page_see"}
         ]
-        tools = page_tool_defs + skill_defs
+        tools = page_tool_defs + skill_defs + linked_tool_defs(persona)
         page_tool_names = {d["function"]["name"] for d in page_tool_defs}
 
         tool_lines: list[str] = []
@@ -450,6 +506,9 @@ def make_router(
             ).strip()
 
         async def _exec_tool(name: str, args: dict[str, Any]) -> str:
+            linked = resolve_linked_call(persona, name)
+            if linked is not None:
+                return await call_linked_tool(linked[0], linked[1], args)
             if name in page_tool_names:
                 timeout = 60.0 if ("camera" in name or "photo" in name) else 30.0
                 return await mcp_bridge.call_page_tool(device_id, name, args, timeout=timeout)

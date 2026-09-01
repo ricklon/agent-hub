@@ -97,6 +97,7 @@ class RegistryStore:
         new_columns = [
             "ALTER TABLE personas ADD COLUMN server_skills TEXT",
             "ALTER TABLE personas ADD COLUMN mcp_tools_allowlist TEXT",
+            "ALTER TABLE personas ADD COLUMN linked_agents TEXT",
             "ALTER TABLE personas ADD COLUMN memory_window INTEGER DEFAULT 20 NOT NULL",
             "ALTER TABLE agents ADD COLUMN websocket_token VARCHAR(128)",
             "ALTER TABLE agents ADD COLUMN last_heartbeat DATETIME",
@@ -705,6 +706,7 @@ class RegistryStore:
         asr_provider: str | None = None,
         server_skills: str | None = None,
         mcp_tools_allowlist: str | None = None,
+        linked_agents: str | None = None,
         memory_window: int | None = None,
     ) -> bool:
         """Update editable fields on a persona. Returns False if not found."""
@@ -729,6 +731,8 @@ class RegistryStore:
                 persona.server_skills = server_skills or None
             if mcp_tools_allowlist is not None:
                 persona.mcp_tools_allowlist = mcp_tools_allowlist or None
+            if linked_agents is not None:
+                persona.linked_agents = linked_agents or None
             if memory_window is not None:
                 persona.memory_window = memory_window
             await session.commit()

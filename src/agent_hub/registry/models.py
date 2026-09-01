@@ -62,6 +62,9 @@ class Persona(Base):
     server_skills: Mapped[str | None] = mapped_column(Text, nullable=True)
     # JSON-encoded list of allowed device MCP tool names; NULL means all allowed
     mcp_tools_allowlist: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON-encoded list of other agent (device) ids this persona may borrow
+    # non-destructive MCP tools from; NULL/[] means none.
+    linked_agents: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Max conversation turns kept in LLM context
     memory_window: Mapped[int] = mapped_column(Integer, default=20)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -77,6 +80,14 @@ class Persona(Base):
     def mcp_tools_allowlist_list(self) -> list[str] | None:
         """Decoded mcp_tools_allowlist, or None (all tools allowed)."""
         return json.loads(self.mcp_tools_allowlist) if self.mcp_tools_allowlist else None
+
+    @property
+    def linked_agents_list(self) -> list[str]:
+        """Decoded linked_agents, or [] when none are linked."""
+        if not self.linked_agents:
+            return []
+        parsed = json.loads(self.linked_agents)
+        return [a for a in parsed if isinstance(a, str)] if isinstance(parsed, list) else []
 
 
 class ConversationTurn(Base):

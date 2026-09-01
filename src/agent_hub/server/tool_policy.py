@@ -29,6 +29,9 @@ The same policy is enforced in two places (per the spec):
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 # Substrings (matched case-insensitively against the sanitized tool name) that
 # mark a tool as a risky device-management capability. Kept deliberately broad:
 # the cost of over-blocking is that an admin must explicitly allowlist the tool,
@@ -84,8 +87,27 @@ RISKY_KEYWORDS: tuple[str, ...] = (
 )
 
 
-def is_risky_tool(name: str) -> bool:
-    """True if ``name`` looks like a risky device-management tool."""
+def is_risky_tool(name: str, annotations: Mapping[str, Any] | None = None) -> bool:
+    """True if a tool is a risky device-management capability.
+
+    MCP tool annotations (``readOnlyHint`` / ``destructiveHint``, revision
+    2025-03-26+) are authoritative when present:
+
+      * ``readOnlyHint: true``   → safe.
+      * ``destructiveHint: true``  → risky.
+      * ``destructiveHint: false`` → safe.
+
+    Anything else — no annotations, or a non-read-only tool that omits
+    ``destructiveHint`` — falls back to the ``RISKY_KEYWORDS`` name match, so
+    ``2024-11-05`` agents behave exactly as before.
+    """
+    if annotations:
+        if annotations.get("readOnlyHint") is True:
+            return False
+        if annotations.get("destructiveHint") is True:
+            return True
+        if annotations.get("destructiveHint") is False:
+            return False
     low = name.lower()
     return any(keyword in low for keyword in RISKY_KEYWORDS)
 
