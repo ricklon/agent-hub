@@ -1,0 +1,25 @@
+# A file may hold a list of scenarios.
+
+- name: chit-chat-calls-no-tools
+  llm: mock
+  turns:
+    - say: "good morning"
+      respond:
+        reply: "Good morning! How can I help?"
+      expect:
+        not_called: [get_current_time, get_weather]
+        reply_contains: "Good morning"
+
+- name: history-carries-between-turns
+  llm: mock
+  turns:
+    - say: "remember the number 7"
+      respond:
+        reply: "Got it — 7."
+      expect:
+        reply_contains: "7"
+    - say: "what number did I ask you to remember?"
+      respond:
+        reply: "You said 7."
+      expect:
+        reply_contains: "7"
