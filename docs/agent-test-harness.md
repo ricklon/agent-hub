@@ -1,10 +1,12 @@
 # Design note: a page-agent test harness for agents
 
-Status: **Layer 1 built** — `tests/harness/` has the protocol client
-(`PageAgentClient`, `Turn`, `ToolCall`), a `ScriptedLLM` fake provider, a
-`SkillSpy`, and the YAML **scenario format + runner** with a parametrized
-collector (`tests/scenarios/`). Layer 2 browser fixtures and Layer 3 voice
-remain proposals.
+Status: **built and running in CI** (PRs #59–#61). `tests/harness/` has the
+protocol client (`PageAgentClient`, `Turn`, `ToolCall`), the `ScriptedLLM` fake
+provider, `SkillSpy`, and the `discover_scenarios` / `run_scenario` YAML runner;
+`tests/scenarios/test_scenarios.py` parametrizes one test per scenario. Every
+PR runs the mock-LLM scenarios plus `tests/harness/test_page_agent_client.py`.
+Still proposed: wiring `live` scenarios into CI, Layer 2 browser fixtures, and
+Layer 3 voice.
 
 ## The problem
 
@@ -176,19 +178,28 @@ right") is testable here; ASR quality is not.
 
 ## Open questions
 
-- **Mock vs cheap-real LLM as the CI default.** Mock is deterministic and
-  free but only tests plumbing; a real model tests behaviour but flakes.
-  Likely both, on different triggers (mock on every PR, real on a label or
-  nightly).
-- **Structured tool-call trace from `/page-agent/ask`.** Page-tool calls are
-  observable on the SSE stream (and land in `Turn.tool_calls`); server skills
-  run in process and are invisible there, so the harness patches
-  `agent_hub.skills.run_result` with `SkillSpy` to see and stub them. A
-  trace/dry-run mode on the endpoint (tied to the broader per-turn trace idea)
-  would remove the need to patch.
-- **Scenario state.** `/page-agent/ask` persists history via
-  `store.append_history`, so multi-turn scenarios are stateful; single-turn
-  scenarios should use a fresh `device_id` and store per case.
+- **Wiring `live` scenarios into CI.** Mock scenarios run on every PR and cover
+  the plumbing; `live` scenarios (real model, no `respond` block) only run
+  locally with `AGENT_HUB_TEST_LIVE_LLM=1`. Open: run them on a label or
+  nightly against a cheap model — with a spend cap and retry-on-flake — or
+  keep them as a manual pre-release check.
+- **An endpoint trace mode vs. patching.** `SkillSpy` patches
+  `agent_hub.skills.run_result` so scenarios can see and stub server-skill
+  calls (page-tool calls already land in `Turn.tool_calls`). A trace/dry-run
+  field on `/page-agent/ask` — tied to the broader per-turn trace idea — would
+  make the patch unnecessary and give real (non-test) runs the same
+  visibility.
+- **`system_prompt` is only meaningful under `live`.** The mock LLM ignores
+  it, so a `mock` scenario with `system_prompt:` exercises the persona-update
+  path but proves nothing about prompt influence. Prompt-behaviour scenarios
+  have to be `live`.
+- **Assertion vocabulary.** `expect.called` is set membership — it cannot say
+  "called exactly once", "called before X", or "args match a pattern". Extend
+  the schema when a scenario needs one of these.
+
+Resolved while building: **scenario isolation.** Each `test_scenario[...]` gets
+a fresh function-scoped `store` (tmp SQLite), so history is stateful within a
+scenario's turns and does not leak between scenarios.
 
 ## What's built vs. proposed
 
