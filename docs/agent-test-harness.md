@@ -1,6 +1,9 @@
 # Design note: a page-agent test harness for agents
 
-Status: proposal. Nothing here is built yet.
+Status: **Layer 1 built** — `tests/harness/` has the protocol client
+(`PageAgentClient`, `Turn`, `ToolCall`) and a `ScriptedLLM` fake provider, with
+`tests/harness/test_page_agent_client.py` as worked examples. The scenario file
+format, Layer 2 browser fixtures, and Layer 3 voice remain proposals.
 
 ## The problem
 
@@ -49,43 +52,43 @@ and increasing fidelity:
 
 ## Proposed harness
 
-### The protocol client
+### The protocol client — `tests/harness/page_agent_client.py`
 
-A ~200–300 line Python client that speaks these endpoints, reusing
-`server/protocol.py`. Runs in-process against an ASGI app the way
-`tests/server/test_page_agent.py` already does, so there is no network and auth
-is whatever the test config sets.
+Built. Runs in-process against an ASGI app the way
+`tests/server/test_page_agent.py` does — no network, and auth is whatever the
+test config sets (empty config is permissive).
 
 ```python
-class PageAgentClient:
-    async def register(self, tools: list[ToolDef]) -> None: ...
-    # POSTs /page-agent/register, opens the /mcp/v1/events SSE stream
-
-    async def ask(self, text: str) -> Turn: ...
-    # POSTs /page-agent/ask; returns reply text + the tool calls the client
-    # saw arrive on the SSE stream + timings
-
-    def on_tool(self, name: str, handler: Callable[[dict], str]) -> None: ...
-    # register a canned result for a page tool; the client answers the
-    # JSON-RPC request on /mcp/v1/respond
-
-    async def voice(self, wav: bytes) -> Turn: ...
-    # opens /page-agent/voice, streams the WAV as 16 kHz PCM frames,
-    # collects the reply
+async with PageAgentClient.session(store) as page:      # builds the app
+    page.add_tool("get_screen", "Return text on screen", handler)
+    await page.register()                                # POST /page-agent/register
+    turn = await page.ask("what's on screen?")           # POST /page-agent/ask
 ```
 
-`Turn` is the structured result: final text, the ordered list of tool calls
-with arguments, per-call durations, token counts if the provider reports them.
+`ask()` fires the request as a task and concurrently pumps the bridge: it
+consumes the SSE event stream via `mcp_bridge.events_generator`, dispatches each
+`tools/call` to the matching `add_tool` / `on_tool` handler, and POSTs the
+result to `/mcp/v1/respond` — because `/page-agent/ask` blocks inside the
+handler on every page-tool call until its result comes back.
+
+`Turn` carries `reply`, `images`, and `tool_calls` (ordered `ToolCall`s with
+`name`, `arguments`, `duration_s`), plus `elapsed_s`. Helpers: `turn.called(name)`
+and `turn.call_args(name)`.
+
+Not built: `voice()` over `/page-agent/voice` (Layer 3) — it needs the Silero
+VAD model plus an ASR/TTS provider, which the hermetic suite avoids, and there
+is no WebSocket test-client pattern in the repo yet.
 
 ### Layer 1 — text scenarios (CI, every PR)
 
 Drive `/page-agent/ask` with the protocol client. Two sub-modes:
 
-- **Mock LLM provider.** Swap `persona.llm_provider` for a scripted provider
-  whose `complete_with_tools` calls `_exec_tool` with a fixed sequence and
-  returns a fixed reply. Deterministic. Tests the plumbing: tool routing
-  through the bridge, skill execution, history persistence, system-prompt
-  assembly from tool definitions. No network, no cost.
+- **Mock LLM provider** (built — `tests/harness/scripted_llm.py`).
+  `ScriptedLLM(tool_calls=[(name, args), ...], reply=...)` calls the executor
+  with a fixed sequence then returns fixed text; `install_scripted_llm(monkeypatch,
+  llm)` patches `page_agent.get_provider`. Deterministic. Tests the plumbing:
+  tool routing through the bridge, skill execution, history persistence,
+  system-prompt assembly. No network, no cost.
 - **Cheap real LLM.** A small real model. Tests behaviour: given the tool is
   available, does the model call it; does it answer from the result rather
   than from history. Non-deterministic, so assertions are "tool X was
@@ -158,17 +161,25 @@ right") is testable here; ASR quality is not.
   Likely both, on different triggers (mock on every PR, real on a label or
   nightly).
 - **Structured tool-call trace from `/page-agent/ask`.** Page-tool calls are
-  observable on the SSE stream, but server skills run in process and are
-  invisible to the client. Either add a trace/dry-run mode to the endpoint
-  (ties into the broader per-turn trace idea) or add a skill-execution spy
-  for tests.
+  observable on the SSE stream (and land in `Turn.tool_calls`), but server
+  skills run in process and are invisible — `test_page_agent_client.py`'s
+  `test_server_skills_run_but_are_not_recorded_as_tool_calls` pins this
+  behaviour. Either add a trace/dry-run mode to the endpoint (ties into the
+  broader per-turn trace idea) or add a skill-execution spy for tests.
 - **Scenario state.** `/page-agent/ask` persists history via
   `store.append_history`, so multi-turn scenarios are stateful; single-turn
   scenarios should use a fresh `device_id` and store per case.
 
-## Prior art in the repo
+## What's built vs. proposed
 
-`tests/server/test_page_agent.py`, `test_page_agent_wake.py`,
-`test_mcp_bridge.py`, and `test_streaming_turn.py` already exercise these
-paths at the unit level. This note is about promoting that into a
-scenario-driven harness with a reusable client and a declarative file format.
+Built (`tests/harness/`): `PageAgentClient`, `Turn`/`ToolCall`, `ScriptedLLM` +
+`install_scripted_llm`, and `test_page_agent_client.py` covering register, a
+no-tool turn, page-tool routing, async handlers, a raising handler → tool
+error, the skill-invisibility behaviour, and multi-turn history.
+
+Still proposed: the declarative scenario file format + pytest collector, a
+cheap-real-LLM mode wired into CI, Layer 2 browser fixtures, and Layer 3 voice
+(`voice()` + a WebSocket test-client pattern).
+
+Prior art the client builds on: `tests/server/test_page_agent.py`,
+`test_page_agent_wake.py`, `test_mcp_bridge.py`, `test_streaming_turn.py`.
