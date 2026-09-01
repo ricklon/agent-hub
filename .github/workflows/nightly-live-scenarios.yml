@@ -1,0 +1,102 @@
+name: Nightly live scenarios
+
+# Runs the `llm: live` scenarios in tests/scenarios/ against the real
+# configured model once a day. The PR gate (ci.yml) only runs the `mock`
+# scenarios; this is where behaviour against an actual LLM gets checked.
+#
+# Requires the AGENT_HUB_LLM_OPENAI_API_KEY repo secret. Without it the live
+# scenarios skip themselves (the run stays green) and a warning annotation
+# says so. Model and base URL default to the demo's OpenRouter setup and can
+# be overridden with the LIVE_SCENARIO_MODEL / LIVE_SCENARIO_BASE_URL repo
+# variables.
+
+on:
+  schedule:
+    - cron: "23 7 * * *" # 07:23 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  live-scenarios:
+    name: live agent scenarios
+    # Forks have no secret; skip entirely rather than run a noisy no-op.
+    if: github.repository == 'ricklon/agent-hub'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AGENT_HUB_TEST_LIVE_LLM: "1"
+      AGENT_HUB_LLM_OPENAI_API_KEY: ${{ secrets.AGENT_HUB_LLM_OPENAI_API_KEY }}
+      AGENT_HUB_LLM_OPENAI_BASE_URL: ${{ vars.LIVE_SCENARIO_BASE_URL || 'https://openrouter.ai/api/v1' }}
+      AGENT_HUB_LLM_OPENAI_MODEL: ${{ vars.LIVE_SCENARIO_MODEL || 'google/gemma-4-31b-it' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Note when no API key is configured
+        if: ${{ env.AGENT_HUB_LLM_OPENAI_API_KEY == '' }}
+        run: echo "::warning::AGENT_HUB_LLM_OPENAI_API_KEY is not set — live scenarios will skip, not run."
+
+      # opuslib_next resolves libopus at import; soundfile needs libsndfile.
+      - name: Install native audio libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopus-dev libsndfile1
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # dev extra only — the harness needs the base package + pytest, not the
+      # torch-bearing `full` extra.
+      - name: Install project
+        run: uv sync --extra dev
+
+      - name: Run scenario + harness tests (live), retrying failures once
+        run: |
+          set -o pipefail
+          uv run --extra dev pytest -q -rs tests/scenarios tests/harness && exit 0
+          echo "::warning::first attempt failed — retrying failures once (a live model can be non-deterministic)"
+          uv run --extra dev pytest -q -rs --last-failed tests/scenarios tests/harness
+
+      - name: Open or bump a tracking issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Nightly live scenarios failing';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const hit = open.find(i => i.title === title && !i.pull_request);
+            if (hit) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: hit.number,
+                body: `Failed again: ${runUrl}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body: [
+                  'The scheduled **Nightly live scenarios** workflow failed after one retry.',
+                  '',
+                  `Run: ${runUrl}`,
+                  '',
+                  'These exercise `tests/scenarios/` `llm: live` cases against the real model.',
+                  'A one-off failure is likely model non-determinism; repeated failures point at a',
+                  'regression in the tool loop, a prompt change, or the model itself. Close this',
+                  'issue once a nightly run goes green again.',
+                ].join('\n'),
+              });
+            }

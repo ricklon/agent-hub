@@ -45,6 +45,7 @@ agent-hub/
 ├── pyproject.toml           ← uv, hatchling, ruff, pytest
 ├── justfile                 ← all dev commands
 ├── .github/workflows/ci.yml ← runs just lint / typecheck / test
+├── .github/workflows/nightly-live-scenarios.yml ← daily: tests/scenarios/ llm:live cases
 ├── docker-compose.yml
 ├── docker-compose.fubar.yml ← class-night override (laptop on FUBAR wifi)
 ├── .config.example.yaml
