@@ -98,6 +98,7 @@ def register_page_agent(
             continue
         raw_schema = tool.get("inputSchema")
         schema: dict[str, Any] = raw_schema if isinstance(raw_schema, dict) else {}
+        raw_ann = tool.get("annotations")
         handle.tools[name] = {
             "description": str(tool.get("description") or ""),
             "inputSchema": {
@@ -105,6 +106,9 @@ def register_page_agent(
                 "properties": schema.get("properties", {}),
                 "required": [s for s in schema.get("required", []) if isinstance(s, str)],
             },
+            # MCP tool annotations (readOnlyHint / destructiveHint / …), passed
+            # through untouched for policy decisions. Empty for 2024-11-05 agents.
+            "annotations": raw_ann if isinstance(raw_ann, dict) else {},
         }
     _page_agents[device_id] = handle
     logger.bind(tag=_TAG).info(
@@ -124,6 +128,23 @@ def unregister_page_agent(device_id: str) -> None:
 
 def get_page_agent(device_id: str) -> PageAgent | None:
     return _page_agents.get(device_id)
+
+
+def connected_agent_ids() -> list[str]:
+    """Device ids of bridged agents with a live SSE stream, most-recent first."""
+    live = [h for h in _page_agents.values() if h.connected]
+    live.sort(key=lambda h: h.last_seen, reverse=True)
+    return [h.device_id for h in live]
+
+
+def tool_annotations(device_id: str, tool_name: str) -> dict[str, Any]:
+    """MCP annotations for one of a bridged agent's tools, or ``{}``."""
+    handle = _page_agents.get(device_id)
+    if handle is None:
+        return {}
+    data = handle.tools.get(tool_name)
+    ann = data.get("annotations") if isinstance(data, dict) else None
+    return ann if isinstance(ann, dict) else {}
 
 
 def list_page_tool_definitions(device_id: str) -> list[dict[str, Any]]:
