@@ -26,6 +26,10 @@ services:
       - ./data:/app/data
     environment:
       - AGENT_HUB_SERVER_HOST=0.0.0.0
+      # Drives both the device screen clock (check-in response) and the
+      # get_current_time skill's answer. IANA name so DST is handled — the
+      # container clock is UTC. Override in .env.do for a different location.
+      - AGENT_HUB_SERVER_TIMEZONE=America/New_York
       - AGENT_HUB_ASR_DEFAULT_PROVIDER=moonshine
       - AGENT_HUB_ASR_MOONSHINE_LANGUAGE=en
       - AGENT_HUB_ASR_MOONSHINE_MODEL_ARCH=tiny
