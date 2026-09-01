@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
 from agent_hub import spend
+from agent_hub.dashboard import persona_options
 from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
@@ -881,8 +882,9 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
                 f"<td>{p.tts_provider}{f' / {p.tts_voice}' if p.tts_voice else ''}</td>"
                 f"<td>{p.asr_provider}</td>"
                 f"<td>{p.memory_window}</td>"
-                f'<td><a href="/dashboard/personas/{p.name}" '
-                f'style="color:#58a6ff">edit</a></td></tr>'
+                f'<td><a href="/dashboard/personas/{p.name}" style="color:#58a6ff">edit</a>'
+                f' &nbsp; <a href="/dashboard/page-agent?persona={quote(p.name)}" '
+                f'style="color:#58a6ff">launch</a></td></tr>'
                 for p in personas
             )
             or "<tr><td colspan=6>no personas</td></tr>"
@@ -896,48 +898,44 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 <tbody>{rows}</tbody>
 </table>
 <h3 style="margin-top:2rem">New persona</h3>
+<p style="color:#6e7681;font-size:0.8rem;margin:0 0 0.5rem">
+  Creates a copy of <code>hub-default</code> that you then configure.
+</p>
 <div id="new-persona-result" role="status" aria-live="polite"></div>
 <form hx-post="/dashboard/personas"
       hx-target="#new-persona-result" hx-swap="innerHTML">
-  <div class="field-row">
-    <div>
-      <label>Name</label>
-      <input type="text" name="name" required placeholder="e.g. grumpy-pirate">
-    </div>
-    <div>
-      <label>TTS voice</label>
-      <input type="text" name="tts_voice" placeholder="e.g. en-GB-RyanNeural">
-    </div>
-    <div>
-      <label>LLM model (blank = default)</label>
-      <input type="text" name="llm_model" placeholder="">
-    </div>
-  </div>
-  <label>System prompt</label>
-  <textarea name="system_prompt" rows="4"
-    placeholder="You are a helpful voice assistant..."></textarea>
+  <label>Name</label>
+  <input type="text" name="name" required placeholder="e.g. toaster3000" style="width:300px">
   <button type="submit">Create</button>
 </form>"""
         return HTMLResponse(_render_page(request, body))
 
     @router.post("/dashboard/personas", response_class=HTMLResponse)
-    async def persona_create(
-        name: str = Form(...),
-        system_prompt: str = Form(default=""),
-        tts_voice: str = Form(default=""),
-        llm_model: str = Form(default=""),
-    ) -> HTMLResponse:
+    async def persona_create(name: str = Form(...)) -> HTMLResponse:
+        base = await store.get_persona_by_name("hub-default")
         persona = await store.create_persona(
             name,
-            system_prompt=system_prompt,
-            tts_voice=tts_voice or None,
-            llm_model=llm_model or None,
+            system_prompt=base.system_prompt if base else "",
+            llm_provider=base.llm_provider if base else "openai",
+            llm_model=base.llm_model if base else None,
+            tts_provider=base.tts_provider if base else "edge",
+            tts_voice=base.tts_voice if base else None,
+            asr_provider=base.asr_provider if base else "funasr_onnx",
         )
         if persona is None:
             return HTMLResponse(f"<p style=\"color:#f85149\">Name '{name}' already taken.</p>")
+        if base is not None:
+            # create_persona does not carry these; copy them so the new persona
+            # is a faithful starting point.
+            await store.update_persona(
+                name,
+                server_skills=base.server_skills or "",
+                mcp_tools_allowlist=base.mcp_tools_allowlist or "",
+                memory_window=base.memory_window,
+            )
         return HTMLResponse(
             f'<p class="msg">✓ Created. <a href="/dashboard/personas/{persona.name}" '
-            f'style="color:#58a6ff">Edit {persona.name} →</a></p>'
+            f'style="color:#58a6ff">Configure {persona.name} →</a></p>'
         )
 
     @router.get("/dashboard/personas/{name}", response_class=HTMLResponse)
@@ -948,68 +946,116 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         if persona is None:
             return HTMLResponse(_render_page(request, "<p>Persona not found.</p>"))
 
-        all_skills = [d["function"]["name"] for d in _skills.get_definitions()]
-        enabled = persona.server_skills_list  # None = all
-        skills_val = ", ".join(enabled) if enabled is not None else ""
+        enabled = persona.server_skills_list  # None = all enabled
 
-        allowed_tools = persona.mcp_tools_allowlist_list  # None = all
+        def _select(field: str, choices: list[str], current: str) -> str:
+            merged = list(dict.fromkeys([*choices, current]))
+            opts = "".join(
+                f'<option value="{html.escape(v)}"'
+                f"{' selected' if v == current else ''}>{html.escape(v)}</option>"
+                for v in merged
+                if v
+            )
+            return f'<select name="{field}">{opts}</select>'
+
+        llm_select = _select("llm_provider", ["openai"], persona.llm_provider)
+        tts_select = _select(
+            "tts_provider", list(persona_options.TTS_PROVIDERS), persona.tts_provider
+        )
+        asr_select = _select("asr_provider", persona_options.asr_providers(), persona.asr_provider)
+        voice_datalist = "".join(
+            f'<option value="{html.escape(v)}"></option>'
+            for v in persona_options.TTS_VOICE_SUGGESTIONS
+        )
+        preset_opts = "".join(
+            f'<option value="{html.escape(k)}">{html.escape(k)}</option>'
+            for k in persona_options.PROMPT_PRESETS
+        )
+        skill_rows: list[str] = []
+        for _d in _skills.get_definitions():
+            _sn = _d["function"]["name"]
+            _sd = _d["function"].get("description", "")
+            _ck = " checked" if enabled is None or _sn in enabled else ""
+            skill_rows.append(
+                '<label style="display:flex;gap:0.5rem;align-items:flex-start;'
+                'margin-top:0.5rem">'
+                f'<input type="checkbox" name="server_skills" value="{html.escape(_sn)}"'
+                f'{_ck} style="margin-top:0.2rem;width:auto">'
+                f"<span><strong>{html.escape(_sn)}</strong>"
+                f'<span style="color:#6e7681"> — {html.escape(_sd)}</span>'
+                "</span></label>"
+            )
+        skill_boxes = (
+            "".join(skill_rows) or '<p style="color:#6e7681">No server skills installed.</p>'
+        )
+
+        allowed_tools = persona.mcp_tools_allowlist_list  # None = safe defaults
         tools_val = ", ".join(allowed_tools) if allowed_tools is not None else ""
+
+        prompt_val = html.escape(persona.system_prompt or "")
+        llm_model_val = html.escape(persona.llm_model or "")
+        tts_voice_val = html.escape(persona.tts_voice or "")
+        tools_val_esc = html.escape(tools_val)
 
         body = f"""\
 <p><a href="/dashboard/personas" style="color:#58a6ff">← personas</a></p>
 <h2>Edit persona: {name}</h2>
+<p><a href="/dashboard/page-agent?persona={quote(name)}" style="color:#58a6ff">
+  ▶ Launch as page agent</a> &nbsp;— talk to this persona in the browser, no hardware.</p>
 <div id="save-result" role="status" aria-live="polite"></div>
 <form hx-post="/dashboard/personas/{name}"
       hx-target="#save-result" hx-swap="innerHTML">
 
   <div class="form-section">
     <h3>Prompt</h3>
+    <label>Starter (fills the box below — then edit it)</label>
+    <select name="preset" hx-get="/dashboard/personas/{quote(name)}/_preset"
+            hx-target="#system-prompt" hx-swap="outerHTML">
+      <option value="">— keep current —</option>
+      {preset_opts}
+    </select>
     <label>System prompt</label>
-    <textarea name="system_prompt" rows="6">{persona.system_prompt or ""}</textarea>
+    <textarea id="system-prompt" name="system_prompt" rows="6">{prompt_val}</textarea>
   </div>
 
   <div class="form-section">
     <h3>Providers</h3>
     <div class="field-row">
-      <div>
-        <label>LLM provider</label>
-        <input type="text" name="llm_provider" value="{persona.llm_provider}">
-      </div>
-      <div>
-        <label>LLM model (blank = config default)</label>
-        <input type="text" name="llm_model" value="{persona.llm_model or ""}" style="width:300px">
-      </div>
+      <div><label>LLM provider</label>{llm_select}</div>
+      <div><label>LLM model (blank = config default)</label>
+        <input type="text" name="llm_model" value="{llm_model_val}"
+          style="width:300px" placeholder="browse ids on the Models page"></div>
     </div>
     <div class="field-row">
-      <div>
-        <label>TTS provider</label>
-        <input type="text" name="tts_provider" value="{persona.tts_provider}">
-      </div>
-      <div>
-        <label>TTS voice (blank = provider default)</label>
-        <input type="text" name="tts_voice" value="{persona.tts_voice or ""}" style="width:300px">
-      </div>
+      <div><label>TTS system</label>{tts_select}</div>
+      <div><label>TTS voice (blank = system default)</label>
+        <input type="text" name="tts_voice" value="{tts_voice_val}"
+          list="tts-voices" style="width:300px">
+        <datalist id="tts-voices">{voice_datalist}</datalist></div>
     </div>
     <div class="field-row">
-      <div>
-        <label>ASR provider</label>
-        <input type="text" name="asr_provider" value="{persona.asr_provider}">
-      </div>
+      <div><label>ASR system</label>{asr_select}</div>
+      <div></div>
     </div>
   </div>
 
   <div class="form-section">
-    <h3>Skills &amp; tools</h3>
-    <label>Server skills (comma-separated; blank = all enabled)
-      <span style="color:#6e7681"> — available: {", ".join(all_skills) or "none"}</span>
-    </label>
-    <input type="text" name="server_skills" value="{skills_val}" style="width:100%">
+    <h3>Skills</h3>
+    <p style="color:#6e7681;font-size:0.8rem;margin:0">
+      Server-side tools this persona can call. All checked = all enabled.
+    </p>
+    {skill_boxes}
+  </div>
+
+  <div class="form-section">
+    <h3>Device tools</h3>
     <label>Device MCP tool allowlist (comma-separated)
       <span style="color:#6e7681"> — blank = safe defaults (camera/photo/status
       etc.; risky reboot/firmware/Wi-Fi/filesystem/exec tools excluded). List
       tools explicitly to run an admin/custom set, including risky ones.</span>
     </label>
-    <input type="text" name="mcp_tools_allowlist" value="{tools_val}" style="width:100%">
+    <input type="text" name="mcp_tools_allowlist" value="{tools_val_esc}"
+      style="width:100%">
   </div>
 
   <div class="form-section">
@@ -1022,8 +1068,25 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 </form>"""
         return HTMLResponse(_render_page(request, body))
 
+    @router.get("/dashboard/personas/{name}/_preset", response_class=HTMLResponse)
+    async def persona_preset(name: str, preset: str = "") -> HTMLResponse:
+        """Return a replacement system-prompt textarea filled with a preset.
+
+        An unknown/blank preset restores the persona's saved prompt, so
+        choosing "— keep current —" is non-destructive.
+        """
+        text = persona_options.PROMPT_PRESETS.get(preset)
+        if text is None:
+            existing = await store.get_persona_by_name(name)
+            text = (existing.system_prompt if existing else "") or ""
+        return HTMLResponse(
+            f'<textarea id="system-prompt" name="system_prompt" rows="6">'
+            f"{html.escape(text)}</textarea>"
+        )
+
     @router.post("/dashboard/personas/{name}", response_class=HTMLResponse)
     async def persona_save(
+        request: Request,
         name: str,
         system_prompt: str = Form(default=""),
         llm_provider: str = Form(default=""),
@@ -1031,15 +1094,25 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         tts_provider: str = Form(default=""),
         tts_voice: str = Form(default=""),
         asr_provider: str = Form(default=""),
-        server_skills: str = Form(default=""),
         mcp_tools_allowlist: str = Form(default=""),
         memory_window: int = Form(default=20),
     ) -> HTMLResponse:
         import json as _json
 
-        def _to_json_list(raw: str) -> str | None:
-            parts = [s.strip() for s in raw.split(",") if s.strip()]
-            return _json.dumps(parts) if parts else None
+        import agent_hub.skills as _skills
+
+        # Skills come in as repeated checkbox fields; Form(list) hits a ruff
+        # B008 edge case, so read them straight off the parsed form.
+        form = await request.form()
+        all_skill_names = {d["function"]["name"] for d in _skills.get_definitions()}
+        selected = {str(s).strip() for s in form.getlist("server_skills") if str(s).strip()}
+        # "" tells update_persona to store NULL (= all enabled); a JSON list
+        # pins an explicit subset, and [] disables every skill.
+        skills_arg = "" if selected >= all_skill_names else _json.dumps(sorted(selected))
+
+        tool_parts = [s.strip() for s in mcp_tools_allowlist.split(",") if s.strip()]
+        # "" clears the allowlist back to the safe defaults; a JSON list pins it.
+        tools_arg = _json.dumps(tool_parts) if tool_parts else ""
 
         ok = await store.update_persona(
             name,
@@ -1049,8 +1122,8 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             tts_provider=tts_provider or None,
             tts_voice=tts_voice,
             asr_provider=asr_provider or None,
-            server_skills=_to_json_list(server_skills),
-            mcp_tools_allowlist=_to_json_list(mcp_tools_allowlist),
+            server_skills=skills_arg,
+            mcp_tools_allowlist=tools_arg,
             memory_window=max(1, memory_window),
         )
         if ok:

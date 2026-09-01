@@ -49,6 +49,7 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 <h1>Page Agent</h1>
 <div class="row"><a href="/dashboard/" style="color:#58a6ff">← Dashboard</a></div>
 <div id="status">initialising…</div>
+<div id="personaline" style="font-size:.8rem;color:#8b949e"></div>
 
 <h2>Camera (seeing)</h2>
 <div class="row"><button id="cam">Start camera</button><span id="camstate">off</span></div>
@@ -92,6 +93,9 @@ let token = "", respondUrl = "", eventUrl = "", hbUrl = "", hbInterval = 30;
 let volume = 1.0;
 let stream = null;
 let asking = false;
+// Persona to register with, injected from ?persona= by the server ("" = default).
+const PERSONA = %%PERSONA%%;
+if (PERSONA) document.getElementById("personaline").textContent = "persona: " + PERSONA;
 
 const TOOLS = [
   {name: "page.audio_speaker.speak", description: "Speak text aloud via SpeechSynthesis.",
@@ -113,7 +117,7 @@ async function register() {
   const resp = await fetch("/page-agent/register", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({device_id: deviceId, label: label, tools: TOOLS})
+    body: JSON.stringify({device_id: deviceId, label: label, tools: TOOLS, persona: PERSONA})
   });
   const data = await resp.json();
   if (!data.ok) { setStatus("register failed: " + JSON.stringify(data)); return; }
