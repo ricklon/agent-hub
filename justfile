@@ -33,6 +33,16 @@ test:
 smoke:
     uv run python scripts/smoke.py
 
+# Env: BENCH_ARCHS=tiny,base  BENCH_LIMIT=73  (see issue #43 for the numbers).
+# Benchmark Moonshine vs SenseVoice WER on LibriSpeech; needs network.
+bench-asr *args:
+    uv run --extra full --extra bench python scripts/bench_asr.py {{args}}
+
+# Override providers with PROVIDERS=moonshine,funasr_onnx.
+# Replay real device audio from server.debug_audio_dir through ASR providers side by side, with signal stats.
+compare-asr dir="data/asr-captures":
+    PROVIDERS="${PROVIDERS:-moonshine,funasr_onnx}" uv run --extra full python scripts/compare_asr_captures.py {{dir}}
+
 # Drive every feature end-to-end against a live device (server must be running)
 test-features:
     uv run python scripts/test_features.py

@@ -29,6 +29,13 @@ services:
       - AGENT_HUB_ASR_DEFAULT_PROVIDER=moonshine
       - AGENT_HUB_ASR_MOONSHINE_LANGUAGE=en
       - AGENT_HUB_ASR_MOONSHINE_MODEL_ARCH=tiny
+      # ASR accuracy diagnostics (issue #43). Uncomment to record the exact WAV
+      # each turn hands to ASR, plus what it returned, under data/asr-captures/
+      # on the mounted ./data volume. This captures everything said to a device,
+      # so enable it only for a debugging window, then pull the files
+      # (scp -r root@<droplet>:<path>/data/asr-captures .) and run
+      # `just compare-asr`. See docs/deployment.md "Debugging ASR accuracy".
+      # - AGENT_HUB_SERVER_DEBUG_AUDIO_DIR=/app/data/asr-captures
       # Edge TTS by default: KittenTTS is installed and its model is baked in,
       # but it needs ~4 vCPU to synthesize faster than real time. See
       # docs/deployment.md before flipping this to `kitten`.

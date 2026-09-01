@@ -55,6 +55,11 @@ server:
   # Shared secret for the image explain endpoint (sent to devices on check-in).
   # Leave empty to disable auth (fine for LAN-only deployments).
   image_token: ""
+  # Directory to capture ASR input audio into, for diagnosing field accuracy
+  # (issue #43): each turn writes the exact WAV handed to the provider plus what
+  # it returned, replayable with `just compare-asr`. It records everything said
+  # to a device — a privacy decision, not a debug flag. Empty disables it.
+  debug_audio_dir: ""
 
 llm:
   default_provider: openai

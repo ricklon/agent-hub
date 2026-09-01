@@ -143,6 +143,8 @@ All commands run from repo root via `just`. List with `just`.
 | `just test`                | `pytest -xvs`                                    |
 | `just test-watch`          | `pytest-watch`                                   |
 | `just smoke`               | `scripts/smoke.py` — quick server sanity check   |
+| `just bench-asr`           | Moonshine vs SenseVoice WER on LibriSpeech (needs net) |
+| `just compare-asr [dir]`   | Replay `debug_audio_dir` captures through ASR providers |
 | `just test-features`       | Drive every feature against a live device        |
 | `just run`                 | `uv run python -m agent_hub.server`              |
 | `just docker-build`        | `docker compose build`                           |
