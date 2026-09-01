@@ -1,8 +1,12 @@
-"""Skill: return the current date and time."""
+"""Skill: return the current date and time in the server's configured zone."""
 
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from agent_hub.config import load_settings
 from agent_hub.skills import SkillResult
 
 DEFINITION = {
@@ -22,5 +26,18 @@ DEFINITION = {
 }
 
 
+def _configured_tz() -> timezone | ZoneInfo:
+    """Server timezone: IANA name (DST-aware) if set, else the fixed offset."""
+    srv = load_settings().server
+    name = srv.timezone.strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    return timezone(timedelta(hours=srv.timezone_offset))
+
+
 def execute(args: dict[str, Any]) -> SkillResult:
-    return SkillResult.success(datetime.now().strftime("%A, %B %d, %Y — %I:%M %p"))
+    now = datetime.now(_configured_tz())
+    return SkillResult.success(now.strftime("%A, %B %d, %Y — %I:%M %p %Z").strip())
