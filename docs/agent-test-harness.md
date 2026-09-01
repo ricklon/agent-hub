@@ -1,11 +1,12 @@
 # Design note: a page-agent test harness for agents
 
-Status: **built and running in CI** (PRs #59–#61). `tests/harness/` has the
+Status: **built and running in CI** (PRs #59–#62). `tests/harness/` has the
 protocol client (`PageAgentClient`, `Turn`, `ToolCall`), the `ScriptedLLM` fake
 provider, `SkillSpy`, and the `discover_scenarios` / `run_scenario` YAML runner;
 `tests/scenarios/test_scenarios.py` parametrizes one test per scenario. Every
-PR runs the mock-LLM scenarios plus `tests/harness/test_page_agent_client.py`.
-Still proposed: wiring `live` scenarios into CI, Layer 2 browser fixtures, and
+PR runs the mock-LLM scenarios plus `tests/harness/test_page_agent_client.py`;
+`.github/workflows/nightly-live-scenarios.yml` runs the `llm: live` scenarios
+daily against the real model. Still proposed: Layer 2 browser fixtures and
 Layer 3 voice.
 
 ## The problem
@@ -178,11 +179,6 @@ right") is testable here; ASR quality is not.
 
 ## Open questions
 
-- **Wiring `live` scenarios into CI.** Mock scenarios run on every PR and cover
-  the plumbing; `live` scenarios (real model, no `respond` block) only run
-  locally with `AGENT_HUB_TEST_LIVE_LLM=1`. Open: run them on a label or
-  nightly against a cheap model — with a spend cap and retry-on-flake — or
-  keep them as a manual pre-release check.
 - **An endpoint trace mode vs. patching.** `SkillSpy` patches
   `agent_hub.skills.run_result` so scenarios can see and stub server-skill
   calls (page-tool calls already land in `Turn.tool_calls`). A trace/dry-run
@@ -209,11 +205,15 @@ Built (`tests/harness/`): `PageAgentClient`, `Turn`/`ToolCall`, `ScriptedLLM` +
 `tests/scenarios/test_scenarios.py` collector. Coverage: `test_page_agent_client.py`
 (client mechanics) and the example scenarios under `tests/scenarios/`
 (time-skill call, page fixture, no-tool chit-chat, multi-turn history, and a
-skipped `live` example).
+`live` example). `.github/workflows/nightly-live-scenarios.yml` runs the `live`
+scenarios daily against the real model (needs the `AGENT_HUB_LLM_OPENAI_API_KEY`
+repo secret; model/base URL default to the demo's OpenRouter setup and are
+overridable via `LIVE_SCENARIO_MODEL` / `LIVE_SCENARIO_BASE_URL` repo
+variables); it retries failures once and opens a tracking issue on a repeated
+failure.
 
-Still proposed: wiring a `live` run into CI (on a label or nightly), Layer 2
-browser fixtures, and Layer 3 voice (`voice()` + a WebSocket test-client
-pattern).
+Still proposed: Layer 2 browser fixtures and Layer 3 voice (`voice()` + a
+WebSocket test-client pattern).
 
 Prior art the client builds on: `tests/server/test_page_agent.py`,
 `test_page_agent_wake.py`, `test_mcp_bridge.py`, `test_streaming_turn.py`.
