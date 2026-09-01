@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" width="1200" height="760" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace">
+  <rect width="1200" height="760" fill="#0d1117"></rect>
+  <text x="48" y="60" font-size="22" font-weight="600" fill="#58a6ff">Voice turn pipeline</text>
+  <text x="48" y="88" font-size="13" fill="#8b949e" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">One WebSocket session per device. VAD segments speech; the LLM sees only text and tool results.</text>
+
+  <g transform="translate(48, 116)">
+    <defs>
+      <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#6e7681"></path>
+      </marker>
+    </defs>
+
+    <rect x="0" y="66" width="150" height="108" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="75" y="118" text-anchor="middle" font-size="15" fill="#c9d1d9">Device</text>
+    <text x="75" y="140" text-anchor="middle" font-size="10" fill="#6e7681">microphone</text>
+
+    <rect x="190" y="66" width="152" height="108" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="266" y="112" text-anchor="middle" font-size="14" fill="#c9d1d9">Silero VAD</text>
+    <text x="266" y="134" text-anchor="middle" font-size="10" fill="#6e7681">speech segmentation</text>
+
+    <rect x="382" y="66" width="152" height="108" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="458" y="106" text-anchor="middle" font-size="15" font-weight="600" fill="#58a6ff">ASR</text>
+    <text x="458" y="128" text-anchor="middle" font-size="10" fill="#6e7681">SenseVoice</text>
+    <text x="458" y="144" text-anchor="middle" font-size="10" fill="#6e7681">Moonshine on droplet</text>
+
+    <rect x="574" y="66" width="152" height="108" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="650" y="106" text-anchor="middle" font-size="15" font-weight="600" fill="#58a6ff">LLM</text>
+    <text x="650" y="128" text-anchor="middle" font-size="10" fill="#6e7681">OpenAI-compatible</text>
+    <text x="650" y="144" text-anchor="middle" font-size="10" fill="#6e7681">OpenRouter · gemma</text>
+
+    <rect x="766" y="66" width="152" height="108" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="842" y="106" text-anchor="middle" font-size="15" font-weight="600" fill="#58a6ff">TTS</text>
+    <text x="842" y="128" text-anchor="middle" font-size="10" fill="#6e7681">Edge TTS</text>
+    <text x="842" y="144" text-anchor="middle" font-size="10" fill="#6e7681">KittenTTS optional</text>
+
+    <rect x="954" y="66" width="150" height="108" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="1029" y="118" text-anchor="middle" font-size="15" fill="#c9d1d9">Device</text>
+    <text x="1029" y="140" text-anchor="middle" font-size="10" fill="#6e7681">speaker</text>
+
+    <line x1="150" y1="120" x2="188" y2="120" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah2)"></line>
+    <text x="169" y="56" text-anchor="middle" font-size="9" fill="#8b949e">Opus / WSS</text>
+
+    <line x1="342" y1="120" x2="380" y2="120" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah2)"></line>
+    <text x="361" y="56" text-anchor="middle" font-size="9" fill="#8b949e">16 kHz PCM</text>
+
+    <line x1="534" y1="120" x2="572" y2="120" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah2)"></line>
+    <text x="553" y="56" text-anchor="middle" font-size="9" fill="#8b949e">transcript</text>
+
+    <line x1="726" y1="120" x2="764" y2="120" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah2)"></line>
+    <text x="745" y="56" text-anchor="middle" font-size="9" fill="#8b949e">reply text</text>
+
+    <line x1="918" y1="120" x2="952" y2="120" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah2)"></line>
+    <text x="935" y="56" text-anchor="middle" font-size="9" fill="#8b949e">Opus / WSS</text>
+
+    <line x1="650" y1="174" x2="650" y2="292" stroke="#6e7681" stroke-width="1.5" marker-end="url(#ah2)" marker-start="url(#ah2)"></line>
+    <rect x="428" y="292" width="444" height="176" rx="6" fill="#161b22" stroke="#30363d"></rect>
+    <text x="452" y="324" font-size="13" fill="#c9d1d9">Tools — function calling</text>
+    <text x="452" y="356" font-size="11" fill="#58a6ff">server skills</text>
+    <text x="452" y="376" font-size="10" fill="#6e7681">get_current_time · get_weather · web_search</text>
+    <text x="452" y="406" font-size="11" fill="#58a6ff">device MCP</text>
+    <text x="452" y="426" font-size="10" fill="#6e7681">set_volume · set_brightness · take_photo …</text>
+    <text x="452" y="454" font-size="10" fill="#6e7681" font-style="italic">the persona decides which tools are allowed</text>
+  </g>
+
+  <text x="48" y="672" font-size="12" fill="#8b949e" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">The device streams Opus audio; the server decodes, runs VAD, then ASR → LLM → TTS and streams Opus back.</text>
+  <text x="48" y="694" font-size="12" fill="#8b949e" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">Per-turn latency for ASR, LLM and TTS is measured independently and shown on the dashboard.</text>
+</svg>

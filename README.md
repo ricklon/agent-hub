@@ -344,6 +344,7 @@ TBD.
 
 - [`docs/demo-quickstart.md`](docs/demo-quickstart.md) — pre-event checklist + fast setup for demos and study groups
 - [`docs/concepts.md`](docs/concepts.md) — plain-English explanation of how everything works
+- [`docs/architecture.md`](docs/architecture.md) — deployment topology, voice turn pipeline, and agent lifecycle diagrams
 - [`docs/device-setup.md`](docs/device-setup.md) — how to configure an ESP32 device to connect
 - [`docs/deployment.md`](docs/deployment.md) — secure LAN, Tailscale, and HTTPS proxy deployment guidance
 - [`docs/lessons-learned.md`](docs/lessons-learned.md) — non-obvious bugs, root causes, and fixes
