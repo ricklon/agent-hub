@@ -414,6 +414,22 @@ function voiceLog(msg, color) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+// Linear-interpolation downsample of a Float32 mono buffer to 16 kHz. Good
+// enough for VAD + ASR; a proper anti-alias filter is not worth it here.
+function downsampleTo16k(buf, inRate) {
+  const ratio = inRate / 16000;
+  const outLen = Math.max(1, Math.floor(buf.length / ratio));
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * ratio;
+    const lo = Math.floor(pos);
+    const hi = Math.min(lo + 1, buf.length - 1);
+    const frac = pos - lo;
+    out[i] = buf[lo] * (1 - frac) + buf[hi] * frac;
+  }
+  return out;
+}
+
 async function startListening() {
   if (listening) return;
   // The mic permission prompt and WS handshake take a moment; without this the
@@ -428,34 +444,56 @@ async function startListening() {
   voiceWs.onopen = async () => {
     if (wakeWord) voiceWs.send(JSON.stringify({type: "wake_word", word: wakeWord}));
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({audio: {sampleRate: 16000, channelCount: 1}});
+      // Ask for the mic with the browser's own cleanup on. autoGainControl in
+      // particular is what makes a laptop mic loud enough for the wake word.
+      // Do NOT constrain sampleRate here — it is advisory, browsers ignore it,
+      // and asking can trigger OverconstrainedError on some devices.
+      micStream = await navigator.mediaDevices.getUserMedia({audio: {
+        channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true
+      }});
     } catch (e) {
       voiceLog("mic denied: " + e, "#f85149");
       stopListening();
       return;
     }
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+    // The server pipeline (Silero VAD + ASR) assumes 16 kHz mono. Browsers do
+    // NOT reliably honour new AudioContext({sampleRate: 16000}) — Firefox
+    // throws, some Chrome builds silently stay at 48 kHz — so capture at the
+    // native rate and downsample in JS. Sending 48 kHz PCM labelled 16 kHz is
+    // exactly what made the wake word "not hear anything".
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) {
+      voiceLog("audio init failed: " + e, "#f85149");
+      stopListening();
+      return;
+    }
+    const inRate = audioCtx.sampleRate;
+    voiceLog("capturing at " + inRate + " Hz → 16000 Hz", "#8b949e");
     micSource = audioCtx.createMediaStreamSource(micStream);
     processor = audioCtx.createScriptProcessor(4096, 1, 1);
     processor.onaudioprocess = (e) => {
       if (!listening || !voiceWs || voiceWs.readyState !== 1) return;
-      const input = e.inputBuffer.getChannelData(0);
-      const pcm = new Int16Array(input.length);
+      let input = e.inputBuffer.getChannelData(0);
       let sumSq = 0, peak = 0;
       for (let i = 0; i < input.length; i++) {
         const v = input[i];
         sumSq += v * v;
         const a = v < 0 ? -v : v;
         if (a > peak) peak = a;
-        let s = v * 32768;
-        s = Math.max(-32768, Math.min(32767, s));
-        pcm[i] = s;
       }
       // RMS is quiet for speech, so scale it into a usable range rather than
       // showing a bar that never leaves the left edge.
       const level = Math.min(1, Math.sqrt(sumSq / input.length) * 5);
       if (level > micLevel) micLevel = level;   // fast attack, rAF handles decay
       if (peak > micPeak) micPeak = peak;
+      if (inRate !== 16000) input = downsampleTo16k(input, inRate);
+      const pcm = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        let s = input[i] * 32768;
+        s = Math.max(-32768, Math.min(32767, s));
+        pcm[i] = s;
+      }
       voiceWs.send(pcm.buffer);
     };
     micSource.connect(processor);
