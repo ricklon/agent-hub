@@ -279,25 +279,48 @@ torch-free local image possible; see the benchmark below for why we don't.
 
 Field accuracy is worse than the benchmark below, and transcripts alone cannot
 tell you whether the model is weak or the audio was already degraded before it
-reached the model. Setting `server.debug_audio_dir` captures the exact WAV each
-provider received, plus what it returned:
+reached the model. Answer that with real captures before deciding whether a
+larger droplet (option 1) is worth it or the fix is at capture (option 3).
+
+**1. Turn on capture for a debugging window.** On the droplet, uncomment the
+`AGENT_HUB_SERVER_DEBUG_AUDIO_DIR` line in `docker-compose.do.yml` and
+redeploy (`just public-up`). Locally, set it in `data/.config.yaml` or the
+environment:
 
 ```sh
 AGENT_HUB_SERVER_DEBUG_AUDIO_DIR=data/asr-captures
 ```
 
-Then replay real utterances through providers side by side:
+Each turn then writes a `.wav` (exactly what the provider received) and a
+`.json` (what it returned, provider, latency) into that directory.
+
+**2. Speak to a device** — a few dozen real utterances, ideally the wake-word
+commands that misfire ("computer, what's the time?"), from the distance and
+room the demo will use.
+
+**3. Pull the captures** off the droplet and comment the line back out:
 
 ```sh
-PROVIDERS=moonshine,funasr_onnx uv run --extra full python \
-    scripts/compare_asr_captures.py data/asr-captures
+scp -r root@<droplet>:/opt/agent-hub/data/asr-captures ./data/
+```
+
+**4. Compare providers on that audio:**
+
+```sh
+just compare-asr                       # data/asr-captures, moonshine + funasr_onnx
+PROVIDERS=moonshine just compare-asr /path/to/captures
 ```
 
 It prints per-clip signal statistics next to each provider's transcript.
 `peak` near 1.0 with `clipped%` above ~0.1 means the input gain is too high;
-`rms` below ~0.01 means too quiet or too far from the microphone. Either points
-at capture rather than the model — worth ruling out before paying for a larger
-droplet.
+`rms` below ~0.01 means too quiet or too far from the microphone; a `duration`
+far longer than the words means VAD is padding silence around speech. Any of
+those points at capture rather than the model. If the signal is clean and
+SenseVoice still reads clearly better than Moonshine on these clips, that is
+the case for option 1.
+
+For the clean-speech reference numbers, `just bench-asr` runs the LibriSpeech
+benchmark (needs network; `BENCH_ARCHS` and `BENCH_LIMIT` tune it).
 
 **Capture is off by default and should stay off.** It records everything said
 to a device, so it is a privacy decision rather than a debug flag.

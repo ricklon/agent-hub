@@ -55,6 +55,13 @@ full = [
     "torchaudio>=2.2",
 ]
 
+# Only scripts/bench_asr.py needs this — it reads the LibriSpeech parquet.
+# Kept out of `dev` so CI and everyday installs stay lean; run the benchmark
+# with `just bench-asr` (which adds `--extra full --extra bench`).
+bench = [
+    "pyarrow>=17",
+]
+
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
