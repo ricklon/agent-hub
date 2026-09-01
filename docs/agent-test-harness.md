@@ -1,9 +1,10 @@
 # Design note: a page-agent test harness for agents
 
 Status: **Layer 1 built** — `tests/harness/` has the protocol client
-(`PageAgentClient`, `Turn`, `ToolCall`) and a `ScriptedLLM` fake provider, with
-`tests/harness/test_page_agent_client.py` as worked examples. The scenario file
-format, Layer 2 browser fixtures, and Layer 3 voice remain proposals.
+(`PageAgentClient`, `Turn`, `ToolCall`), a `ScriptedLLM` fake provider, a
+`SkillSpy`, and the YAML **scenario format + runner** with a parametrized
+collector (`tests/scenarios/`). Layer 2 browser fixtures and Layer 3 voice
+remain proposals.
 
 ## The problem
 
@@ -108,25 +109,44 @@ browser against a static fixture page — same idea, slower, for nightly runs.
 ASR transcript and the reply. Optionally Playwright-driven through the real
 page for full-stack fidelity.
 
-### Scenario file format
+### Scenario file format — `tests/scenarios/*.yaml`
+
+Built. A file is one scenario (a mapping) or a list of them.
+`tests/scenarios/test_scenarios.py` parametrizes one async test over every
+discovered scenario — a normal test, so the `store` and `monkeypatch` fixtures
+work with no custom-collector machinery. Node id is the scenario `name`.
 
 ```yaml
-name: time-query-calls-the-tool
-persona: hub-default
-llm: mock            # or: cheap
-page_tools: []       # page-side MCP tools this fixture exposes
-tool_results:        # canned results for page tools / skills
-  get_current_time: { time: "2026-09-01T15:04:00-04:00" }
+name: reads-the-screen-fixture
+llm: mock                    # mock (default) | live
+system_prompt: "..."         # optional; overrides hub-default's prompt
+page_tools:
+  - name: get_screen
+    description: Return the visible text on screen
+    result: "ALERT: disk usage 92%"     # str or mapping — the canned result
+skill_results:               # optional; stub these server skills with fixed text
+  get_current_time: "It is 3:04 PM."
 turns:
-  - say: "what time is it?"
-    expect_tool_calls:
-      - name: get_current_time
-    expect_reply: /3:04|15:04/
-    expect_no_fabricated_time: true
+  - say: "what does the alert say?"
+    respond:                 # mock only — what the fake LLM does this turn
+      calls:
+        - { name: get_screen, args: { region: main } }   # or a bare "name"
+      reply: "Disk usage is at 92%."
+    expect:
+      called: [get_screen]              # page tools and/or server skills
+      not_called: [reboot]
+      args: { get_screen: { region: main } }
+      reply_contains: "92%"
+      reply_matches: "92\\s?%"          # re.search
+      images: 0
 ```
 
-Scenario files live in `tests/scenarios/*.yaml`; a pytest collector turns each
-into a test case.
+`mock` uses `ScriptedLLM` re-installed per turn from `respond`. `live` drops the
+fake, uses the real configured model (no `respond` block), and is skipped
+unless `AGENT_HUB_TEST_LIVE_LLM=1` and `llm.openai.api_key` is set.
+`expect.called` unifies page-tool calls (from `Turn.tool_calls`) and server-skill
+calls (from `SkillSpy`). Unknown keys anywhere raise `ScenarioError` rather than
+passing silently.
 
 ## What this does not cover
 
@@ -161,11 +181,11 @@ right") is testable here; ASR quality is not.
   Likely both, on different triggers (mock on every PR, real on a label or
   nightly).
 - **Structured tool-call trace from `/page-agent/ask`.** Page-tool calls are
-  observable on the SSE stream (and land in `Turn.tool_calls`), but server
-  skills run in process and are invisible — `test_page_agent_client.py`'s
-  `test_server_skills_run_but_are_not_recorded_as_tool_calls` pins this
-  behaviour. Either add a trace/dry-run mode to the endpoint (ties into the
-  broader per-turn trace idea) or add a skill-execution spy for tests.
+  observable on the SSE stream (and land in `Turn.tool_calls`); server skills
+  run in process and are invisible there, so the harness patches
+  `agent_hub.skills.run_result` with `SkillSpy` to see and stub them. A
+  trace/dry-run mode on the endpoint (tied to the broader per-turn trace idea)
+  would remove the need to patch.
 - **Scenario state.** `/page-agent/ask` persists history via
   `store.append_history`, so multi-turn scenarios are stateful; single-turn
   scenarios should use a fresh `device_id` and store per case.
@@ -173,13 +193,16 @@ right") is testable here; ASR quality is not.
 ## What's built vs. proposed
 
 Built (`tests/harness/`): `PageAgentClient`, `Turn`/`ToolCall`, `ScriptedLLM` +
-`install_scripted_llm`, and `test_page_agent_client.py` covering register, a
-no-tool turn, page-tool routing, async handlers, a raising handler → tool
-error, the skill-invisibility behaviour, and multi-turn history.
+`install_scripted_llm`, `SkillSpy` + `install_skill_spy`, and the
+`discover_scenarios` / `run_scenario` YAML runner with the
+`tests/scenarios/test_scenarios.py` collector. Coverage: `test_page_agent_client.py`
+(client mechanics) and the example scenarios under `tests/scenarios/`
+(time-skill call, page fixture, no-tool chit-chat, multi-turn history, and a
+skipped `live` example).
 
-Still proposed: the declarative scenario file format + pytest collector, a
-cheap-real-LLM mode wired into CI, Layer 2 browser fixtures, and Layer 3 voice
-(`voice()` + a WebSocket test-client pattern).
+Still proposed: wiring a `live` run into CI (on a label or nightly), Layer 2
+browser fixtures, and Layer 3 voice (`voice()` + a WebSocket test-client
+pattern).
 
 Prior art the client builds on: `tests/server/test_page_agent.py`,
 `test_page_agent_wake.py`, `test_mcp_bridge.py`, `test_streaming_turn.py`.

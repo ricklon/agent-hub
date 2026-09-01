@@ -1,0 +1,22 @@
+# "The page is the fixture": a page tool returns a known string and the agent
+# must answer from it. Exercises page-tool routing through the MCP bridge plus
+# an exact-args assertion.
+name: reads-the-screen-fixture
+llm: mock
+page_tools:
+  - name: get_screen
+    description: Return the visible text on screen
+    result: "ALERT: disk usage 92%"
+turns:
+  - say: "what does the alert on screen say?"
+    respond:
+      calls:
+        - name: get_screen
+          args: { region: main }
+      reply: "The alert says disk usage is at 92%."
+    expect:
+      called: [get_screen]
+      args:
+        get_screen: { region: main }
+      reply_matches: "92\\s?%"
+      images: 0

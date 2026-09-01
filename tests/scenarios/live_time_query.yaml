@@ -1,0 +1,9 @@
+# A "live" scenario: the real configured model decides whether to call the
+# tool. Skipped unless AGENT_HUB_TEST_LIVE_LLM=1 and llm.openai.api_key is set,
+# so it does not run in CI. There is no `respond:` block — the model drives.
+name: live-model-calls-the-time-tool
+llm: live
+turns:
+  - say: "use your tools to tell me the current time"
+    expect:
+      called: [get_current_time]

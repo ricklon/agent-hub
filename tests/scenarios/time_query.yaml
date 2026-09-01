@@ -1,0 +1,15 @@
+# A time question must run the get_current_time skill, not answer from memory.
+# (This is the shape of closed issue #8.) The skill result is stubbed so the
+# assertion does not depend on the real clock.
+name: time-query-runs-the-time-skill
+llm: mock
+skill_results:
+  get_current_time: "It is 3:04 PM on Tuesday."
+turns:
+  - say: "what time is it?"
+    respond:
+      calls: [get_current_time]
+      reply: "It is 3:04 PM on Tuesday."
+    expect:
+      called: [get_current_time]
+      reply_contains: "3:04"
