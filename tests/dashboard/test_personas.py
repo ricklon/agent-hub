@@ -138,3 +138,60 @@ async def test_save_clears_the_device_tool_allowlist_back_to_defaults(store: Reg
     persona = await store.get_persona_by_name("hub-default")
     assert persona is not None
     assert persona.mcp_tools_allowlist_list is None
+
+
+async def test_edit_page_shows_linked_agents_section(store: RegistryStore) -> None:
+    from agent_hub.server import mcp_bridge
+
+    mcp_bridge.register_page_agent(
+        "robot-arm-1",
+        "tok",
+        [
+            {"name": "get_pose", "description": "pose", "inputSchema": {}},
+        ],
+    )
+    mcp_bridge.get_page_agent("robot-arm-1").connected = True
+    try:
+        async with await _client(store) as c:
+            resp = await c.get("/dashboard/personas/hub-default")
+    finally:
+        mcp_bridge.unregister_page_agent("robot-arm-1")
+    assert resp.status_code == 200
+    assert "Linked agents" in resp.text
+    assert 'name="linked_agents" value="robot-arm-1"' in resp.text
+
+
+async def test_save_persists_selected_linked_agents(store: RegistryStore) -> None:
+    async with await _client(store) as c:
+        await c.post(
+            "/dashboard/personas/hub-default",
+            data={
+                "system_prompt": "hi",
+                "tts_provider": "edge",
+                "asr_provider": "funasr_onnx",
+                "memory_window": "20",
+                "server_skills": [d["function"]["name"] for d in skills.get_definitions()],
+                "linked_agents": ["robot-arm-1", "page-xyz"],
+            },
+        )
+    persona = await store.get_persona_by_name("hub-default")
+    assert persona is not None
+    assert persona.linked_agents_list == ["page-xyz", "robot-arm-1"]
+
+
+async def test_save_with_no_linked_agents_clears_them(store: RegistryStore) -> None:
+    await store.update_persona("hub-default", linked_agents='["robot-arm-1"]')
+    async with await _client(store) as c:
+        await c.post(
+            "/dashboard/personas/hub-default",
+            data={
+                "system_prompt": "hi",
+                "tts_provider": "edge",
+                "asr_provider": "funasr_onnx",
+                "memory_window": "20",
+                "server_skills": [d["function"]["name"] for d in skills.get_definitions()],
+            },
+        )
+    persona = await store.get_persona_by_name("hub-default")
+    assert persona is not None
+    assert persona.linked_agents_list == []

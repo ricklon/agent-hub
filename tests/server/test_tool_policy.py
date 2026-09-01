@@ -90,3 +90,20 @@ class TestIsToolAllowed:
         for allowlist in (None, [], ["self_camera_take_photo", "self_system_reboot"]):
             build = name in tool_policy.allowed_device_tools(SAFE + RISKY, allowlist)
             assert tool_policy.is_tool_allowed(name, allowlist) is build
+
+
+class TestAnnotationAwareRisk:
+    def test_read_only_hint_makes_a_reboot_safe(self):
+        assert tool_policy.is_risky_tool("robot_system_reboot") is True
+        assert tool_policy.is_risky_tool("robot_system_reboot", {"readOnlyHint": True}) is False
+
+    def test_destructive_hint_true_marks_a_plain_name_risky(self):
+        assert tool_policy.is_risky_tool("grip") is False
+        assert tool_policy.is_risky_tool("grip", {"destructiveHint": True}) is True
+
+    def test_destructive_hint_false_overrides_a_risky_keyword(self):
+        assert tool_policy.is_risky_tool("wifi_status", {"destructiveHint": False}) is False
+
+    def test_empty_annotations_fall_back_to_keywords(self):
+        assert tool_policy.is_risky_tool("firmware_update", {}) is True
+        assert tool_policy.is_risky_tool("get_pose", {}) is False
