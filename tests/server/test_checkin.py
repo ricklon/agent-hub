@@ -198,3 +198,60 @@ class TestCheckinOptions:
         resp = await client.options("/xiaozhi/ota/")
         assert resp.status_code == 200
         assert "access-control-allow-origin" in resp.headers
+
+
+class TestCheckinClientIP:
+    """ip_address recording behind a reverse proxy (issue #44)."""
+
+    @staticmethod
+    async def _checkin(store, settings, *, peer, device_id, headers=None):
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from agent_hub.server.checkin import make_router
+
+        app = FastAPI()
+        app.include_router(make_router(store, settings))
+        transport = ASGITransport(app=app, client=(peer, 44444))
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            await c.post(
+                "/checkin/",
+                headers={"device-id": device_id, "client-id": "c", **(headers or {})},
+                json={},
+            )
+        return await store.get_agent(device_id)
+
+    async def test_without_trusted_proxies_records_socket_peer(self, store):
+        agent = await self._checkin(
+            store,
+            Settings(),
+            peer="172.18.0.4",
+            device_id="AA:BB:CC:DD:EE:01",
+            headers={"x-forwarded-for": "203.0.113.7"},
+        )
+        assert agent is not None
+        assert agent.ip_address == "172.18.0.4"
+
+    async def test_trusted_proxy_records_forwarded_client_ip(self, store):
+        settings = Settings(server=ServerConfig(trusted_proxies="172.16.0.0/12"))
+        agent = await self._checkin(
+            store,
+            settings,
+            peer="172.18.0.4",
+            device_id="AA:BB:CC:DD:EE:02",
+            headers={"x-forwarded-for": "203.0.113.7"},
+        )
+        assert agent is not None
+        assert agent.ip_address == "203.0.113.7"
+
+    async def test_untrusted_peer_cannot_spoof_via_header(self, store):
+        settings = Settings(server=ServerConfig(trusted_proxies="172.16.0.0/12"))
+        agent = await self._checkin(
+            store,
+            settings,
+            peer="192.168.1.50",
+            device_id="AA:BB:CC:DD:EE:03",
+            headers={"x-forwarded-for": "203.0.113.7"},
+        )
+        assert agent is not None
+        assert agent.ip_address == "192.168.1.50"

@@ -245,6 +245,7 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT` | `data/images` | Directory the dashboard may serve captured images from |
 | `AGENT_HUB_SERVER_DASHBOARD_ALLOWED_ORIGINS` | — | Extra origins allowed to submit dashboard forms, comma-separated; only needed behind a Host-rewriting proxy |
 | `AGENT_HUB_SERVER_ALLOWED_HOSTS` | — | Host allowlist for the dashboard, comma-separated; blocks DNS-rebinding. List every name/IP the dashboard is reached by |
+| `AGENT_HUB_SERVER_TRUSTED_PROXIES` | — | Reverse-proxy IPs/CIDRs in front of the device endpoints; when the peer matches, check-in reads the device IP from `X-Forwarded-For`. Empty ignores the header |
 | `AGENT_HUB_SERVER_IMAGE_TOKEN` | — | Bearer token devices must send to the image upload/explain endpoint |
 
 See `.env.example` for the full list with comments.

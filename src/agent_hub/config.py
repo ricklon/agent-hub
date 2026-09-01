@@ -42,6 +42,10 @@ class ServerConfig:
     dashboard_image_root: str = "data/images"
     dashboard_allowed_origins: str = ""
     allowed_hosts: str = ""
+    # Comma-separated IPs/CIDRs of reverse proxies in front of the device
+    # endpoints. When a request's socket peer matches, X-Forwarded-For is
+    # trusted for the client IP; empty (LAN-first) always uses the socket peer.
+    trusted_proxies: str = ""
     image_token: str = ""
     # Directory to capture ASR input audio into. Empty disables capture; it
     # records everything said to a device, so it is off by default.
@@ -141,6 +145,7 @@ class Settings:
                 dashboard_image_root=str(srv.get("dashboard_image_root", "data/images")),
                 dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),
                 allowed_hosts=str(srv.get("allowed_hosts", "")),
+                trusted_proxies=str(srv.get("trusted_proxies", "")),
                 image_token=str(srv.get("image_token", "")),
                 debug_audio_dir=str(srv.get("debug_audio_dir", "")),
                 heartbeat_interval_seconds=int(srv.get("heartbeat_interval_seconds", 60)),

@@ -37,6 +37,13 @@ server:
   # the dashboard is reached by. Enforced on the dashboard port only — devices
   # connect by bare IP and would be rejected on theirs.
   allowed_hosts: ""
+  # Reverse proxies in front of the device endpoints, comma-separated IPs or
+  # CIDRs. When a check-in's socket peer matches, the client IP is read from
+  # X-Forwarded-For instead of the (proxy) peer address, so the dashboard shows
+  # each device's real address. Leave empty on LAN-first deployments with no
+  # proxy — the header is then ignored and cannot be spoofed. For the Caddy
+  # overlay, the compose network range, e.g. "172.16.0.0/12".
+  trusted_proxies: ""
   # Override the WebSocket URL sent to devices on check-in.
   # Leave empty to auto-detect from the server's LAN IP.
   websocket: ""
