@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -139,9 +140,25 @@ async def _complete_transcript_photo(
     except Exception as exc:
         logger.bind(tag=_TAG).error(f"Transcript photo caption failed: {exc}")
         caption = ""
+    session_id = _session_state.current_transcription_session(device_id)
     entry = f"[image:{path}] {caption}".rstrip()
-    await store.append_history(device_id, "image", entry)
+    await store.append_history(device_id, "image", entry, session_id=session_id)
     logger.bind(tag=_TAG).info(f"Captioned transcript photo for {device_id!r}: {caption[:120]!r}")
+
+    # Push the caption to the device over its voice WS, if connected. The
+    # firmware renders it as a "📷 …" line; unknown types are ignored, and a
+    # missing socket just means the caption lives only in the transcript.
+    if caption:
+        send_json = _session_state.get_send_json(device_id)
+        if send_json is not None:
+            with suppress(Exception):
+                await send_json(
+                    {
+                        "type": "image_caption",
+                        "text": caption[:200],
+                        "session_id": session_id or "",
+                    }
+                )
 
 
 def make_router(config: dict[str, Any], store: RegistryStore) -> APIRouter:

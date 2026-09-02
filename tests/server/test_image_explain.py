@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import FastAPI
@@ -122,6 +123,58 @@ async def test_transcript_photo_is_captioned_and_appended(
     assert history[0]["role"] == "image"
     assert history[0]["content"].startswith("[image:data/images/aa-bb/")
     assert history[0]["content"].endswith(" Two people at a workbench with a soldering iron.")
+
+
+async def test_transcript_photo_tags_the_current_session_and_pushes_a_caption_frame(
+    monkeypatch,
+    tmp_path,
+    store,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    await store.get_or_create_agent("aa:bb")
+    session_state.end_transcription_session("aa:bb")
+    sid = session_state.start_transcription_session("aa:bb")
+
+    frames: list[dict] = []
+
+    async def _send(payload: dict) -> None:
+        frames.append(payload)
+
+    session_state.register_session("aa:bb", speak=lambda _t: None, send_json=_send)
+
+    async def fake_describe(config, jpeg_bytes, question) -> str:
+        return "A whiteboard of architecture boxes."
+
+    monkeypatch.setattr(image_explain, "_describe_image", fake_describe)
+
+    app = FastAPI()
+    app.include_router(image_explain.make_router({}, store))
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post(
+                "/xiaozhi/v1/image/?device_id=aa:bb&purpose=transcript",
+                content=b"jpeg-data",
+                headers={"content-type": "image/jpeg"},
+            )
+        history = await _wait_history(store, "aa:bb")
+        assert history[0]["content"].endswith(" A whiteboard of architecture boxes.")
+
+        session_turns = await store.load_session("aa:bb", sid)
+        assert len(session_turns) == 1  # the photo landed in the active session
+
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while not frames and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.02)
+        assert frames == [
+            {
+                "type": "image_caption",
+                "text": "A whiteboard of architecture boxes.",
+                "session_id": sid,
+            }
+        ]
+    finally:
+        session_state.unregister_session("aa:bb")
+        session_state.end_transcription_session("aa:bb")
 
 
 async def test_transcript_photo_still_lands_when_vision_fails(

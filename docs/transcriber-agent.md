@@ -2,11 +2,44 @@
 
 Status: **hub side complete**. PR 1 added the persona flag, the dispatch
 wiring, the seeded `transcriber` persona, and the persona-editor control.
-PR 2 (this change) added photo captioning for `purpose=transcript` uploads,
-the check-in `mode` field, the agent-detail relabel + Speak-box hide, and a
-plain-text transcript download. The firmware side (a physical button,
-continuous streaming, a recording indicator, periodic photos) is tracked in
-the `xiaozhi-esp32` repo — see "Firmware contract" below.
+PR 2 added photo captioning for `purpose=transcript` uploads, the check-in
+`mode` field, the agent-detail relabel + Speak-box hide, and a plain-text
+transcript download. PR 3 (this change) added **transcription sessions**:
+each start→stop is its own session, the dashboard shows the whole current
+session (no 60-row cap), the `.txt` download takes `?session=`, and a
+captioned photo is pushed to the device as an `image_caption` WS frame.
+The firmware side (a physical button, continuous streaming, a recording
+indicator, periodic photos) is tracked in the `xiaozhi-esp32` repo — see
+"Firmware contract" below.
+
+## Transcription sessions (PR 3)
+
+A transcription session is the unit of "complete memory" — everything a
+transcriber device captures between one `listen` `start` and the matching
+`stop` (the physical button). It **survives a WS reconnect** (the socket is
+not the boundary) and ends only on an explicit stop.
+
+- `ConversationTurn.session_id` (nullable, migrated) tags transcription
+  turns; assistant turns leave it NULL. Ids are sortable:
+  `20260902T031500Z-a1b2`.
+- `session_state` holds the active session per device in memory
+  (`start`/`current`/`ensure`/`end_transcription_session`). `ws_session`
+  starts one on `listen` `start` (or lazily on the first segment) and ends
+  it on `listen` `stop`; a plain disconnect leaves it open so a reconnect
+  resumes it.
+- `store.load_session(device_id, session_id=None)` returns the **complete**
+  session, never capped — the dashboard history panel uses it for a
+  transcriber device and shows a `Session <id> · N lines` caption.
+  `list_sessions` / `latest_session_id` support a future session browser;
+  only the current session matters operationally for now. Past sessions are
+  never deleted (only `just reset-data` / the Clear button wipe history).
+- The `.txt` download defaults to the current session; `?session=<id>`
+  pins one, `?session=all` exports the whole history.
+- When a transcript photo is captioned, the hub also sends
+  `{"type":"image_caption","text":"<caption>","session_id":"<current
+  session>"}` on the voice WS (fire-and-forget; skipped if no socket). The
+  LLM-assistant path is unaffected — `memory_window` still bounds its
+  context.
 
 ## The goal
 

@@ -422,7 +422,21 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             parts.append(html.escape(without_internal[last:]))
             return "".join(parts)
 
-        turns = await store.load_history(device_id, limit=60)
+        persona = await store.get_persona_for_device(device_id)
+        is_transcriber = bool(persona and persona.transcription)
+        if is_transcriber:
+            # A transcription session is the unit of "complete memory" — show the
+            # whole current session, never a tail.
+            session_id = await store.latest_session_id(device_id)
+            turns = await store.load_session(device_id, session_id)
+            caption = (
+                f"Session {html.escape(session_id)} · {len(turns)} lines"
+                if session_id
+                else "No session yet"
+            )
+        else:
+            turns = await store.load_history(device_id, limit=60)
+            caption = f"{len(turns)} messages"
         if not turns:
             return HTMLResponse('<p style="color:#6e7681">No history yet.</p>')
         rows = "".join(
@@ -439,18 +453,32 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             f'<table style="width:100%"><thead><tr>'
             f"<th>time</th><th>role</th><th>content</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>"
-            f'<p style="color:#8b949e;font-size:0.8rem">{len(turns)} messages</p>'
+            f'<p style="color:#8b949e;font-size:0.8rem">{caption}</p>'
         )
 
     @router.get("/dashboard/agents/{device_id}/transcript.txt")
-    async def agent_transcript_download(device_id: str) -> Response:
+    async def agent_transcript_download(device_id: str, session: str = "") -> Response:
         agent = await store.get_agent(device_id)
         if agent is None:
             return Response(status_code=404)
-        turns = await store.export_history(device_id)
+        # ?session=<id> exports one transcription session; ?session=all the whole
+        # history; default is the current (latest) session, or all history for a
+        # device that has never run a transcription session.
+        if session == "all":
+            turns = await store.export_history(device_id)
+            scope = "all history"
+        else:
+            session_id = session or await store.latest_session_id(device_id)
+            if session_id:
+                turns = await store.export_history(device_id, session_id=session_id)
+                scope = f"session {session_id}"
+            else:
+                turns = await store.export_history(device_id)
+                scope = "all history"
         header = (
             f"Transcript — {agent.label or device_id}\n"
             f"Device {device_id}\n"
+            f"Scope: {scope}\n"
             f"Exported {fmt_ts(datetime.now(UTC), display_tz, '%Y-%m-%d %H:%M:%S %Z')}\n"
             f"{'=' * 48}\n\n"
         )

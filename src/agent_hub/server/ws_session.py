@@ -781,7 +781,8 @@ async def _run_transcription_turn(
             }
         )
     )
-    await store.append_history(device_id, "transcript", transcript)
+    session_id_tag = session_state.ensure_transcription_session(device_id) if device_id else None
+    await store.append_history(device_id, "transcript", transcript, session_id=session_id_tag)
     if device_id:
         session_state.record_turn(device_id, asr_ms, 0, 0)
 
@@ -1171,6 +1172,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     if ctrl_type == "listen":
                         if ctrl.get("state") == "start":
                             session_state.set_pipeline_status(device_id, "listening")
+                            if transcription_mode:
+                                # A fresh start after a clean stop begins a new
+                                # session; a reconnect mid-session resumes the
+                                # existing one.
+                                session_state.ensure_transcription_session(device_id)
                         elif ctrl.get("state") == "stop":
                             frames = vad.take()
                             if active_pipeline and not active_pipeline.done():
@@ -1181,6 +1187,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                                 session_state.set_pipeline_status(device_id, "idle")
                             if transcription_mode:
                                 session_state.set_pipeline_status(device_id, "idle")
+                                session_state.end_transcription_session(device_id)
                                 await websocket.send_text(
                                     json.dumps(
                                         {
