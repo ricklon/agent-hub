@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from dotenv import load_dotenv
@@ -192,3 +194,36 @@ def load_settings(path: Path | None = None) -> Settings:
         Settings instance.
     """
     return Settings.from_dict(load_config(path))
+
+
+def resolve_timezone(name: str = "", offset_hours: int = 0) -> tzinfo:
+    """The server's display timezone.
+
+    An IANA name (``America/New_York``) is preferred — it handles DST. An
+    unknown or blank name falls back to the fixed ``offset_hours``.
+    """
+    name = (name or "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    return timezone(timedelta(hours=offset_hours))
+
+
+def configured_timezone() -> tzinfo:
+    """``resolve_timezone`` for the current settings (config + env)."""
+    srv = load_settings().server
+    return resolve_timezone(srv.timezone, srv.timezone_offset)
+
+
+def to_local(dt: datetime, tz: tzinfo | None = None) -> datetime:
+    """Convert a stored datetime to the display timezone.
+
+    Datetimes persisted via SQLAlchemy ``func.now()`` come back naive and are
+    UTC; a naive input is therefore assumed UTC. ``tz`` defaults to
+    :func:`configured_timezone`.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(tz or configured_timezone())

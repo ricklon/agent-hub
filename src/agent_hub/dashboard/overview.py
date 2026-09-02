@@ -6,6 +6,7 @@ import html
 from collections import Counter
 from urllib.parse import quote
 
+from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.registry.models import Agent, Persona
 from agent_hub.server import session_state
 
@@ -91,7 +92,7 @@ def _attention_row(agent: Agent, health: session_state.DeviceHealth) -> str:
     if health == "degraded":
         detail = html.escape(agent.health_fault or "Device reported a fault")
     else:
-        last_seen = agent.last_seen.strftime("%Y-%m-%d %H:%M") if agent.last_seen else "never"
+        last_seen = fmt_ts(agent.last_seen) if agent.last_seen else "never"
         detail = f"No recent heartbeat · last seen {last_seen}"
     return f"""\
 <div class="attention-item">

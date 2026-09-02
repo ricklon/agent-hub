@@ -18,7 +18,9 @@ from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
 from agent_hub import spend
+from agent_hub.config import resolve_timezone
 from agent_hub.dashboard import persona_options
+from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
@@ -224,6 +226,10 @@ def make_router(
     authorization: DashboardAuthorization | None = None,
 ) -> APIRouter:
     server_config = config.get("server") or {}
+    display_tz = resolve_timezone(
+        str(server_config.get("timezone") or ""),
+        int(server_config.get("timezone_offset") or -8),
+    )
     auth = authorization or DashboardAuthorization(store, config)
     heartbeat_timeout_seconds = max(
         1,
@@ -421,7 +427,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         rows = "".join(
             f"<tr>"
             f'<td style="color:#8b949e;white-space:nowrap;font-size:0.75rem">'
-            f"{t.get('created_at', '')[:19].replace('T', ' ')}</td>"
+            f"{fmt_ts(t.get('created_at'), display_tz, '%Y-%m-%d %H:%M:%S')}</td>"
             f'<td style="color:{"#79c0ff" if t["role"] == "user" else "#3fb950"};'
             f'white-space:nowrap">{t["role"]}</td>'
             f'<td style="white-space:pre-wrap;max-width:600px">'
@@ -750,7 +756,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
   Device ID: {html.escape(device_id)} &nbsp;·&nbsp;
   IP: {agent.ip_address or "—"} &nbsp;·&nbsp;
   Firmware: {agent.firmware_version or "—"} &nbsp;·&nbsp;
-  Last seen: {agent.last_seen.strftime("%H:%M:%S") if agent.last_seen else "—"}
+  Last seen: {fmt_ts(agent.last_seen, display_tz, "%H:%M:%S")}
 </p>
 <h3>Connection</h3>
 <div hx-get="/dashboard/agents/{device_id}/status"
@@ -1327,7 +1333,7 @@ def _render_operator_row(operator: Any) -> str:
         for role in OperatorRole
     )
     checked = " checked" if operator.enabled else ""
-    last_seen = operator.last_seen_at.strftime("%Y-%m-%d %H:%M")
+    last_seen = fmt_ts(operator.last_seen_at)
     subject = quote(operator.subject, safe="")
     return f"""\
 <tr><td>{html.escape(operator.email)}</td>
@@ -1577,7 +1583,7 @@ def _render_agent_rows_data(
         )
         if agent.label:
             device_cell += f'<span class="model">{device_id}</span>'
-        last_seen = agent.last_seen.strftime("%H:%M:%S") if agent.last_seen else "—"
+        last_seen = fmt_ts(agent.last_seen, fmt="%H:%M:%S")
         dev = session_state.get_state(agent.device_id)
 
         # Persona / model cell

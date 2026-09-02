@@ -72,3 +72,35 @@ def test_env_overrides_hosting_auth_keys_stay_flat(monkeypatch, tmp_path):
     assert settings.server.dashboard_access_team_domain == "team.cloudflareaccess.com"
     assert settings.server.dashboard_access_audience == "app-audience"
     assert settings.server.dashboard_admin_emails == "admin@example.com,ops@example.com"
+
+
+def test_resolve_timezone_prefers_iana_name_over_offset():
+    from datetime import datetime
+
+    from agent_hub.config import resolve_timezone
+
+    tz = resolve_timezone("America/New_York", -8)
+    # DST-aware: EDT in July, EST in January.
+    assert datetime(2026, 7, 1, tzinfo=tz).utcoffset().total_seconds() == -4 * 3600
+    assert datetime(2026, 1, 1, tzinfo=tz).utcoffset().total_seconds() == -5 * 3600
+
+
+def test_resolve_timezone_falls_back_to_offset_for_blank_or_unknown_name():
+    from datetime import datetime
+
+    from agent_hub.config import resolve_timezone
+
+    for name in ("", "   ", "Not/AZone"):
+        tz = resolve_timezone(name, -5)
+        assert datetime(2026, 6, 1, tzinfo=tz).utcoffset().total_seconds() == -5 * 3600
+
+
+def test_to_local_treats_naive_input_as_utc():
+    from datetime import datetime
+
+    from agent_hub.config import resolve_timezone, to_local
+
+    ny = resolve_timezone("America/New_York")
+    local = to_local(datetime(2026, 9, 1, 23, 48, 0), ny)  # 23:48 UTC
+    assert (local.hour, local.minute) == (19, 48)  # EDT = UTC-4
+    assert local.tzinfo is ny
