@@ -18,7 +18,7 @@ class TestConcurrentInitialize:
         await asyncio.gather(*(store.initialize() for _ in range(3)))
 
         personas = await store.list_personas()
-        assert [p.name for p in personas] == ["hub-default"]
+        assert sorted(p.name for p in personas) == ["hub-default", "transcriber"]
 
     async def test_repeated_initialize_does_not_duplicate_the_default_persona(self, tmp_path):
         store = RegistryStore(db_path=tmp_path / "registry.db")
@@ -27,4 +27,4 @@ class TestConcurrentInitialize:
         await store.initialize()
 
         personas = await store.list_personas()
-        assert [p.name for p in personas] == ["hub-default"]
+        assert sorted(p.name for p in personas) == ["hub-default", "transcriber"]

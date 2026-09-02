@@ -29,6 +29,7 @@ from agent_hub.registry.models import (
 )
 
 _DEFAULT_PERSONA_NAME = "hub-default"
+_TRANSCRIBER_PERSONA_NAME = "transcriber"
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful voice assistant. "
     "Keep responses concise and conversational — two sentences or fewer. "
@@ -89,6 +90,7 @@ class RegistryStore:
             await self._migrate()
             async with self._sessions() as session:
                 await self._ensure_default_persona(session)
+                await self._ensure_transcriber_persona(session)
             self._initialized = True
             logger.info("Registry store initialized")
 
@@ -99,6 +101,7 @@ class RegistryStore:
             "ALTER TABLE personas ADD COLUMN mcp_tools_allowlist TEXT",
             "ALTER TABLE personas ADD COLUMN linked_agents TEXT",
             "ALTER TABLE personas ADD COLUMN memory_window INTEGER DEFAULT 20 NOT NULL",
+            "ALTER TABLE personas ADD COLUMN transcription BOOLEAN DEFAULT 0 NOT NULL",
             "ALTER TABLE agents ADD COLUMN websocket_token VARCHAR(128)",
             "ALTER TABLE agents ADD COLUMN last_heartbeat DATETIME",
             "ALTER TABLE agents ADD COLUMN health_fault TEXT",
@@ -141,19 +144,61 @@ class RegistryStore:
             # only one ASR provider, so a persona naming an absent one leaves
             # the microphone live while every transcription silently returns
             # nothing. Fall back to a provider this build can actually run.
-            if not asr_is_available(persona.asr_provider) and asr_is_available(
-                self._default_asr_provider
-            ):
-                logger.warning(
-                    f"Persona '{persona.name}' uses ASR provider "
-                    f"{persona.asr_provider!r}, which is not installed in this build — "
-                    f"falling back to {self._default_asr_provider!r}."
-                )
-                persona.asr_provider = self._default_asr_provider
+            if self._repair_persona_asr(persona):
                 updates.append("ASR provider (not installed)")
             if updates:
                 await session.commit()
                 logger.info(f"Updated persona '{_DEFAULT_PERSONA_NAME}' {', '.join(updates)}")
+
+    def _repair_persona_asr(self, persona: Persona) -> bool:
+        """Point a persona at an installed ASR provider if its own is absent.
+
+        Returns True if it was rewritten. The slim container images ship only
+        one ASR provider, so a persona naming an absent one leaves the
+        microphone live while every transcription silently returns nothing.
+        """
+        if asr_is_available(persona.asr_provider) or not asr_is_available(
+            self._default_asr_provider
+        ):
+            return False
+        logger.warning(
+            f"Persona '{persona.name}' uses ASR provider "
+            f"{persona.asr_provider!r}, which is not installed in this build — "
+            f"falling back to {self._default_asr_provider!r}."
+        )
+        persona.asr_provider = self._default_asr_provider
+        return True
+
+    async def _ensure_transcriber_persona(self, session: AsyncSession) -> None:
+        """Seed the built-in ``transcriber`` persona if missing.
+
+        Assigning it to a device switches that device to transcription mode:
+        the hub logs each utterance via ASR with no LLM or TTS. The LLM and
+        TTS providers are set only to satisfy the non-null schema; they are
+        never used.
+        """
+        result = await session.execute(
+            select(Persona).where(Persona.name == _TRANSCRIBER_PERSONA_NAME)
+        )
+        persona = result.scalar_one_or_none()
+        if persona is not None:
+            if self._repair_persona_asr(persona):
+                await session.commit()
+                logger.info(f"Updated persona '{_TRANSCRIBER_PERSONA_NAME}' ASR provider")
+            return
+        session.add(
+            Persona(
+                name=_TRANSCRIBER_PERSONA_NAME,
+                llm_provider="openai",
+                tts_provider="edge",
+                asr_provider=self._default_asr_provider,
+                system_prompt="",
+                server_skills="[]",
+                transcription=True,
+            )
+        )
+        await session.commit()
+        logger.info(f"Seeded persona '{_TRANSCRIBER_PERSONA_NAME}'")
 
     async def get_or_create_agent(
         self,
@@ -708,6 +753,7 @@ class RegistryStore:
         mcp_tools_allowlist: str | None = None,
         linked_agents: str | None = None,
         memory_window: int | None = None,
+        transcription: bool | None = None,
     ) -> bool:
         """Update editable fields on a persona. Returns False if not found."""
         async with self._sessions() as session:
@@ -735,6 +781,8 @@ class RegistryStore:
                 persona.linked_agents = linked_agents or None
             if memory_window is not None:
                 persona.memory_window = memory_window
+            if transcription is not None:
+                persona.transcription = transcription
             await session.commit()
             return True
 

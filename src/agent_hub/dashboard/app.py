@@ -880,20 +880,27 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
     @router.get("/dashboard/personas", response_class=HTMLResponse)
     async def personas_list(request: Request) -> HTMLResponse:
         personas = await store.list_personas()
-        rows = (
-            "".join(
+
+        def _persona_row(p: Persona) -> str:
+            badge = " <span class=badge>transcriber</span>" if p.transcription else ""
+            if p.transcription:
+                llm_cell = tts_cell = memory_cell = "—"
+            else:
+                llm_cell = f"{p.llm_provider} / {p.llm_model or 'default'}"
+                tts_cell = p.tts_provider + (f" / {p.tts_voice}" if p.tts_voice else "")
+                memory_cell = str(p.memory_window)
+            return (
                 f'<tr><td><a href="/dashboard/personas/{p.name}" '
-                f'style="color:#58a6ff">{p.name}</a></td>'
-                f"<td>{p.llm_provider} / {p.llm_model or 'default'}</td>"
-                f"<td>{p.tts_provider}{f' / {p.tts_voice}' if p.tts_voice else ''}</td>"
-                f"<td>{p.asr_provider}</td>"
-                f"<td>{p.memory_window}</td>"
+                f'style="color:#58a6ff">{p.name}</a>{badge}</td>'
+                f"<td>{llm_cell}</td><td>{tts_cell}</td>"
+                f"<td>{p.asr_provider}</td><td>{memory_cell}</td>"
                 f'<td><a href="/dashboard/personas/{p.name}" style="color:#58a6ff">edit</a>'
                 f' &nbsp; <a href="/dashboard/page-agent?persona={quote(p.name)}" '
                 f'style="color:#58a6ff">launch</a></td></tr>'
-                for p in personas
             )
-            or "<tr><td colspan=6>no personas</td></tr>"
+
+        rows = "".join(_persona_row(p) for p in personas) or (
+            "<tr><td colspan=6>no personas</td></tr>"
         )
         body = f"""\
 <h2>Personas</h2>
@@ -1023,6 +1030,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         llm_model_val = html.escape(persona.llm_model or "")
         tts_voice_val = html.escape(persona.tts_voice or "")
         tools_val_esc = html.escape(tools_val)
+        transcription_checked = " checked" if persona.transcription else ""
 
         body = f"""\
 <p><a href="/dashboard/personas" style="color:#58a6ff">← personas</a></p>
@@ -1032,6 +1040,19 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 <div id="save-result" role="status" aria-live="polite"></div>
 <form hx-post="/dashboard/personas/{name}"
       hx-target="#save-result" hx-swap="innerHTML">
+
+  <div class="form-section">
+    <h3>Mode</h3>
+    <label style="display:flex;gap:0.5rem;align-items:flex-start">
+      <input type="checkbox" name="transcription" value="1"{transcription_checked}
+        style="margin-top:0.2rem;width:auto">
+      <span><strong>Transcription mode</strong>
+      <span style="color:#6e7681"> — the device streams audio continuously and
+      the hub logs each utterance (ASR only, no LLM reply, no speech). Photos are
+      captioned into the same transcript. The prompt, TTS, skills and linked
+      agents below are ignored in this mode.</span></span>
+    </label>
+  </div>
 
   <div class="form-section">
     <h3>Prompt</h3>
@@ -1132,6 +1153,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         asr_provider: str = Form(default=""),
         mcp_tools_allowlist: str = Form(default=""),
         memory_window: int = Form(default=20),
+        transcription: str = Form(default=""),
     ) -> HTMLResponse:
         import json as _json
 
@@ -1165,6 +1187,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             mcp_tools_allowlist=tools_arg,
             linked_agents=linked_arg,
             memory_window=max(1, memory_window),
+            transcription=bool(transcription.strip()),
         )
         if ok:
             logger.info(f"Persona '{name}' updated via dashboard")
@@ -1671,6 +1694,7 @@ def _persona_status(persona: Any | None) -> dict[str, Any] | None:
         "server_skills": persona.server_skills_list,
         "mcp_tools_allowlist": persona.mcp_tools_allowlist_list,
         "memory_window": persona.memory_window,
+        "transcription": bool(persona.transcription),
     }
 
 
