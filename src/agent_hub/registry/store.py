@@ -14,6 +14,7 @@ from loguru import logger
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from agent_hub.providers.asr import first_available as asr_first_available
 from agent_hub.providers.asr import is_available as asr_is_available
 from agent_hub.registry.models import (
     Agent,
@@ -117,17 +118,22 @@ class RegistryStore:
         result = await session.execute(select(Persona).where(Persona.name == _DEFAULT_PERSONA_NAME))
         persona = result.scalar_one_or_none()
         if persona is None:
+            # Seed with a provider this build can actually run: the configured
+            # default if installed, otherwise any installed one.
+            asr_provider = (
+                asr_first_available(self._default_asr_provider) or self._default_asr_provider
+            )
             session.add(
                 Persona(
                     name=_DEFAULT_PERSONA_NAME,
                     llm_provider="openai",
                     tts_provider="edge",
-                    asr_provider=self._default_asr_provider,
+                    asr_provider=asr_provider,
                     system_prompt=_DEFAULT_SYSTEM_PROMPT,
                 )
             )
             await session.commit()
-            logger.info(f"Seeded persona '{_DEFAULT_PERSONA_NAME}'")
+            logger.info(f"Seeded persona '{_DEFAULT_PERSONA_NAME}' (asr={asr_provider})")
         else:
             updates: list[str] = []
             if persona.system_prompt == _LEGACY_DEFAULT_SYSTEM_PROMPT:
@@ -156,17 +162,20 @@ class RegistryStore:
         Returns True if it was rewritten. The slim container images ship only
         one ASR provider, so a persona naming an absent one leaves the
         microphone live while every transcription silently returns nothing.
+        Prefers the configured default, then any provider this build can run —
+        so a stale ``funasr_onnx`` survives a switch to a Moonshine-only image.
         """
-        if asr_is_available(persona.asr_provider) or not asr_is_available(
-            self._default_asr_provider
-        ):
+        if asr_is_available(persona.asr_provider):
+            return False
+        target = asr_first_available(self._default_asr_provider)
+        if target is None or target == persona.asr_provider:
             return False
         logger.warning(
             f"Persona '{persona.name}' uses ASR provider "
             f"{persona.asr_provider!r}, which is not installed in this build — "
-            f"falling back to {self._default_asr_provider!r}."
+            f"falling back to {target!r}."
         )
-        persona.asr_provider = self._default_asr_provider
+        persona.asr_provider = target
         return True
 
     async def _ensure_transcriber_persona(self, session: AsyncSession) -> None:
@@ -186,19 +195,30 @@ class RegistryStore:
                 await session.commit()
                 logger.info(f"Updated persona '{_TRANSCRIBER_PERSONA_NAME}' ASR provider")
             return
+        # Inherit hub-default's ASR provider — it was just ensured and repaired
+        # to something this build can run, which the raw configured default may
+        # not be (e.g. a Moonshine-only image with the funasr_onnx default).
+        hub_default = await session.scalar(
+            select(Persona).where(Persona.name == _DEFAULT_PERSONA_NAME)
+        )
+        asr_provider = (
+            hub_default.asr_provider
+            if hub_default and asr_is_available(hub_default.asr_provider)
+            else (asr_first_available(self._default_asr_provider) or self._default_asr_provider)
+        )
         session.add(
             Persona(
                 name=_TRANSCRIBER_PERSONA_NAME,
                 llm_provider="openai",
                 tts_provider="edge",
-                asr_provider=self._default_asr_provider,
+                asr_provider=asr_provider,
                 system_prompt="",
                 server_skills="[]",
                 transcription=True,
             )
         )
         await session.commit()
-        logger.info(f"Seeded persona '{_TRANSCRIBER_PERSONA_NAME}'")
+        logger.info(f"Seeded persona '{_TRANSCRIBER_PERSONA_NAME}' (asr={asr_provider})")
 
     async def get_or_create_agent(
         self,
