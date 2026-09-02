@@ -74,6 +74,19 @@ def is_available(name: str) -> bool:
         return False
 
 
+def first_available(*preferred: str) -> str | None:
+    """The first importable ASR provider, trying ``preferred`` names first.
+
+    Used to repair a persona whose configured provider is not in this build so
+    a connected microphone does not silently produce nothing. Returns None only
+    when the build ships no ASR provider at all.
+    """
+    for name in (*preferred, *_PROVIDER_PACKAGES):
+        if name and is_available(name):
+            return name
+    return None
+
+
 def get_provider(name: str, config: dict[str, Any]) -> ASRProvider:
     """Instantiate an ASR provider by name from config.
 
