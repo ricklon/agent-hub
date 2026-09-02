@@ -102,6 +102,9 @@ class CheckinResponse:
     image_token: str = ""
     heartbeat_url: str = ""
     heartbeat_interval_seconds: int = 60
+    # "assistant" (default) or "transcription" — set from the device's assigned
+    # persona so the firmware can enable the transcription button UI / auto-start.
+    mode: str = "assistant"
 
     def to_json(self) -> dict[str, Any]:
         """Serialize to the upstream-compatible JSON wire format.
@@ -110,6 +113,7 @@ class CheckinResponse:
             Dict ready for json.dumps or FastAPI's JSONResponse.
         """
         d: dict[str, Any] = {
+            "mode": self.mode,
             "server_time": {
                 "timestamp": self.server_timestamp_ms,
                 "timezone_offset": self.timezone_offset_minutes,

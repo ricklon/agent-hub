@@ -100,6 +100,24 @@ class TestCheckinPost:
         assert agent is not None
         assert agent.label == "Classroom K10"
 
+    async def test_mode_is_assistant_by_default(self, client):
+        resp = await client.post(
+            "/checkin/",
+            headers={"device-id": "11:22:33:44:55:88", "client-id": "c"},
+            json={},
+        )
+        assert resp.json()["mode"] == "assistant"
+
+    async def test_mode_is_transcription_when_a_transcriber_persona_is_assigned(
+        self, client, store
+    ):
+        headers = {"device-id": "11:22:33:44:55:99", "client-id": "c"}
+        await client.post("/checkin/", headers=headers, json={})
+        await store.assign_persona("11:22:33:44:55:99", "transcriber")
+
+        resp = await client.post("/checkin/", headers=headers, json={})
+        assert resp.json()["mode"] == "transcription"
+
     async def test_post_missing_device_id_returns_400(self, client):
         resp = await client.post(
             "/checkin/",

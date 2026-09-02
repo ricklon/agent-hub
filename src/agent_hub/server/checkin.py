@@ -177,6 +177,8 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
         websocket_token = (
             await store.issue_websocket_token(req.device_id) if enrollment_token else ""
         )
+        persona = await store.get_persona_for_device(req.device_id)
+        mode = "transcription" if persona and persona.transcription else "assistant"
 
         image_token = (settings.raw.get("server") or {}).get("image_token", "")
         resp = CheckinResponse(
@@ -188,6 +190,7 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
             image_token=image_token,
             heartbeat_url=_heartbeat_url(settings),
             heartbeat_interval_seconds=settings.server.heartbeat_interval_seconds,
+            mode=mode,
         )
         return JSONResponse(resp.to_json(), headers=_CORS_HEADERS)
 

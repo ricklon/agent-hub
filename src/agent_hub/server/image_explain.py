@@ -44,6 +44,13 @@ _CORS_HEADERS = {
 
 _ACCEPTED_TEXT = "Image received; vision processing started."
 
+# Photos on a transcriber device are captioned for a written record, not
+# answered as a question. Keep it factual and short.
+_TRANSCRIPT_VISION_PROMPT = (
+    "Describe what this photo shows, factually and in one or two sentences, "
+    "for a meeting or activity record. No preamble."
+)
+
 
 async def _describe_image(
     config: dict[str, Any],
@@ -113,6 +120,28 @@ async def _complete_image_job(
         logger.bind(tag=_TAG).error(f"Vision call failed: {exc}")
         text = "I couldn't describe the image."
     _session_state.finish_image_job(device_id, path, text=text)
+
+
+async def _complete_transcript_photo(
+    config: dict[str, Any],
+    store: RegistryStore,
+    device_id: str,
+    path: str,
+    jpeg_bytes: bytes,
+) -> None:
+    """Caption a transcriber device's photo and append it to the transcript.
+
+    On a vision failure the photo still lands in the transcript, just without a
+    caption — the record should never silently drop it.
+    """
+    try:
+        caption = await _describe_image(config, jpeg_bytes, _TRANSCRIPT_VISION_PROMPT)
+    except Exception as exc:
+        logger.bind(tag=_TAG).error(f"Transcript photo caption failed: {exc}")
+        caption = ""
+    entry = f"[image:{path}] {caption}".rstrip()
+    await store.append_history(device_id, "image", entry)
+    logger.bind(tag=_TAG).info(f"Captioned transcript photo for {device_id!r}: {caption[:120]!r}")
 
 
 def make_router(config: dict[str, Any], store: RegistryStore) -> APIRouter:
@@ -193,9 +222,12 @@ def make_router(config: dict[str, Any], store: RegistryStore) -> APIRouter:
             _session_state.set_latest_image(device_id, str(img_path))
 
         if device_id:
-            if purpose == "transcript":
-                await store.append_history(device_id, "image", f"[image:{img_path}]")
-                logger.bind(tag=_TAG).info(f"Added transcript photo for {device_id!r}: {img_path}")
+            persona = await store.get_persona_for_device(device_id)
+            is_transcript = purpose == "transcript" or bool(persona and persona.transcription)
+            if is_transcript:
+                asyncio.create_task(
+                    _complete_transcript_photo(config, store, device_id, str(img_path), jpeg_bytes)
+                )
                 return JSONResponse(
                     {"text": "Photo added to transcript.", "status": "accepted"},
                     headers=_CORS_HEADERS,

@@ -106,6 +106,13 @@ class TestCheckinResponse:
         data = resp.to_json()
         assert data["websocket"]["token"] == "session-secret"
 
+    def test_mode_defaults_to_assistant_and_is_serialized(self):
+        assert CheckinResponse(websocket_url="ws://x/").to_json()["mode"] == "assistant"
+        assert (
+            CheckinResponse(websocket_url="ws://x/", mode="transcription").to_json()["mode"]
+            == "transcription"
+        )
+
     def test_heartbeat_contract_is_serialized_when_configured(self):
         """Regression: MCU firmware discovers heartbeat settings at check-in."""
         resp = CheckinResponse(

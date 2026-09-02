@@ -810,6 +810,24 @@ class RegistryStore:
             for r in rows
         ]
 
+    async def export_history(self, device_id: str) -> list[dict[str, str]]:
+        """Every persisted message for a device, oldest first, uncapped.
+
+        Same shape as :meth:`load_history` (``role``/``content``/``created_at``);
+        used for the transcript download, where a limit would silently truncate.
+        """
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(ConversationTurn)
+                .where(ConversationTurn.device_id == device_id)
+                .order_by(ConversationTurn.id.asc())
+            )
+            rows = list(result.scalars().all())
+        return [
+            {"role": r.role, "content": r.content, "created_at": r.created_at.isoformat()}
+            for r in rows
+        ]
+
     async def append_history(self, device_id: str, role: str, content: str) -> None:
         """Append one message to the persisted conversation history."""
         async with self._sessions() as session:
