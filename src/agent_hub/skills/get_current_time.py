@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from agent_hub.config import load_settings
+from agent_hub.config import configured_timezone
 from agent_hub.skills import SkillResult
 
 DEFINITION = {
@@ -26,18 +25,6 @@ DEFINITION = {
 }
 
 
-def _configured_tz() -> timezone | ZoneInfo:
-    """Server timezone: IANA name (DST-aware) if set, else the fixed offset."""
-    srv = load_settings().server
-    name = srv.timezone.strip()
-    if name:
-        try:
-            return ZoneInfo(name)
-        except (ZoneInfoNotFoundError, ValueError):
-            pass
-    return timezone(timedelta(hours=srv.timezone_offset))
-
-
 def execute(args: dict[str, Any]) -> SkillResult:
-    now = datetime.now(_configured_tz())
+    now = datetime.now(configured_timezone())
     return SkillResult.success(now.strftime("%A, %B %d, %Y — %I:%M %p %Z").strip())

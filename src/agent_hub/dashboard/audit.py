@@ -11,6 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
+from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.registry.models import AuditEvent
 from agent_hub.registry.store import RegistryStore
 
@@ -103,7 +104,7 @@ def _render_audit_row(event: AuditEvent) -> str:
     if event.target_type and event.target_id:
         target = f"{event.target_type}: {event.target_id}"
     result_class = "audit-success" if event.outcome == "success" else "audit-failure"
-    created_at = event.created_at.isoformat(timespec="seconds")
+    created_at = fmt_ts(event.created_at, fmt="%Y-%m-%d %H:%M:%S")
     return (
         "<tr>"
         f"<td>{html.escape(created_at)}</td>"
