@@ -72,10 +72,16 @@ button.selected{background:#1f4a2e;color:#3fb950;border:1px solid #3fb950}
 .controls{display:flex;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem}
 :where(a,button,input,select,textarea):focus-visible{outline:3px solid #58a6ff;
   outline-offset:2px}
-.htmx-indicator{display:none}
-.htmx-request.htmx-indicator{display:block}
+.htmx-indicator{opacity:0}
 #global-progress{position:fixed;z-index:100;top:0;left:0;right:0;padding:0.35rem 1rem;
-  text-align:center;background:#1f6feb;color:#fff}
+  text-align:center;background:#1f6feb;color:#fff;pointer-events:none;
+  opacity:0;transition:opacity 120ms linear}
+/* Show-delay: the dashboard polls a few regions every 1-5s, and each poll
+   toggles this global indicator. A 600ms delay before it fades in means those
+   quick requests finish first and never flash the banner, while a real
+   navigation or a slow action still surfaces it. */
+.htmx-request#global-progress{opacity:1;transition-delay:600ms}
+@media (prefers-reduced-motion:reduce){#global-progress{transition:none}}
 #global-feedback{position:fixed;z-index:101;right:1rem;bottom:1rem;max-width:28rem;
   border:1px solid #f85149;border-radius:6px;padding:0.75rem 1rem;background:#2d1117;
   color:#ff7b72;box-shadow:0 4px 20px #010409}
