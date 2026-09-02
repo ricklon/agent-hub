@@ -8,6 +8,7 @@ The dashboard reads this alongside the DB to show live metrics.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -74,6 +75,12 @@ _pipeline_phase: dict[str, str] = {}  # "idle" | "transcribing" | "thinking" | "
 _pipeline_text: dict[str, str] = {}  # current transcript or reply snippet
 _pipeline_prev: dict[str, str] = {}  # phase before the current one
 _pipeline_since: dict[str, float] = {}  # monotonic time of last phase change
+
+# Active transcription session per device. One session spans a transcriber
+# device's start→stop (the physical button), survives a WS reconnect, and ends
+# only on an explicit stop. Its id groups the ConversationTurn rows so the
+# dashboard can show, and the device can export, one complete session.
+_transcription_session: dict[str, str] = {}
 
 
 def register_session(
@@ -248,6 +255,36 @@ def has_greeted(device_id: str) -> bool:
 
 def mark_greeted(device_id: str) -> None:
     _greeted.add(device_id)
+
+
+# ── Transcription sessions ───────────────────────────────────────────────────
+
+
+def _new_session_id() -> str:
+    """Sortable, human-readable, collision-resistant: 20260902T031500Z-a1b2."""
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(2)
+
+
+def start_transcription_session(device_id: str) -> str:
+    """Begin a new transcription session for a device, returning its id."""
+    sid = _new_session_id()
+    _transcription_session[device_id] = sid
+    return sid
+
+
+def current_transcription_session(device_id: str) -> str | None:
+    """The device's active transcription session id, or None."""
+    return _transcription_session.get(device_id)
+
+
+def ensure_transcription_session(device_id: str) -> str:
+    """Return the active session id, starting one if none is active."""
+    return _transcription_session.get(device_id) or start_transcription_session(device_id)
+
+
+def end_transcription_session(device_id: str) -> None:
+    """Close the device's transcription session (on an explicit stop)."""
+    _transcription_session.pop(device_id, None)
 
 
 # ── Live pipeline status ──────────────────────────────────────────────────────

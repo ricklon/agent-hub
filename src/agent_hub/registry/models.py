@@ -103,6 +103,9 @@ class ConversationTurn(Base):
     device_id: Mapped[str] = mapped_column(String(64), index=True)
     role: Mapped[str] = mapped_column(String(16))  # 'user' or 'assistant'
     content: Mapped[str] = mapped_column(Text)
+    # Groups the turns of one transcription session (one start→stop of a
+    # transcriber device). NULL for ordinary assistant turns.
+    session_id: Mapped[str | None] = mapped_column(String(48), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

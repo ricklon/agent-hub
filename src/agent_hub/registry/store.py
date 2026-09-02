@@ -103,6 +103,7 @@ class RegistryStore:
             "ALTER TABLE personas ADD COLUMN linked_agents TEXT",
             "ALTER TABLE personas ADD COLUMN memory_window INTEGER DEFAULT 20 NOT NULL",
             "ALTER TABLE personas ADD COLUMN transcription BOOLEAN DEFAULT 0 NOT NULL",
+            "ALTER TABLE conversation_history ADD COLUMN session_id VARCHAR(48)",
             "ALTER TABLE agents ADD COLUMN websocket_token VARCHAR(128)",
             "ALTER TABLE agents ADD COLUMN last_heartbeat DATETIME",
             "ALTER TABLE agents ADD COLUMN health_fault TEXT",
@@ -830,28 +831,93 @@ class RegistryStore:
             for r in rows
         ]
 
-    async def export_history(self, device_id: str) -> list[dict[str, str]]:
+    async def export_history(
+        self, device_id: str, session_id: str | None = None
+    ) -> list[dict[str, str]]:
         """Every persisted message for a device, oldest first, uncapped.
 
         Same shape as :meth:`load_history` (``role``/``content``/``created_at``);
         used for the transcript download, where a limit would silently truncate.
+        With ``session_id`` set, only that transcription session's turns.
         """
         async with self._sessions() as session:
-            result = await session.execute(
-                select(ConversationTurn)
-                .where(ConversationTurn.device_id == device_id)
-                .order_by(ConversationTurn.id.asc())
-            )
+            query = select(ConversationTurn).where(ConversationTurn.device_id == device_id)
+            if session_id is not None:
+                query = query.where(ConversationTurn.session_id == session_id)
+            result = await session.execute(query.order_by(ConversationTurn.id.asc()))
             rows = list(result.scalars().all())
         return [
             {"role": r.role, "content": r.content, "created_at": r.created_at.isoformat()}
             for r in rows
         ]
 
-    async def append_history(self, device_id: str, role: str, content: str) -> None:
+    async def latest_session_id(self, device_id: str) -> str | None:
+        """The session_id of the most recent transcription turn for a device."""
+        async with self._sessions() as session:
+            return await session.scalar(
+                select(ConversationTurn.session_id)
+                .where(ConversationTurn.device_id == device_id)
+                .where(ConversationTurn.session_id.is_not(None))
+                .order_by(ConversationTurn.id.desc())
+                .limit(1)
+            )
+
+    async def load_session(
+        self, device_id: str, session_id: str | None = None
+    ) -> list[dict[str, str]]:
+        """The complete turns of one transcription session, oldest first.
+
+        ``session_id`` defaults to the device's most recent session. Unlike
+        :meth:`load_history` this is never capped — a transcription session is
+        the unit of "complete memory" and must not be silently truncated.
+        Returns ``[]`` when the device has no transcription session yet.
+        """
+        if session_id is None:
+            session_id = await self.latest_session_id(device_id)
+        if session_id is None:
+            return []
+        return await self.export_history(device_id, session_id=session_id)
+
+    async def list_sessions(self, device_id: str) -> list[dict[str, Any]]:
+        """One row per transcription session, newest first.
+
+        ``{session_id, turns, started_at, ended_at}`` — for a future session
+        browser. Only the current session matters operationally for now.
+        """
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(
+                    ConversationTurn.session_id,
+                    func.count(ConversationTurn.id),
+                    func.min(ConversationTurn.created_at),
+                    func.max(ConversationTurn.created_at),
+                    func.max(ConversationTurn.id),
+                )
+                .where(ConversationTurn.device_id == device_id)
+                .where(ConversationTurn.session_id.is_not(None))
+                .group_by(ConversationTurn.session_id)
+                .order_by(func.max(ConversationTurn.id).desc())
+            )
+            return [
+                {
+                    "session_id": sid,
+                    "turns": int(count),
+                    "started_at": started.isoformat() if started else None,
+                    "ended_at": ended.isoformat() if ended else None,
+                }
+                for sid, count, started, ended, _last in result.all()
+            ]
+
+    async def append_history(
+        self, device_id: str, role: str, content: str, session_id: str | None = None
+    ) -> None:
         """Append one message to the persisted conversation history."""
         async with self._sessions() as session:
-            session.add(ConversationTurn(device_id=device_id, role=role, content=content))
+            session.add(
+                ConversationTurn(
+                    device_id=device_id, role=role, content=content, session_id=session_id
+                )
+            )
             await session.commit()
 
     async def clear_history(self, device_id: str) -> None:

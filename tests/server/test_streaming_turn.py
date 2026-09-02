@@ -123,16 +123,21 @@ def test_asr_realtime_factor_uses_audio_duration() -> None:
 
 
 async def test_transcription_turn_sends_and_persists_text_without_llm_or_tts(monkeypatch) -> None:
+    from agent_hub.server import session_state
+
+    session_state.end_transcription_session("AA:BB")
     sent: list[dict[str, str]] = []
-    saved: list[tuple[str, str, str]] = []
+    saved: list[tuple[str, str, str, str | None]] = []
 
     class _WebSocket:
         async def send_text(self, payload: str) -> None:
             sent.append(json.loads(payload))
 
     class _Store:
-        async def append_history(self, device_id: str, role: str, content: str) -> None:
-            saved.append((device_id, role, content))
+        async def append_history(
+            self, device_id: str, role: str, content: str, session_id: str | None = None
+        ) -> None:
+            saved.append((device_id, role, content, session_id))
 
     class _Decoder:
         def __init__(self, *_args) -> None:
@@ -172,4 +177,14 @@ async def test_transcription_turn_sends_and_persists_text_without_llm_or_tts(mon
             "text": "Computer, take this meeting note.",
         }
     ]
-    assert saved == [("AA:BB", "transcript", "Computer, take this meeting note.")]
+    assert len(saved) == 1
+    device_id, role, content, sid = saved[0]
+    assert (device_id, role, content) == (
+        "AA:BB",
+        "transcript",
+        "Computer, take this meeting note.",
+    )
+    # The turn was tagged with a freshly-started transcription session.
+    assert sid == session_state.current_transcription_session("AA:BB")
+    assert sid and sid.endswith(tuple("0123456789abcdef"))
+    session_state.end_transcription_session("AA:BB")
