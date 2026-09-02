@@ -67,6 +67,10 @@ class Persona(Base):
     linked_agents: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Max conversation turns kept in LLM context
     memory_window: Mapped[int] = mapped_column(Integer, default=20)
+    # When true this is a transcriber, not an assistant: the device streams
+    # audio continuously and the hub logs each utterance via ASR with no LLM
+    # or TTS. TTS/prompt/skills/linked-agent settings are ignored.
+    transcription: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     agents: Mapped[list[Agent]] = relationship(back_populates="persona")

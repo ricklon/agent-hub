@@ -978,6 +978,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
             await store.set_agent_status(device_id, AgentStatus.ACTIVE)
 
+            # Transcription mode: ASR-only, no LLM/TTS. Turned on either by the
+            # device advertising features.transcription in its hello, or by the
+            # operator assigning a persona whose `transcription` flag is set.
+            transcription_mode = hello.transcription_only or bool(persona.transcription)
+
             # Load persisted history; trim to memory_window on reconnect
             window = (persona.memory_window or 20) * 2
             conversation: list[dict[str, str]] = await store.load_history(device_id, limit=window)
@@ -993,7 +998,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     )
                     return
                 # Signal device that we're thinking only for assistant turns.
-                if hello.supports_emoji and not hello.transcription_only:
+                if hello.supports_emoji and not transcription_mode:
                     with suppress(Exception):
                         await websocket.send_text(
                             json.dumps(
@@ -1009,7 +1014,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 prev_len = len(conversation)
                 async with pipeline_lock:
                     try:
-                        if hello.transcription_only:
+                        if transcription_mode:
                             await _run_transcription_turn(
                                 websocket,
                                 frames,
@@ -1044,7 +1049,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 phase, _ = session_state.get_pipeline_status(device_id)
                 if phase != "overloaded":
                     session_state.set_pipeline_status(
-                        device_id, "listening" if hello.transcription_only else "idle"
+                        device_id, "listening" if transcription_mode else "idle"
                     )
                 new_msgs = conversation[prev_len:]
                 for msg in new_msgs:
@@ -1053,7 +1058,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             def _fire_pipeline(frames: list[bytes]) -> None:
                 nonlocal active_pipeline
                 if active_pipeline and not active_pipeline.done():
-                    if hello.transcription_only:
+                    if transcription_mode:
                         previous = active_pipeline
 
                         async def _after_previous() -> None:
@@ -1143,7 +1148,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
             # 4. Greeting — speak once before entering the audio loop so it
             #    always precedes any voice turn regardless of device timing.
-            if not hello.transcription_only and not session_state.has_greeted(device_id):
+            if not transcription_mode and not session_state.has_greeted(device_id):
                 session_state.mark_greeted(device_id)
                 await _speak(websocket, _GREETING, persona, config, session_id)
 
@@ -1174,7 +1179,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                                 await _dispatch_pipeline(frames)
                             else:
                                 session_state.set_pipeline_status(device_id, "idle")
-                            if hello.transcription_only:
+                            if transcription_mode:
                                 session_state.set_pipeline_status(device_id, "idle")
                                 await websocket.send_text(
                                     json.dumps(

@@ -195,3 +195,47 @@ async def test_save_with_no_linked_agents_clears_them(store: RegistryStore) -> N
     persona = await store.get_persona_by_name("hub-default")
     assert persona is not None
     assert persona.linked_agents_list == []
+
+
+async def test_edit_page_has_transcription_mode_toggle(store: RegistryStore) -> None:
+    async with await _client(store) as c:
+        resp = await c.get("/dashboard/personas/transcriber")
+    assert resp.status_code == 200
+    assert 'name="transcription"' in resp.text
+    # The seeded transcriber persona has the box pre-checked.
+    assert "checked" in resp.text.split('name="transcription"', 1)[1][:40]
+
+
+async def test_save_toggles_transcription_flag(store: RegistryStore) -> None:
+    async with await _client(store) as c:
+        on = await c.post(
+            "/dashboard/personas/hub-default",
+            data={
+                "tts_provider": "edge",
+                "asr_provider": "funasr_onnx",
+                "memory_window": "20",
+                "transcription": "1",
+            },
+        )
+        assert on.status_code == 200
+        persona = await store.get_persona_by_name("hub-default")
+        assert persona is not None and persona.transcription is True
+
+        off = await c.post(
+            "/dashboard/personas/hub-default",
+            data={
+                "tts_provider": "edge",
+                "asr_provider": "funasr_onnx",
+                "memory_window": "20",
+            },
+        )
+        assert off.status_code == 200
+        persona = await store.get_persona_by_name("hub-default")
+        assert persona is not None and persona.transcription is False
+
+
+async def test_personas_list_marks_the_transcriber(store: RegistryStore) -> None:
+    async with await _client(store) as c:
+        resp = await c.get("/dashboard/personas")
+    assert resp.status_code == 200
+    assert "<span class=badge>transcriber</span>" in resp.text
