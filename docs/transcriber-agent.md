@@ -1,11 +1,12 @@
 # Design note: a Transcriber agent
 
-Status: **in progress**. PR 1 (this change) adds the persona flag, the
-dispatch wiring, the seeded `transcriber` persona, and the persona-editor
-control. PR 2 adds photo captioning for transcript uploads, the check-in
-`mode` field, and a transcript download. The firmware side (a physical
-button, continuous streaming, a recording indicator, periodic photos) is
-tracked in the `xiaozhi-esp32` repo — see "Firmware contract" below.
+Status: **hub side complete**. PR 1 added the persona flag, the dispatch
+wiring, the seeded `transcriber` persona, and the persona-editor control.
+PR 2 (this change) added photo captioning for `purpose=transcript` uploads,
+the check-in `mode` field, the agent-detail relabel + Speak-box hide, and a
+plain-text transcript download. The firmware side (a physical button,
+continuous streaming, a recording indicator, periodic photos) is tracked in
+the `xiaozhi-esp32` repo — see "Firmware contract" below.
 
 ## The goal
 
@@ -159,15 +160,17 @@ the hub expects; the full brief lives with that project.
 
 ## Phasing
 
-1. **PR 1 (hub)** — `Persona.transcription` + migration, dispatch wiring,
-   seeded `transcriber` persona, persona-editor checkbox and list badge.
-   Testable now with `tests/harness` and with a device that sets
-   `features.transcription`.
-2. **PR 2 (hub)** — photo captioning for `purpose=transcript`, check-in
-   `mode` field, agent-detail relabel + Speak-box hide, transcript
-   download.
-3. **Firmware (`xiaozhi-esp32`)** — button, continuous streaming, recording
-   indicator, periodic photo capture, `transcription.*` MCP tools.
+1. **PR 1 (hub) — done.** `Persona.transcription` + migration, dispatch
+   wiring, seeded `transcriber` persona, persona-editor checkbox and list
+   badge.
+2. **PR 2 (hub) — done.** Photo captioning for `purpose=transcript` (also
+   triggered when the assigned persona is a transcriber, no query param
+   needed), check-in `mode` field, agent-detail relabel + Speak/Inject
+   hidden, plain-text transcript download at
+   `/dashboard/agents/{id}/transcript.txt`.
+3. **Firmware (`xiaozhi-esp32`) — in progress in that repo.** Button,
+   continuous streaming, recording indicator, periodic photo capture,
+   `transcription.*` MCP tools.
 
 ## Open questions
 

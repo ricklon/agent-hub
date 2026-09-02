@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -441,6 +442,32 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             f'<p style="color:#8b949e;font-size:0.8rem">{len(turns)} messages</p>'
         )
 
+    @router.get("/dashboard/agents/{device_id}/transcript.txt")
+    async def agent_transcript_download(device_id: str) -> Response:
+        agent = await store.get_agent(device_id)
+        if agent is None:
+            return Response(status_code=404)
+        turns = await store.export_history(device_id)
+        header = (
+            f"Transcript — {agent.label or device_id}\n"
+            f"Device {device_id}\n"
+            f"Exported {fmt_ts(datetime.now(UTC), display_tz, '%Y-%m-%d %H:%M:%S %Z')}\n"
+            f"{'=' * 48}\n\n"
+        )
+        lines: list[str] = []
+        for t in turns:
+            stamp = fmt_ts(t.get("created_at"), display_tz, "%H:%M:%S")
+            content = re.sub(r"\[image:[^\]]+\]\s*", "[photo] ", t["content"]).strip()
+            content = re.sub(r"\n?\[volatile-tools:[^\]]+\]", "", content).strip()
+            lines.append(f"[{stamp}] {content}" if content else f"[{stamp}] [photo]")
+        body = header + "\n".join(lines) + "\n"
+        safe = device_id.replace(":", "-")
+        return Response(
+            content=body,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="transcript-{safe}.txt"'},
+        )
+
     @router.get("/dashboard/agents/{device_id}/pipeline_status", response_class=HTMLResponse)
     async def agent_pipeline_status(device_id: str) -> HTMLResponse:
 
@@ -698,17 +725,14 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 <div id="capture-result" role="status" aria-live="polite"
      style="margin-top:0.75rem"></div>"""
 
-        # Reboot + send message
-        speak_form = f"""\
-<form hx-post="/dashboard/agents/{device_id}/reboot"
-      hx-target="#reboot-result" hx-swap="innerHTML"
-      hx-confirm="Reboot this device now? Its active session will disconnect."
-      style="display:inline">
-  <button type="submit" style="background:#6e3a1e">↺ Reboot device</button>
-</form>
-{camera_btn}
-<span id="reboot-result" role="status" aria-live="polite"
-      style="margin-left:0.75rem"></span>
+        is_transcriber = bool(persona and persona.transcription)
+
+        # Assistant-only actions: both run the LLM/TTS pipeline, which a
+        # transcriber device never does.
+        assistant_actions = (
+            ""
+            if is_transcriber
+            else f"""\
 <h3>Inject utterance</h3>
 <p style="color:#8b949e;font-size:0.85rem">
   Simulate speech — runs the full LLM pipeline and speaks the reply on the device.
@@ -729,8 +753,35 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
          aria-label="Message to speak" style="width:400px">
   <button type="submit">Speak</button>
 </form>
-<div id="speak-result" role="status" aria-live="polite"></div>
-<h3>Conversation history</h3>
+<div id="speak-result" role="status" aria-live="polite"></div>"""
+        )
+
+        history_heading = "Transcript" if is_transcriber else "Conversation history"
+        clear_confirm = (
+            "Clear the full transcript for this device?"
+            if is_transcriber
+            else "Clear all conversation history for this device?"
+        )
+        download_link = (
+            f'&nbsp;·&nbsp;<a href="/dashboard/agents/{device_id}/transcript.txt" '
+            f'style="color:#58a6ff;font-size:0.85rem">⬇ download .txt</a>'
+            if is_transcriber
+            else ""
+        )
+
+        # Reboot + send message
+        speak_form = f"""\
+<form hx-post="/dashboard/agents/{device_id}/reboot"
+      hx-target="#reboot-result" hx-swap="innerHTML"
+      hx-confirm="Reboot this device now? Its active session will disconnect."
+      style="display:inline">
+  <button type="submit" style="background:#6e3a1e">↺ Reboot device</button>
+</form>
+{camera_btn}
+<span id="reboot-result" role="status" aria-live="polite"
+      style="margin-left:0.75rem"></span>
+{assistant_actions}
+<h3>{history_heading}{download_link}</h3>
 <div style="margin-bottom:0.4rem;font-size:0.85rem">
   Pipeline:&nbsp;<span
     hx-get="/dashboard/agents/{device_id}/pipeline_status"
@@ -744,7 +795,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
      id="history-view">Loading…</div>
 <form hx-post="/dashboard/agents/{device_id}/clear_history"
       hx-target="#history-view" hx-swap="innerHTML"
-      hx-confirm="Clear all conversation history for this device?"
+      hx-confirm="{clear_confirm}"
       style="margin-top:0.5rem">
   <button type="submit" style="background:#b62324">Clear history</button>
 </form>"""
