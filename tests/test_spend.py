@@ -170,3 +170,23 @@ class TestModuleLevelWiring:
                 await spend.guard()
         finally:
             spend.reset()
+
+
+async def test_record_attributes_spend_to_the_bound_agent(store) -> None:
+    """Any LLM call made inside a task bound with bind_device lands on that agent."""
+    from agent_hub import spend
+
+    spend.reset()
+    spend.configure(store, {"llm": {"spend": {}}})
+    try:
+        spend.bind_device("page-abc")
+        await spend.record("m", 10, 5, 0.01)
+        spend.bind_device(None)
+        await spend.record("m", 10, 5, 0.02)
+        await spend.record("m", 10, 5, 0.03, device_id="dev-1")
+    finally:
+        spend.reset()
+    by_device = await store.llm_spend_by_device()
+    assert by_device["page-abc"]["calls"] == 1
+    assert by_device[""]["calls"] == 1
+    assert by_device["dev-1"]["cost_usd"] == 0.03

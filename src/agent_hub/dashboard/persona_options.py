@@ -39,6 +39,33 @@ KITTEN_VOICES: tuple[str, ...] = (
 )
 TTS_VOICE_SUGGESTIONS: tuple[str, ...] = EDGE_VOICES + KITTEN_VOICES
 
+# Which voices belong to which voice system. Edge accepts any of its 400+
+# voice ids if typed in, so its list is a suggestion; Kitten ships exactly
+# these eight, so anything else is a save-time error rather than a runtime one.
+VOICES_BY_PROVIDER: dict[str, tuple[str, ...]] = {"edge": EDGE_VOICES, "kitten": KITTEN_VOICES}
+FIXED_VOICE_PROVIDERS: frozenset[str] = frozenset({"kitten"})
+
+
+def voices_for(tts_provider: str) -> tuple[str, ...]:
+    """Voice ids to offer for one TTS system (empty for an unknown system)."""
+    return VOICES_BY_PROVIDER.get(tts_provider, ())
+
+
+def voice_problem(tts_provider: str, voice: str) -> str | None:
+    """Why ``voice`` cannot be used with ``tts_provider``, or None if it can.
+
+    Only systems with a fixed voice set are checked. A blank voice always
+    passes (it means "the system default").
+    """
+    voice = voice.strip()
+    if not voice or tts_provider not in FIXED_VOICE_PROVIDERS:
+        return None
+    if voice in VOICES_BY_PROVIDER.get(tts_provider, ()):
+        return None
+    options = ", ".join(VOICES_BY_PROVIDER.get(tts_provider, ()))
+    return f"{voice!r} is not a {tts_provider} voice. Choose one of: {options}."
+
+
 # Canonical ASR provider names (no aliases). Filtered by what this build can run.
 _ASR_CANDIDATES: tuple[str, ...] = ("funasr_onnx", "moonshine", "openai_whisper", "funasr")
 

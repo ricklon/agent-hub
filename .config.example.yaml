@@ -148,6 +148,12 @@ vad:
 
 registry:
   db_path: "data/registry.db"
+  # Stale-agent cleanup. The dashboard home shows agents past these thresholds
+  # and offers to remove them; page agents (one row per browser tab) past
+  # stale_page_hours are also removed automatically once an hour. Devices are
+  # never removed without a person clicking.
+  stale_device_days: 14
+  stale_page_hours: 24
 
 hub:
   default_persona:

@@ -19,6 +19,7 @@ _MODELS: list[dict[str, Any]] = [
         "price_in": "free",
         "multimodal": True,
         "free": True,
+        "tools": True,
     },
     {
         "id": "openai/gpt-4o-mini",
@@ -27,6 +28,7 @@ _MODELS: list[dict[str, Any]] = [
         "price_in": "$0.150",
         "multimodal": True,
         "free": False,
+        "tools": True,
     },
 ]
 

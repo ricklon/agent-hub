@@ -63,8 +63,12 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 <div class="row"><input id="discuss" placeholder="ask the agent — e.g. 'what do you see?'"
   style="flex:1;min-width:12rem" autofocus>
 <button id="post">Send</button>
-<label style="display:inline-flex;align-items:center;gap:.2rem;font-size:.8rem">
-<input type="checkbox" id="speakReply" checked> speak reply</label></div>
+<label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.8rem">
+voice: <select id="voiceMode" title="How replies and page.audio_speaker.speak are voiced">
+  <option value="hub" selected>persona voice (hub TTS)</option>
+  <option value="browser">browser built-in</option>
+  <option value="off">silent</option>
+</select></label></div>
 <div id="log" data-empty="1" style="background:#010409;border:1px solid #30363d;padding:.6rem;overflow:auto;max-height:24rem;border-radius:4px;white-space:pre-wrap;font-family:monospace;color:#c9d1d9">dialogue will appear here…</div>
 
 <h2>Voice (hands-free with wake word)</h2>
@@ -123,7 +127,7 @@ if (!MEDIA_OK) {
 }
 
 const TOOLS = [
-  {name: "page.audio_speaker.speak", description: "Speak text aloud via SpeechSynthesis.",
+  {name: "page.audio_speaker.speak", description: "Speak text aloud on this page with its selected voice (persona TTS or browser built-in).",
     inputSchema: {type: "object", properties: {text: {type: "string"}}, required: ["text"]}},
   {name: "page.audio_speaker.set_volume", description: "Set speech volume 0..100.",
     inputSchema: {type: "object", properties: {volume: {type: "integer", minimum: 0, maximum: 100}}, required: ["volume"]}},
@@ -207,13 +211,53 @@ function imageResult(dataUrl, mime) {
   return {content: [{type: "image", mimeType: mime, data: dataUrl.split(",")[1] || ""}], isError: false};
 }
 
+// ── Voicing ─────────────────────────────────────────────────────────────
+// "hub" speaks with the persona's TTS system and voice (what a device would
+// sound like); "browser" uses SpeechSynthesis; "off" is silent. The MCP
+// speak tool honours the same choice, so other agents driving this page
+// sound consistent with it.
+function voiceMode() { return document.getElementById("voiceMode").value; }
+
+function speakBuiltin(text) {
+  const u = new SpeechSynthesisUtterance(text || "");
+  u.volume = volume;
+  speechSynthesis.speak(u);
+}
+
+async function speakHub(text) {
+  const resp = await fetch("/page-agent/tts", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({device_id: deviceId, token: token, text: text})
+  });
+  if (!resp.ok) throw new Error("hub TTS " + resp.status);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio.volume = volume;
+  await audio.play();
+  audio.addEventListener("ended", () => URL.revokeObjectURL(url), {once: true});
+}
+
+async function speak(text) {
+  const mode = voiceMode();
+  if (mode === "off" || !text) return "silent";
+  if (mode === "browser") { speakBuiltin(text); return "browser"; }
+  try { await speakHub(text); return "hub"; }
+  catch (e) {
+    // The persona's TTS system is unreachable (offline Edge, missing model):
+    // say so and fall back to the browser voice rather than staying mute.
+    voiceLog("hub TTS failed (" + e + ") — using browser voice", "#d29922");
+    speakBuiltin(text);
+    return "browser (fallback)";
+  }
+}
+
 async function dispatch(name, args) {
   switch (name) {
     case "page.audio_speaker.speak": {
-      const u = new SpeechSynthesisUtterance(args.text || "");
-      u.volume = volume;
-      speechSynthesis.speak(u);
-      return textResult("spoken: " + (args.text || ""));
+      const how = await speak(args.text || "");
+      return textResult("spoken via " + how + ": " + (args.text || ""));
     }
     case "page.audio_speaker.set_volume":
       volume = (args.volume | 0) / 100;
@@ -287,8 +331,7 @@ function registerWebMcp() {
   setStatus((document.getElementById("status").textContent || "") + " · webmcp native");
 }
 
-document.getElementById("speak").onclick = () =>
-  dispatch("page.audio_speaker.speak", {text: document.getElementById("say").value});
+document.getElementById("speak").onclick = () => speak(document.getElementById("say").value);
 
 async function askAgent() {
   if (asking) return;
@@ -330,9 +373,7 @@ async function askAgent() {
       lineAgent.textContent = "agent: " + data.reply;
       lineAgent.style.color = "#3fb950";
       logEl.appendChild(lineAgent);
-      if (document.getElementById("speakReply").checked) {
-        dispatch("page.audio_speaker.speak", {text: data.reply});
-      }
+      speak(data.reply);
     } else {
       const lineErr = document.createElement("div");
       lineErr.textContent = "agent: (error) " + (data.message || "no reply");

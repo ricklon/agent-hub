@@ -182,3 +182,39 @@ async def test_page_html_works_outside_secure_contexts(store: RegistryStore) -> 
     # Media is only gated, never assumed.
     assert "needs https or localhost" in html
     assert "/page-agent/goodbye" in html
+
+
+async def test_tts_speaks_with_the_persona_voice(store: RegistryStore, monkeypatch) -> None:
+    """The page's hub-voice path returns WAV audio synthesized by the persona's TTS."""
+    from agent_hub.providers import tts as tts_pkg
+
+    calls: list[tuple[str, str | None]] = []
+
+    class _FakeTTS:
+        async def synthesize_pcm(self, text: str, voice: str | None = None) -> tuple[bytes, int]:
+            calls.append((text, voice))
+            return b"\x00\x00" * 160, 16000
+
+    monkeypatch.setattr(tts_pkg, "get_provider", lambda name, config: _FakeTTS())
+    async with await _client(store) as client:
+        reg = await client.post("/page-agent/register", json={"device_id": "page-tts", "tools": []})
+        token = reg.json()["token"]
+        ok = await client.post(
+            "/page-agent/tts", json={"device_id": "page-tts", "token": token, "text": "hello"}
+        )
+        bad = await client.post(
+            "/page-agent/tts", json={"device_id": "page-tts", "token": "nope", "text": "hello"}
+        )
+    assert ok.status_code == 200
+    assert ok.headers["content-type"].startswith("audio/wav")
+    assert ok.content[:4] == b"RIFF"
+    assert calls == [("hello", None)]  # hub-default has no voice override
+    assert bad.status_code == 401
+
+
+async def test_page_html_lets_the_user_pick_hub_or_builtin_voice(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        resp = await client.get("/dashboard/page-agent")
+    assert 'id="voiceMode"' in resp.text
+    assert "/page-agent/tts" in resp.text
+    assert "SpeechSynthesisUtterance" in resp.text

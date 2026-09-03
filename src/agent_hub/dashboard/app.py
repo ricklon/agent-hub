@@ -20,7 +20,7 @@ from loguru import logger
 
 from agent_hub import spend
 from agent_hub.config import resolve_timezone
-from agent_hub.dashboard import persona_options
+from agent_hub.dashboard import cleanup, persona_options
 from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.audit import render_audit_table
@@ -262,13 +262,24 @@ def make_router(
     # ids are refused on select/save. For hubs running on a $0 budget.
     free_only: bool = bool(config.get("llm", {}).get("free_only", False))
 
-    async def _reject_paid_model(model_id: str) -> str | None:
-        """Reason a model id is not allowed under free mode, or None if it is."""
-        if not free_only or not model_id:
+    stale_policy = cleanup.StalePolicy.from_config(config)
+
+    async def _reject_model(model_id: str) -> str | None:
+        """Reason a model id cannot be used on this hub, or None if it can.
+
+        Two gates: free mode (paid ids refused) and capability (a model the
+        catalogue says cannot call tools is useless here — every persona
+        relies on function calling for time, weather, camera and device
+        tools). Ids the catalogue does not know (a local Ollama model, say)
+        pass; only a known-incapable model is refused.
+        """
+        if not model_id:
             return None
-        if await is_free_model(model_id, api_key):
-            return None
-        return f"Free mode is on (llm.free_only): {model_id!r} is not a free model."
+        if free_only and not await is_free_model(model_id, api_key):
+            return f"Free mode is on (llm.free_only): {model_id!r} is not a free model."
+        if not await supports_tools(model_id, api_key):
+            return f"{model_id!r} cannot call tools, which every persona on this hub needs."
+        return None
 
     # ── Static image serving ──────────────────────────────────────────────────
 
@@ -317,8 +328,63 @@ def make_router(
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(request: Request) -> HTMLResponse:
         overview = await _render_agent_overview(store, heartbeat_timeout_seconds)
-        body = await _spend_panel() + overview
+        body = await _spend_panel() + overview + await _cleanup_panel()
         return HTMLResponse(_render_page(request, body))
+
+    async def _cleanup_panel() -> str:
+        """Stale agents past the configured thresholds, with a one-click sweep."""
+        stale = await cleanup.find_stale(store, stale_policy)
+        if not stale:
+            return (
+                '<section id="cleanup-panel" aria-labelledby="cleanup-heading">'
+                '<h2 id="cleanup-heading">Cleanup</h2>'
+                f'<p class="doc-muted">No stale agents ({stale_policy.describe()}).</p></section>'
+            )
+        rows = "".join(
+            f"<li>{html.escape(a.label or a.device_id)} "
+            f'<span class="badge badge-kind">{html.escape(a.kind)}</span> '
+            f'<span class="doc-muted">last seen {fmt_ts(a.last_seen, display_tz)}</span></li>'
+            for a in stale[:20]
+        )
+        more = f"<li>… and {len(stale) - 20} more</li>" if len(stale) > 20 else ""
+        return f"""\
+<section id="cleanup-panel" aria-labelledby="cleanup-heading">
+  <div class="section-heading"><div>
+    <h2 id="cleanup-heading">Cleanup <span class="attention-count">{len(stale)}</span></h2>
+    <p class="doc-muted">Stale: {stale_policy.describe()}. Removing deletes the row and
+    its conversation history; spend records are kept. Page agents past their threshold
+    are also removed automatically once an hour.</p>
+  </div>
+  <form hx-post="/dashboard/agents/prune" hx-target="#cleanup-panel" hx-swap="outerHTML"
+        hx-confirm="Remove {len(stale)} stale agent(s) and their history?">
+    <button type="submit" style="background:#b62324">Remove {len(stale)} stale</button>
+  </form></div>
+  <ul style="margin:0.5rem 0 0 1.2rem">{rows}{more}</ul>
+</section>"""
+
+    @router.post("/dashboard/agents/prune", response_class=HTMLResponse)
+    async def agents_prune(request: Request) -> HTMLResponse:
+        removed = await cleanup.prune(store, stale_policy)
+        logger.info(f"Dashboard pruned {len(removed)} stale agent(s)")
+        panel = await _cleanup_panel()
+        note = f'<p class="msg">✓ Removed {len(removed)} agent(s).</p>'
+        return HTMLResponse(panel.replace("</section>", note + "</section>", 1))
+
+    @router.post("/dashboard/agents/{device_id}/pin", response_class=HTMLResponse)
+    async def agent_pin(device_id: str, pinned: str = Form(default="")) -> HTMLResponse:
+        """Mark an agent long-term (kept out of cleanup) or clear the mark."""
+        keep = pinned.strip() in {"1", "true", "on", "yes"}
+        if not await store.set_agent_pinned(device_id, keep):
+            return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        logger.info(f"Dashboard {'pinned' if keep else 'unpinned'} agent {device_id!r}")
+        return HTMLResponse(_pin_form(device_id, keep))
+
+    @router.post("/dashboard/agents/{device_id}/remove", response_class=HTMLResponse)
+    async def agent_remove(device_id: str, request: Request) -> Response:
+        if not await cleanup.remove_agent(store, device_id):
+            return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        logger.info(f"Dashboard removed agent {device_id!r}")
+        return Response(status_code=204, headers={"HX-Redirect": "/dashboard/"})
 
     async def _spend_panel() -> str:
         """Spend summary for the dashboard header, or nothing if unmetered."""
@@ -815,15 +881,30 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             else ""
         )
 
-        # Reboot + send message
-        speak_form = f"""\
+        # Reboot is a firmware action; a page agent has nothing to reboot.
+        reboot_btn = (
+            ""
+            if agent.kind == "page"
+            else f"""\
 <form hx-post="/dashboard/agents/{device_id}/reboot"
       hx-target="#reboot-result" hx-swap="innerHTML"
       hx-confirm="Reboot this device now? Its active session will disconnect."
       style="display:inline">
   <button type="submit" style="background:#6e3a1e">↺ Reboot device</button>
-</form>
+</form>"""
+        )
+        pin_form = _pin_form(device_id, agent.pinned)
+        remove_btn = f"""\
+<form hx-post="/dashboard/agents/{device_id}/remove" style="display:inline"
+      hx-confirm="Remove this agent and its conversation history? A device will
+re-register on its next check-in.">
+  <button type="submit" style="background:#b62324">✕ Remove agent</button>
+</form>"""
+        speak_form = f"""\
+{reboot_btn}
 {camera_btn}
+{pin_form}
+{remove_btn}
 <span id="reboot-result" role="status" aria-live="polite"
       style="margin-left:0.75rem"></span>
 {assistant_actions}
@@ -846,14 +927,20 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
   <button type="submit" style="background:#b62324">Clear history</button>
 </form>"""
 
+        spend_rows = await store.llm_spend_by_device()
+        sp = spend_rows.get(device_id)
+        spend_line = (
+            f"&nbsp;·&nbsp; Spend: ${sp['cost_usd']:.4f} over {sp['calls']} calls" if sp else ""
+        )
         body = f"""\
 <p><a href="/dashboard/" style="color:#58a6ff">← agents</a></p>
-<h2>{html.escape(agent.label or device_id)}</h2>
+<h2>{html.escape(agent.label or device_id)}
+  <span class="badge badge-kind">{html.escape(agent.kind)}</span></h2>
 <p style="color:#8b949e;margin-top:-0.5rem">
   Device ID: {html.escape(device_id)} &nbsp;·&nbsp;
   IP: {agent.ip_address or "—"} &nbsp;·&nbsp;
   Firmware: {agent.firmware_version or "—"} &nbsp;·&nbsp;
-  Last seen: {fmt_ts(agent.last_seen, display_tz, "%H:%M:%S")}
+  Last seen: {fmt_ts(agent.last_seen, display_tz, "%H:%M:%S")}{spend_line}
 </p>
 <h3>Connection</h3>
 <div hx-get="/dashboard/agents/{device_id}/status"
@@ -1065,7 +1152,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 
         enabled = persona.server_skills_list  # None = all enabled
 
-        def _select(field: str, choices: list[str], current: str) -> str:
+        def _select(field: str, choices: list[str], current: str, attrs: str = "") -> str:
             merged = list(dict.fromkeys([*choices, current]))
             opts = "".join(
                 f'<option value="{html.escape(v)}"'
@@ -1073,16 +1160,29 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
                 for v in merged
                 if v
             )
-            return f'<select name="{field}">{opts}</select>'
+            return f'<select name="{field}"{attrs}>{opts}</select>'
 
         llm_select = _select("llm_provider", ["openai"], persona.llm_provider)
+        # Changing the voice system swaps the voice list to that system's voices.
         tts_select = _select(
-            "tts_provider", list(persona_options.TTS_PROVIDERS), persona.tts_provider
+            "tts_provider",
+            list(persona_options.TTS_PROVIDERS),
+            persona.tts_provider,
+            ' hx-get="/dashboard/persona-voices" hx-trigger="change"'
+            ' hx-target="#tts-voices" hx-swap="outerHTML"',
         )
         asr_select = _select("asr_provider", persona_options.asr_providers(), persona.asr_provider)
-        voice_datalist = "".join(
-            f'<option value="{html.escape(v)}"></option>'
-            for v in persona_options.TTS_VOICE_SUGGESTIONS
+        voice_datalist = _voice_datalist(persona.tts_provider, persona.tts_voice or "")
+        # Models the hub can actually use, offered in-form so nobody has to
+        # copy ids from the Models page. Same gates as the picker.
+        usable_models = [
+            m
+            for m in await _fetch_openrouter_models(api_key)
+            if m["tools"] and (not free_only or m["free"])
+        ]
+        model_datalist = "".join(
+            f'<option value="{html.escape(m["id"])}">{html.escape(m["name"])}</option>'
+            for m in usable_models
         )
         preset_opts = "".join(
             f'<option value="{html.escape(k)}">{html.escape(k)}</option>'
@@ -1162,7 +1262,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
     </label>
   </div>
 
-  <div class="form-section">
+  <div class="form-section" data-assistant-only>
     <h3>Prompt</h3>
     <label>Starter (fills the box below — then edit it)</label>
     <select name="preset" hx-get="/dashboard/personas/{quote(name)}/_preset"
@@ -1176,18 +1276,19 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 
   <div class="form-section">
     <h3>Providers</h3>
-    <div class="field-row">
+    <div class="field-row" data-assistant-only>
       <div><label>LLM provider</label>{llm_select}</div>
       <div><label>LLM model (blank = config default){free_hint}</label>
-        <input type="text" name="llm_model" value="{llm_model_val}"
-          style="width:300px" placeholder="browse ids on the Models page"></div>
+        <input type="text" name="llm_model" value="{llm_model_val}" list="llm-models"
+          style="width:300px" placeholder="type to search tool-capable models">
+        <datalist id="llm-models">{model_datalist}</datalist></div>
     </div>
-    <div class="field-row">
+    <div class="field-row" data-assistant-only>
       <div><label>TTS system</label>{tts_select}</div>
       <div><label>TTS voice (blank = system default)</label>
         <input type="text" name="tts_voice" value="{tts_voice_val}"
-          list="tts-voices" style="width:300px">
-        <datalist id="tts-voices">{voice_datalist}</datalist></div>
+          list="tts-voices" style="width:300px" placeholder="blank = system default">
+        {voice_datalist}</div>
     </div>
     <div class="field-row">
       <div><label>ASR system</label>{asr_select}</div>
@@ -1195,7 +1296,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
     </div>
   </div>
 
-  <div class="form-section">
+  <div class="form-section" data-assistant-only>
     <h3>Skills</h3>
     <p style="color:#6e7681;font-size:0.8rem;margin:0">
       Server-side tools this persona can call. All checked = all enabled.
@@ -1214,7 +1315,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
       style="width:100%">
   </div>
 
-  <div class="form-section">
+  <div class="form-section" data-assistant-only>
     <h3>Linked agents</h3>
     <p style="color:#6e7681;font-size:0.8rem;margin:0">
       Borrow the non-destructive MCP tools of other connected agents (a robot,
@@ -1223,15 +1324,33 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
     {linked_boxes}
   </div>
 
-  <div class="form-section">
+  <div class="form-section" data-assistant-only>
     <h3>Memory</h3>
     <label>Conversation window (turns kept in LLM context)</label>
     <input type="number" name="memory_window" value="{persona.memory_window}" min="1" max="200">
   </div>
 
   <button type="submit">Save</button>
-</form>"""
+</form>
+<script>
+// Transcription mode ignores the prompt, LLM, TTS, skills, linked agents and
+// memory; dim them so the form shows what is in play instead of describing it.
+(function () {{
+  const box = document.querySelector('input[name="transcription"]');
+  const dim = () => document.querySelectorAll("[data-assistant-only]").forEach((el) => {{
+    el.style.opacity = box.checked ? "0.45" : "";
+    el.title = box.checked ? "ignored in transcription mode" : "";
+  }});
+  box.addEventListener("change", dim);
+  dim();
+}})();
+</script>"""
         return HTMLResponse(_render_page(request, body))
+
+    @router.get("/dashboard/persona-voices", response_class=HTMLResponse)
+    async def persona_voices(tts_provider: str = "", current: str = "") -> HTMLResponse:
+        """The voice datalist for one TTS system (swapped in when it changes)."""
+        return HTMLResponse(_voice_datalist(tts_provider, current))
 
     @router.get("/dashboard/personas/{name}/_preset", response_class=HTMLResponse)
     async def persona_preset(name: str, preset: str = "") -> HTMLResponse:
@@ -1283,9 +1402,12 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         linked = sorted({str(a).strip() for a in form.getlist("linked_agents") if str(a).strip()})
         linked_arg = _json.dumps(linked) if linked else ""
 
-        refusal = await _reject_paid_model(llm_model.strip())
+        refusal = await _reject_model(llm_model.strip())
         if refusal:
             return HTMLResponse(f'<p style="color:#f85149">{html.escape(refusal)}</p>', 403)
+        bad_voice = persona_options.voice_problem(tts_provider, tts_voice)
+        if bad_voice:
+            return HTMLResponse(f'<p style="color:#f85149">{html.escape(bad_voice)}</p>', 400)
 
         ok = await store.update_persona(
             name,
@@ -1376,16 +1498,26 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         only_free = bool(free) or free_only
         q = search.lower()
 
+        # Only models that can call tools are offered: every persona on this
+        # hub depends on function calling, so a model without it is a trap.
+        usable = [m for m in models if m["tools"]]
+        hidden = len(models) - len(usable)
         filtered = [
             m
-            for m in models
+            for m in usable
             if (not q or q in m["id"].lower() or q in m["name"].lower())
             and (not only_multi or m["multimodal"])
             and (not only_free or m["free"])
         ]
+        hidden_note = (
+            f'<p class="doc-muted" style="margin:0 0 .4rem">{hidden} models without tool '
+            "calling are hidden.</p>"
+            if hidden
+            else ""
+        )
 
         if not filtered:
-            return HTMLResponse("<p>No models match.</p>")
+            return HTMLResponse(hidden_note + "<p>No models match.</p>")
 
         rows = []
         for m in filtered:
@@ -1417,14 +1549,14 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 </tr></thead>
 <tbody>{"".join(rows)}</tbody>
 </table>"""
-        return HTMLResponse(table)
+        return HTMLResponse(hidden_note + table)
 
     @router.post("/dashboard/models/select", response_class=HTMLResponse)
     async def models_select(
         model_id: str = Form(...),
         persona: str = Form(default="hub-default"),
     ) -> HTMLResponse:
-        refusal = await _reject_paid_model(model_id)
+        refusal = await _reject_model(model_id)
         if refusal:
             return HTMLResponse(f'<p style="color:#f85149">{html.escape(refusal)}</p>', 403)
         ok = await store.update_persona_model(persona, model_id)
@@ -1528,7 +1660,7 @@ def _agent_table(rows: str, *, poll: bool = True) -> str:
 <table>
 <thead><tr>
   <th>device</th><th>health · activity</th><th>persona / model</th>
-  <th>tools</th><th>latency (last / avg)</th>
+  <th>tools</th><th>latency (last / avg)</th><th>spend</th>
   <th>ip</th><th>fw</th><th>last seen</th>
 </tr></thead>
 <tbody>{rows}</tbody>
@@ -1656,11 +1788,12 @@ def _project_docs() -> str:
 async def _render_agent_rows(store: RegistryStore, heartbeat_timeout_seconds: int) -> str:
     try:
         rows_data = await store.list_agents_with_personas()
+        spend_by_device = await store.llm_spend_by_device()
     except Exception as exc:
         logger.error(f"Dashboard agent query failed: {exc}")
-        return "<tr><td colspan=8>error loading agents</td></tr>"
+        return "<tr><td colspan=9>error loading agents</td></tr>"
 
-    return _render_agent_rows_data(rows_data, heartbeat_timeout_seconds)
+    return _render_agent_rows_data(rows_data, heartbeat_timeout_seconds, spend_by_device)
 
 
 async def _render_agent_overview(
@@ -1675,7 +1808,12 @@ async def _render_agent_overview(
     overview = render_fleet_overview(rows_data, heartbeat_timeout_seconds)
     if not rows_data:
         return _overview_poll_wrapper(overview)
-    rows = _render_agent_rows_data(rows_data, heartbeat_timeout_seconds)
+    try:
+        spend_by_device = await store.llm_spend_by_device()
+    except Exception as exc:
+        logger.error(f"Dashboard spend query failed: {exc}")
+        spend_by_device = {}
+    rows = _render_agent_rows_data(rows_data, heartbeat_timeout_seconds, spend_by_device)
     return _overview_poll_wrapper(overview + "<h2>All agents</h2>" + _agent_table(rows, poll=False))
 
 
@@ -1690,9 +1828,11 @@ def _overview_poll_wrapper(content: str) -> str:
 def _render_agent_rows_data(
     rows_data: list[tuple[Agent, Persona | None]],
     heartbeat_timeout_seconds: int,
+    spend_by_device: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     if not rows_data:
-        return "<tr><td colspan=8>no agents registered yet</td></tr>"
+        return "<tr><td colspan=9>no agents registered yet</td></tr>"
+    spend_by_device = spend_by_device or {}
 
     import agent_hub.skills as server_skills  # local import avoids circular at module level
 
@@ -1710,6 +1850,10 @@ def _render_agent_rows_data(
         device_cell = (
             f'{kind_badge}<a href="/dashboard/agents/{device_id}" style="color:#58a6ff">{label}</a>'
         )
+        if agent.pinned:
+            device_cell += (
+                ' <span class="badge badge-kind" title="long-term: never pruned">kept</span>'
+            )
         if agent.label:
             device_cell += f'<span class="model">{device_id}</span>'
         last_seen = fmt_ts(agent.last_seen, fmt="%H:%M:%S")
@@ -1783,6 +1927,14 @@ def _render_agent_rows_data(
         else:
             lat_cell = '<span style="color:#6e7681">—</span>'
 
+        # Spend cell — the same ledger for every kind of agent.
+        sp = spend_by_device.get(agent.device_id)
+        spend_cell = (
+            f'${sp["cost_usd"]:.4f}<span class="model">{sp["calls"]} calls</span>'
+            if sp
+            else '<span style="color:#6e7681">—</span>'
+        )
+
         rows.append(f"""\
 <tr>
   <td>{device_cell}</td>
@@ -1790,6 +1942,7 @@ def _render_agent_rows_data(
   <td>{persona_name}{model_line}</td>
   <td>{tools_cell}</td>
   <td>{lat_cell}</td>
+  <td>{spend_cell}</td>
   <td>{agent.ip_address or "—"}</td>
   <td>{agent.firmware_version or "—"}</td>
   <td>{last_seen}</td>
@@ -1846,6 +1999,33 @@ _MODELS_CACHE_TTL_S = 600.0
 _models_cache: tuple[float, list[dict[str, Any]]] | None = None
 
 
+def _pin_form(device_id: str, pinned: bool) -> str:
+    """Toggle for the long-term mark; swaps itself on submit."""
+    label = "📌 Kept (long-term) — click to unpin" if pinned else "📌 Keep as long-term agent"
+    return f"""\
+<form hx-post="/dashboard/agents/{device_id}/pin" hx-swap="outerHTML" style="display:inline"
+      title="Long-term agents are never counted as stale or pruned">
+  <input type="hidden" name="pinned" value="{"0" if pinned else "1"}">
+  <button type="submit" style="background:{"#1f6feb" if pinned else "#30363d"}">{label}</button>
+</form>"""
+
+
+def _voice_datalist(tts_provider: str, current: str) -> str:
+    """``<datalist id="tts-voices">`` for one TTS system, keeping the current value."""
+    voices = list(dict.fromkeys([*persona_options.voices_for(tts_provider), current.strip()]))
+    opts = "".join(f'<option value="{html.escape(v)}"></option>' for v in voices if v)
+    return f'<datalist id="tts-voices">{opts}</datalist>'
+
+
+async def supports_tools(model_id: str, api_key: str) -> bool:
+    """False only when the catalogue knows ``model_id`` and says it lacks tool calling."""
+    models = await _fetch_openrouter_models(api_key)
+    for m in models:
+        if m["id"] == model_id:
+            return bool(m["tools"])
+    return True
+
+
 async def is_free_model(model_id: str, api_key: str) -> bool:
     """True when OpenRouter prices ``model_id`` at $0 for prompt tokens.
 
@@ -1894,6 +2074,7 @@ async def _fetch_openrouter_models(api_key: str) -> list[dict[str, Any]]:
             price_str = "—"
             free = False
         ctx = m.get("context_length", 0)
+        params = m.get("supported_parameters") or []
         out.append(
             {
                 "id": m.get("id", ""),
@@ -1902,6 +2083,9 @@ async def _fetch_openrouter_models(api_key: str) -> list[dict[str, Any]]:
                 "price_in": price_str,
                 "multimodal": multimodal,
                 "free": free,
+                # OpenRouter lists "tools" in supported_parameters for models
+                # that accept function-calling requests.
+                "tools": "tools" in params if isinstance(params, list) else False,
             }
         )
 

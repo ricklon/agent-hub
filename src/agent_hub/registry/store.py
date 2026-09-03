@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from agent_hub.providers.asr import first_available as asr_first_available
@@ -109,6 +109,7 @@ class RegistryStore:
             "ALTER TABLE agents ADD COLUMN health_fault TEXT",
             "ALTER TABLE agents ADD COLUMN reported_activity VARCHAR(32)",
             "ALTER TABLE agents ADD COLUMN reported_mcp_tools TEXT",
+            "ALTER TABLE agents ADD COLUMN pinned BOOLEAN DEFAULT 0 NOT NULL",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
@@ -584,6 +585,100 @@ class RegistryStore:
             await session.commit()
             return True
 
+    async def delete_agent(self, device_id: str) -> bool:
+        """Remove an agent and its conversation history. Spend rows are kept.
+
+        Args:
+            device_id: The agent to remove.
+
+        Returns:
+            True when a row was deleted.
+        """
+        async with self._sessions() as session:
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
+            agent = result.scalar_one_or_none()
+            if agent is None:
+                return False
+            await session.execute(
+                delete(ConversationTurn).where(ConversationTurn.device_id == device_id)
+            )
+            await session.delete(agent)
+            await session.commit()
+            logger.info(f"Removed agent {device_id!r} ({agent.kind})")
+            return True
+
+    async def list_stale_agents(
+        self,
+        *,
+        device_after: timedelta,
+        page_after: timedelta,
+        now: datetime | None = None,
+    ) -> list[Agent]:
+        """Agents not seen for longer than the threshold for their kind.
+
+        Page agents are ephemeral (one row per browser tab) so they go stale
+        much sooner than a board that is merely powered off for the week.
+
+        Args:
+            device_after: Staleness threshold for every kind except ``page``.
+            page_after: Staleness threshold for page agents.
+            now: Reference time; defaults to now (UTC).
+
+        Returns:
+            Stale agents, oldest first.
+        """
+        reference = now or datetime.now(UTC)
+        async with self._sessions() as session:
+            rows = (await session.execute(select(Agent))).scalars().all()
+        stale: list[Agent] = []
+        for agent in rows:
+            if agent.pinned:
+                continue
+            seen = agent.last_seen or agent.created_at
+            if seen is None:
+                continue
+            if seen.tzinfo is None:
+                seen = seen.replace(tzinfo=UTC)
+            limit = page_after if agent.kind == AgentKind.PAGE.value else device_after
+            if reference - seen > limit:
+                stale.append(agent)
+        stale.sort(key=lambda a: a.last_seen or a.created_at or reference)
+        return stale
+
+    async def set_agent_pinned(self, device_id: str, pinned: bool) -> bool:
+        """Mark an agent as long-term (exempt from staleness) or not.
+
+        Returns:
+            True when the agent exists.
+        """
+        async with self._sessions() as session:
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
+            agent = result.scalar_one_or_none()
+            if agent is None:
+                return False
+            agent.pinned = pinned
+            await session.commit()
+            return True
+
+    async def llm_spend_by_device(self, since: datetime | None = None) -> dict[str, dict[str, Any]]:
+        """Per-agent spend: ``{device_id: {"cost_usd", "calls"}}``.
+
+        Calls with no bound agent are keyed under ``""``.
+        """
+        async with self._sessions() as session:
+            query = select(
+                LLMSpend.device_id,
+                func.coalesce(func.sum(LLMSpend.cost_usd), 0.0),
+                func.count(LLMSpend.id),
+            ).group_by(LLMSpend.device_id)
+            if since is not None:
+                query = query.where(LLMSpend.created_at >= since)
+            rows = (await session.execute(query)).all()
+        return {
+            (device_id or ""): {"cost_usd": float(cost), "calls": int(calls)}
+            for device_id, cost, calls in rows
+        }
+
     async def list_agents_with_personas(self) -> list[tuple[Agent, Persona | None]]:
         """Return all agents with their assigned persona, ordered by last_seen desc."""
         async with self._sessions() as session:
@@ -951,7 +1046,6 @@ class RegistryStore:
 
     async def clear_history(self, device_id: str) -> None:
         """Delete all conversation history for a device."""
-        from sqlalchemy import delete
 
         async with self._sessions() as session:
             await session.execute(
@@ -974,7 +1068,6 @@ class RegistryStore:
         Returns:
             Number of messages removed.
         """
-        from sqlalchemy import delete
 
         async with self._sessions() as session:
             removed = int(await session.scalar(select(func.count(ConversationTurn.id))) or 0)
@@ -992,7 +1085,6 @@ class RegistryStore:
         Returns:
             Number of ledger rows removed.
         """
-        from sqlalchemy import delete
 
         async with self._sessions() as session:
             removed = int(await session.scalar(select(func.count(LLMSpend.id))) or 0)

@@ -16,6 +16,7 @@ price table.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -228,6 +229,24 @@ async def guard() -> None:
         await _tracker.guard()
 
 
+# The agent on whose behalf the current task is calling the LLM. Set once per
+# voice session / page turn; every provider call made inside that task (and
+# tasks it spawns) is then attributed to that agent, whatever its kind. This
+# is what lets the dashboard show spend per agent for devices, page agents
+# and runners alike without threading device_id through the provider API.
+_current_device: ContextVar[str | None] = ContextVar("agent_hub_spend_device", default=None)
+
+
+def bind_device(device_id: str | None) -> None:
+    """Attribute LLM spend in the current task (and its children) to device_id."""
+    _current_device.set(device_id)
+
+
+def current_device() -> str | None:
+    """The agent bound with bind_device() in this task, if any."""
+    return _current_device.get()
+
+
 async def record(
     model: str,
     prompt_tokens: int,
@@ -237,4 +256,5 @@ async def record(
 ) -> None:
     """Meter one call if metering is configured; otherwise do nothing."""
     if _tracker is not None:
-        await _tracker.record(model, prompt_tokens, completion_tokens, cost_usd, device_id)
+        attributed = device_id if device_id is not None else _current_device.get()
+        await _tracker.record(model, prompt_tokens, completion_tokens, cost_usd, attributed)

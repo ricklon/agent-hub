@@ -32,6 +32,7 @@ from agent_hub.server.page_agent import make_router as make_page_agent_router
 from agent_hub.server.ws_session import make_router as make_ws_router
 
 _prewarmed = False
+_pruning = False
 
 
 async def _prewarm_providers(config: dict[str, Any]) -> None:
@@ -118,8 +119,33 @@ def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any
             f"MCP bridge on :{settings.server.mcp_bridge_port}"
         )
         app.state.prewarm_task = asyncio.create_task(_prewarm_providers(raw_config))
+        app.state.prune_task = asyncio.create_task(_prune_page_agents(store, raw_config))
 
     return app
+
+
+async def _prune_page_agents(store: RegistryStore, config: dict[str, Any]) -> None:
+    """Hourly sweep that removes page-agent rows left behind by closed tabs.
+
+    Only page agents are removed automatically; devices are pruned solely
+    from the dashboard, by a person. Guarded by a module-level flag like the
+    prewarm, because startup fires once per uvicorn server instance (three
+    times in the multi-port setup) and one sweeper is enough.
+    """
+    global _pruning
+    if _pruning:
+        return
+    _pruning = True
+
+    from agent_hub.dashboard.cleanup import PAGE_ONLY, StalePolicy, prune
+
+    policy = StalePolicy.from_config(config)
+    while True:
+        try:
+            await prune(store, policy, kinds=PAGE_ONLY)
+        except Exception as exc:  # noqa: BLE001 - a sweep failure must not kill the loop
+            logger.warning(f"page-agent prune failed: {exc}")
+        await asyncio.sleep(3600)
 
 
 def _add_dashboard_root(app: FastAPI) -> None:
