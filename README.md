@@ -353,6 +353,7 @@ TBD.
 - [`docs/deployment.md`](docs/deployment.md) — secure LAN, Tailscale, and HTTPS proxy deployment guidance
 - [`docs/lessons-learned.md`](docs/lessons-learned.md) — non-obvious bugs, root causes, and fixes
 - [`docs/agent-test-harness.md`](docs/agent-test-harness.md) — proposal: a hardware-free agent test harness built on the page agent
+- [`docs/robot-build-night.md`](docs/robot-build-night.md) — bring your own robot: register it, call its tools from the browser, give it a persona
 - [`docs/agent-management-plan.md`](docs/agent-management-plan.md) — proposal: one harness, one fleet view, headless runners; how tau/pi compare
 - `AGENTS.md` — coding-agent instructions and skill catalogue
 - Firmware fork (use this): https://github.com/ricklon/xiaozhi-esp32

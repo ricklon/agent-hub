@@ -57,6 +57,8 @@ agent-hub/
 │   │   ├── protocol.py      ← message types and JSON schemas
 │   │   ├── audio.py         ← Opus encode/decode, VAD, rate control
 │   │   ├── session_state.py ← per-connection state
+│   │   ├── agent_api.py     ← `/agent/*` registration for robots (device port)
+│   │   ├── agent_turn.py    ← the shared text turn (page agent, robot, console)
 │   │   ├── mcp_bridge.py    ← page-agent MCP bridge (SSE-down / POST-up JSON-RPC)
 │   │   ├── page_agent.py    ← page-agent register/heartbeat + the page route
 │   │   ├── _page_html.py    ← the page-agent browser page (E501-suppressed)
@@ -89,6 +91,11 @@ Two naming traps:
 - `skills/` (repo root) holds **instructions for coding agents** and is
   currently empty. `src/agent_hub/skills/` holds **runtime tools the LLM
   can call** and is real code. They are unrelated.
+- A **bridged agent** is anything the hub drives over `mcp_bridge`: a browser
+  page agent or a robot registered through `agent_api`. They share one text
+  turn (`agent_turn.run_turn`) and one dashboard console. Only a xiaozhi board
+  has firmware, a voice socket, and a reboot; UI that assumes those must check
+  `agent.kind`.
 - `mcp_bridge.py` and `mcp_client.py` are different layers. The client
   speaks JSON-RPC to one xiaozhi device over the voice WebSocket; the bridge
   speaks JSON-RPC to a browser page agent over SSE-down / POST-up.

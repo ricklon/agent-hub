@@ -24,6 +24,7 @@ from agent_hub.dashboard.app import make_router as make_dashboard_router
 from agent_hub.dashboard.audit import DashboardAuditMiddleware
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.registry.store import RegistryStore
+from agent_hub.server.agent_api import make_router as make_agent_api_router
 from agent_hub.server.checkin import make_router as make_checkin_router
 from agent_hub.server.heartbeat import make_router as make_heartbeat_router
 from agent_hub.server.image_explain import make_router as make_image_router
@@ -187,7 +188,21 @@ def build_apps() -> dict[int, FastAPI]:
         ),
         (
             settings.server.http_port,
-            [make_checkin_router(store, settings), make_heartbeat_router(store, settings)],
+            [
+                make_checkin_router(store, settings),
+                make_heartbeat_router(store, settings),
+                # Robots and other non-browser agents register here rather
+                # than on the dashboard port: the dashboard sits behind
+                # Cloudflare Access in production, which a headless agent
+                # cannot authenticate to. Registration is gated by the
+                # enrollment token when one is configured.
+                make_agent_api_router(store, settings),
+                # The MCP bridge answers on the device port too, so a robot
+                # that registered here can reach its own SSE stream. Both
+                # bridge endpoints authenticate per agent with the token
+                # issued at registration.
+                make_mcp_bridge_router(store, settings),
+            ],
             False,
         ),
         (
@@ -266,6 +281,7 @@ def build_app() -> FastAPI:
     _add_dashboard_root(app)
     app.include_router(make_checkin_router(store, settings))
     app.include_router(make_heartbeat_router(store, settings))
+    app.include_router(make_agent_api_router(store, settings))
     app.include_router(make_image_router(raw_config, store))
     app.include_router(make_ws_router(store, raw_config))
     app.include_router(make_dashboard_router(store, raw_config, dashboard_auth))

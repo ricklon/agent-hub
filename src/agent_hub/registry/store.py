@@ -110,6 +110,7 @@ class RegistryStore:
             "ALTER TABLE agents ADD COLUMN reported_activity VARCHAR(32)",
             "ALTER TABLE agents ADD COLUMN reported_mcp_tools TEXT",
             "ALTER TABLE agents ADD COLUMN pinned BOOLEAN DEFAULT 0 NOT NULL",
+            "ALTER TABLE agents ADD COLUMN owner VARCHAR(64)",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
@@ -644,6 +645,27 @@ class RegistryStore:
                 stale.append(agent)
         stale.sort(key=lambda a: a.last_seen or a.created_at or reference)
         return stale
+
+    async def set_agent_owner(self, device_id: str, owner: str | None) -> bool:
+        """Set (or clear, with None/empty) the builder this agent belongs to.
+
+        Returns:
+            True when the agent exists.
+        """
+        async with self._sessions() as session:
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
+            agent = result.scalar_one_or_none()
+            if agent is None:
+                return False
+            agent.owner = (owner or "").strip()[:64] or None
+            await session.commit()
+            return True
+
+    async def list_owners(self) -> list[str]:
+        """Distinct owner names currently in use, alphabetically."""
+        async with self._sessions() as session:
+            rows = (await session.execute(select(Agent.owner).distinct())).scalars().all()
+        return sorted({r for r in rows if r})
 
     async def set_agent_pinned(self, device_id: str, pinned: bool) -> bool:
         """Mark an agent as long-term (exempt from staleness) or not.

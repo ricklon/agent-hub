@@ -26,9 +26,10 @@ from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.overview import render_fleet_overview
-from agent_hub.registry.models import Agent, OperatorRole, Persona
+from agent_hub.registry.models import Agent, AgentKind, OperatorRole, Persona
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge, session_state, tool_policy
+from agent_hub.server.agent_turn import TurnError, call_one_tool, run_turn
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
@@ -53,6 +54,18 @@ tr:hover td{background:#161b22}
   margin:0.1rem 0.1rem 0 0;display:inline-block}
 .badge-multi{background:#1f4a2e;color:#3fb950}
 .badge-free{background:#2d1f6e;color:#a5a0ff}
+.owner-filter{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.5rem 0;
+  font-size:.85rem;color:#8b949e}
+.owner-chip{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:999px;
+  padding:.15rem .7rem;font-size:.8rem;cursor:pointer}
+.owner-chip:hover{background:#30363d}
+.owner-chip.selected{background:#1f6feb;border-color:#1f6feb;color:#fff}
+.tool-console{border:1px solid #30363d;border-radius:6px;padding:.6rem;margin:.4rem 0;
+  background:#0d1117}
+.tool-console summary{cursor:pointer;color:#58a6ff}
+.tool-console input[type=text]{width:100%;box-sizing:border-box;margin:.35rem 0}
+.tool-result{white-space:pre-wrap;background:#010409;border:1px solid #30363d;border-radius:4px;
+  padding:.4rem;margin-top:.35rem;font-size:.85rem;max-height:14rem;overflow:auto}
 .badge-tool{background:#1a2a3a;color:#79c0ff}
 .badge-skill{background:#2a1a3a;color:#d2a8ff}
 .badge-kind{background:#3a2a1a;color:#f0883e}
@@ -370,6 +383,83 @@ def make_router(
         note = f'<p class="msg">✓ Removed {len(removed)} agent(s).</p>'
         return HTMLResponse(panel.replace("</section>", note + "</section>", 1))
 
+    @router.post("/dashboard/agents/{device_id}/owner", response_class=HTMLResponse)
+    async def agent_owner(device_id: str, owner: str = Form(default="")) -> HTMLResponse:
+        """Set or clear the builder an agent belongs to."""
+        if not await store.set_agent_owner(device_id, owner):
+            return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        name = owner.strip()
+        return HTMLResponse(
+            f'<span class="msg">✓ {html.escape(name)}</span>'
+            if name
+            else '<span class="msg">✓ owner cleared</span>'
+        )
+
+    @router.post("/dashboard/agents/{device_id}/call_tool", response_class=HTMLResponse)
+    async def agent_call_tool(
+        device_id: str,
+        tool: str = Form(...),
+        arguments: str = Form(default="{}"),
+    ) -> HTMLResponse:
+        """Call one tool on a bridged agent and show the raw result."""
+        import json as _json
+
+        raw = arguments.strip() or "{}"
+        try:
+            args = _json.loads(raw)
+        except ValueError as exc:
+            return HTMLResponse(
+                f'<div class="tool-result" style="color:#f85149">arguments must be JSON: '
+                f"{html.escape(str(exc))}</div>",
+                status_code=400,
+            )
+        if not isinstance(args, dict):
+            return HTMLResponse(
+                '<div class="tool-result" style="color:#f85149">arguments must be a JSON '
+                'object, e.g. {"speed": 5}</div>',
+                status_code=400,
+            )
+        try:
+            result = await call_one_tool(device_id, tool, args)
+        except TurnError as exc:
+            return HTMLResponse(
+                f'<div class="tool-result" style="color:#f85149">{html.escape(str(exc))}</div>',
+                status_code=400,
+            )
+        if result.startswith("data:image"):
+            return HTMLResponse(
+                f'<img src="{html.escape(result)}" style="max-width:320px;border-radius:4px">'
+            )
+        return HTMLResponse(f'<div class="tool-result">{html.escape(result)}</div>')
+
+    @router.post("/dashboard/agents/{device_id}/ask", response_class=HTMLResponse)
+    async def agent_ask(device_id: str, text: str = Form(default="")) -> HTMLResponse:
+        """Run one full persona turn against a bridged agent."""
+        message = text.strip()
+        if not message:
+            return HTMLResponse('<div class="tool-result">Type something to ask.</div>', 400)
+        try:
+            result = await run_turn(store, config, device_id, message)
+        except TurnError as exc:
+            return HTMLResponse(
+                f'<div class="tool-result" style="color:#f85149">{html.escape(str(exc))}</div>',
+                status_code=400,
+            )
+        tools_line = (
+            f'<div style="color:#8b949e;font-size:0.8rem">tools called: '
+            f"{html.escape(', '.join(result.tools_called))}</div>"
+            if result.tools_called
+            else ""
+        )
+        images = "".join(
+            f'<img src="{html.escape(i)}" style="max-width:320px;border-radius:4px;display:block">'
+            for i in result.images
+        )
+        return HTMLResponse(
+            f'<div class="tool-result">{html.escape(result.reply) or "(no reply)"}</div>'
+            f"{tools_line}{images}"
+        )
+
     @router.post("/dashboard/agents/{device_id}/pin", response_class=HTMLResponse)
     async def agent_pin(device_id: str, pinned: str = Form(default="")) -> HTMLResponse:
         """Mark an agent long-term (kept out of cleanup) or clear the mark."""
@@ -395,9 +485,9 @@ def make_router(
         return _render_spend_panel(totals)
 
     @router.get("/dashboard/agents", response_class=HTMLResponse)
-    async def dashboard_agents_partial(request: Request) -> HTMLResponse:
-        rows = await _render_agent_rows(store, heartbeat_timeout_seconds)
-        return HTMLResponse(_agent_table(rows))
+    async def dashboard_agents_partial(request: Request, owner: str = "") -> HTMLResponse:
+        rows = await _render_agent_rows(store, heartbeat_timeout_seconds, owner=owner)
+        return HTMLResponse(_agent_table(rows, owner=owner))
 
     @router.get("/dashboard/overview", response_class=HTMLResponse)
     async def dashboard_overview_partial(request: Request) -> HTMLResponse:
@@ -619,12 +709,35 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             device_id, agent.reported_activity if agent else None
         )
 
-        if ws_connected:
+        # A bridged agent (robot or page) has no voice socket and no device
+        # MCP handshake. Describing it in firmware terms — "wake-word
+        # standby", "MCP —" — reads as broken when it is working fine, so
+        # report the bridge instead.
+        bridged = agent is not None and agent.kind != AgentKind.XIAOZHI.value
+        bridge = mcp_bridge.get_page_agent(device_id) if bridged else None
+
+        transport_label = "Bridge" if bridged else "Voice transport"
+        if bridged:
+            if bridge is not None and bridge.connected:
+                ws_html = '<span style="color:#3fb950">● connected</span>'
+            elif bridge is not None:
+                ws_html = '<span style="color:#d29922">○ registered, stream closed</span>'
+            else:
+                ws_html = '<span style="color:#6e7681">○ not connected</span>'
+        elif ws_connected:
             ws_html = '<span style="color:#3fb950">● connected</span>'
         else:
             ws_html = '<span style="color:#6e7681">○ closed (wake-word standby)</span>'
 
-        if mcp_client and mcp_client.ready:
+        if bridged:
+            tools = sorted(bridge.tools) if bridge else []
+            mcp_html = (
+                f'<span style="color:#3fb950">● {len(tools)} tools</span> '
+                f'<span style="color:#8b949e;font-size:0.8rem">— {", ".join(tools)}</span>'
+                if tools
+                else '<span style="color:#6e7681">○ no tools declared</span>'
+            )
+        elif mcp_client and mcp_client.ready:
             tool_names = ", ".join(mcp_client.tools.keys())
             mcp_html = (
                 f'<span style="color:#3fb950">● ready</span> '
@@ -644,7 +757,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
   <tr><th style="width:7rem">Health</th>
       <td><span style="color:{health_color}">{health.title()}</span></td></tr>
   <tr><th>Activity</th><td>{activity.title()}</td></tr>
-  <tr><th>Voice transport</th><td>{ws_html}</td></tr>
+  <tr><th>{transport_label}</th><td>{ws_html}</td></tr>
   <tr><th>MCP</th><td>{mcp_html}</td></tr>
   <tr><th>Registration</th><td>{db_status}</td></tr>
 </table>""")
@@ -839,11 +952,13 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 
         is_transcriber = bool(persona and persona.transcription)
 
-        # Assistant-only actions: both run the LLM/TTS pipeline, which a
-        # transcriber device never does.
+        # Assistant-only actions: both drive the *device* voice pipeline, so
+        # they need a xiaozhi board in an assistant persona. A transcriber
+        # never replies, and a bridged agent has no voice socket to speak
+        # through — it gets the tool console and "Ask this agent" instead.
         assistant_actions = (
             ""
-            if is_transcriber
+            if is_transcriber or agent.kind != AgentKind.XIAOZHI.value
             else f"""\
 <h3>Inject utterance</h3>
 <p style="color:#8b949e;font-size:0.85rem">
@@ -881,10 +996,11 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             else ""
         )
 
-        # Reboot is a firmware action; a page agent has nothing to reboot.
+        # Reboot is a firmware action. Only a xiaozhi board has firmware; a
+        # page agent or a robot script has nothing to reboot.
         reboot_btn = (
             ""
-            if agent.kind == "page"
+            if agent.kind != AgentKind.XIAOZHI.value
             else f"""\
 <form hx-post="/dashboard/agents/{device_id}/reboot"
       hx-target="#reboot-result" hx-swap="innerHTML"
@@ -894,6 +1010,64 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 </form>"""
         )
         pin_form = _pin_form(device_id, agent.pinned)
+        owner_form = f"""\
+<h3>Owner</h3>
+<p style="color:#8b949e;font-size:0.85rem">Whose agent this is. Used to filter the fleet
+list on a busy build night; it does not restrict who can drive it.</p>
+<form hx-post="/dashboard/agents/{device_id}/owner"
+      hx-target="#owner-result" hx-swap="innerHTML"
+      style="display:inline-flex;gap:0.5rem;align-items:center">
+  <input type="text" name="owner" value="{html.escape(agent.owner or "")}"
+         placeholder="builder or team name" aria-label="Owner" style="width:240px">
+  <button type="submit">Save owner</button>
+</form>
+<span id="owner-result" role="status" aria-live="polite" style="margin-left:0.5rem"></span>"""
+
+        # Tool console — call one tool by hand, no model in the loop. For a
+        # bridged agent (robot or page) this is the fastest way to answer
+        # "did my firmware actually wire that tool up?".
+        bridged = mcp_bridge.get_page_agent(device_id)
+        console_html = ""
+        if bridged is not None and bridged.tools:
+            forms = []
+            for tname, tdata in bridged.tools.items():
+                props = tdata.get("inputSchema", {}).get("properties", {}) or {}
+                example = (
+                    "{" + ", ".join(f'"{k}": ' for k in list(props)[:3]).rstrip(", ") + "}"
+                    if props
+                    else "{}"
+                )
+                desc = html.escape(str(tdata.get("description") or ""))
+                forms.append(f"""\
+<details class="tool-console">
+  <summary>{html.escape(tname)}</summary>
+  <p style="color:#8b949e;font-size:0.8rem;margin:.2rem 0">{desc}</p>
+  <form hx-post="/dashboard/agents/{device_id}/call_tool"
+        hx-target="#result-{html.escape(tname).replace(".", "-")}" hx-swap="innerHTML">
+    <input type="hidden" name="tool" value="{html.escape(tname)}">
+    <label style="font-size:0.8rem;color:#8b949e">arguments (JSON)</label>
+    <input type="text" name="arguments" value='{example}' aria-label="Tool arguments JSON">
+    <button type="submit" style="background:#1a4a6e">▶ Call</button>
+  </form>
+  <div id="result-{html.escape(tname).replace(".", "-")}" role="status" aria-live="polite"></div>
+</details>""")
+            console_html = (
+                "<h3>Tool console</h3>"
+                '<p style="color:#8b949e;font-size:0.85rem">Call one tool directly, with no '
+                "model deciding for you. Arguments are JSON.</p>" + "".join(forms)
+            )
+            console_html += f"""\
+<h3>Ask this agent</h3>
+<p style="color:#8b949e;font-size:0.85rem">Runs a full turn with its persona and tools —
+the same loop the page agent and voice sessions use. Costs one model call.</p>
+<form hx-post="/dashboard/agents/{device_id}/ask"
+      hx-target="#ask-result" hx-swap="innerHTML">
+  <input type="text" name="text" placeholder="what can you do?" aria-label="Message"
+         style="width:400px">
+  <button type="submit" style="background:#1a4a6e">▶ Ask</button>
+</form>
+<div id="ask-result" role="status" aria-live="polite" style="margin-top:0.5rem"></div>"""
+
         remove_btn = f"""\
 <form hx-post="/dashboard/agents/{device_id}/remove" style="display:inline"
       hx-confirm="Remove this agent and its conversation history? A device will
@@ -905,6 +1079,8 @@ re-register on its next check-in.">
 {camera_btn}
 {pin_form}
 {remove_btn}
+{owner_form}
+{console_html}
 <span id="reboot-result" role="status" aria-live="polite"
       style="margin-left:0.75rem"></span>
 {assistant_actions}
@@ -1651,16 +1827,35 @@ def _render_spend_panel(totals: dict[str, Any]) -> str:
 </section>"""
 
 
-def _agent_table(rows: str, *, poll: bool = True) -> str:
+def _owner_filter(owners: list[str], current: str = "") -> str:
+    """Chips that filter the fleet table by whose agent it is."""
+    if not owners:
+        return ""
+
+    def chip(value: str, label: str) -> str:
+        active = " selected" if value == current else ""
+        return (
+            f'<button class="owner-chip{active}" hx-get="/dashboard/agents?owner={quote(value)}" '
+            f'hx-target="#agent-table" hx-swap="outerHTML">{html.escape(label)}</button>'
+        )
+
+    chips = chip("", "everyone") + "".join(chip(o, o) for o in owners)
+    return f'<div class="owner-filter">Show: {chips}</div>'
+
+
+def _agent_table(rows: str, *, poll: bool = True, owner: str = "") -> str:
+    query = f"?owner={quote(owner)}" if owner else ""
     poll_attributes = (
-        ' hx-get="/dashboard/agents" hx-trigger="every 5s" hx-swap="outerHTML"' if poll else ""
+        f' hx-get="/dashboard/agents{query}" hx-trigger="every 5s" hx-swap="outerHTML"'
+        if poll
+        else ""
     )
     return f"""\
-<div{poll_attributes}>
+<div id="agent-table"{poll_attributes}>
 <table>
 <thead><tr>
   <th>device</th><th>health · activity</th><th>persona / model</th>
-  <th>tools</th><th>latency (last / avg)</th><th>spend</th>
+  <th>owner</th><th>tools</th><th>latency (last / avg)</th><th>spend</th>
   <th>ip</th><th>fw</th><th>last seen</th>
 </tr></thead>
 <tbody>{rows}</tbody>
@@ -1785,13 +1980,17 @@ def _project_docs() -> str:
 </div>"""
 
 
-async def _render_agent_rows(store: RegistryStore, heartbeat_timeout_seconds: int) -> str:
+async def _render_agent_rows(
+    store: RegistryStore, heartbeat_timeout_seconds: int, owner: str = ""
+) -> str:
     try:
         rows_data = await store.list_agents_with_personas()
+        if owner:
+            rows_data = [(a, p) for a, p in rows_data if (a.owner or "") == owner]
         spend_by_device = await store.llm_spend_by_device()
     except Exception as exc:
         logger.error(f"Dashboard agent query failed: {exc}")
-        return "<tr><td colspan=9>error loading agents</td></tr>"
+        return "<tr><td colspan=10>error loading agents</td></tr>"
 
     return _render_agent_rows_data(rows_data, heartbeat_timeout_seconds, spend_by_device)
 
@@ -1808,13 +2007,16 @@ async def _render_agent_overview(
     overview = render_fleet_overview(rows_data, heartbeat_timeout_seconds)
     if not rows_data:
         return _overview_poll_wrapper(overview)
+    owners = sorted({a.owner for a, _p in rows_data if a.owner})
     try:
         spend_by_device = await store.llm_spend_by_device()
     except Exception as exc:
         logger.error(f"Dashboard spend query failed: {exc}")
         spend_by_device = {}
     rows = _render_agent_rows_data(rows_data, heartbeat_timeout_seconds, spend_by_device)
-    return _overview_poll_wrapper(overview + "<h2>All agents</h2>" + _agent_table(rows, poll=False))
+    return _overview_poll_wrapper(
+        overview + "<h2>All agents</h2>" + _owner_filter(owners) + _agent_table(rows, poll=False)
+    )
 
 
 def _overview_poll_wrapper(content: str) -> str:
@@ -1831,7 +2033,7 @@ def _render_agent_rows_data(
     spend_by_device: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     if not rows_data:
-        return "<tr><td colspan=9>no agents registered yet</td></tr>"
+        return "<tr><td colspan=10>no agents registered yet</td></tr>"
     spend_by_device = spend_by_device or {}
 
     import agent_hub.skills as server_skills  # local import avoids circular at module level
@@ -1889,14 +2091,16 @@ def _render_agent_rows_data(
             "degraded": "#d29922",
             "offline": "#6e7681",
         }[health]
-        if agent.kind == "page":
-            # A page agent has no wake-word firmware; what matters is whether
-            # the browser tab still holds its MCP bridge stream open.
+        if agent.kind != "xiaozhi":
+            # A bridged agent (browser page or robot) has no wake-word
+            # firmware; what matters is whether it still holds its MCP bridge
+            # stream open.
+            noun = "page" if agent.kind == "page" else "agent"
             bridge = mcp_bridge.get_page_agent(agent.device_id)
             if bridge is not None and bridge.connected:
-                transport = f"page open · bridge connected · {len(bridge.tools)} page tools"
+                transport = f"{noun} connected · {len(bridge.tools)} tools"
             else:
-                transport = "page closed"
+                transport = f"{noun} not connected"
         else:
             transport = "voice connected" if ws_connected else "wake-word standby"
             if mcp_client and mcp_client.ready:
@@ -1927,6 +2131,10 @@ def _render_agent_rows_data(
         else:
             lat_cell = '<span style="color:#6e7681">—</span>'
 
+        owner_cell = (
+            html.escape(agent.owner) if agent.owner else '<span style="color:#6e7681">—</span>'
+        )
+
         # Spend cell — the same ledger for every kind of agent.
         sp = spend_by_device.get(agent.device_id)
         spend_cell = (
@@ -1940,6 +2148,7 @@ def _render_agent_rows_data(
   <td>{device_cell}</td>
   <td>{conn_cell}</td>
   <td>{persona_name}{model_line}</td>
+  <td>{owner_cell}</td>
   <td>{tools_cell}</td>
   <td>{lat_cell}</td>
   <td>{spend_cell}</td>

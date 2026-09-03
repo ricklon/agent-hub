@@ -31,6 +31,8 @@
 	#   /checkin/            check-in               (8003)
 	#   /xiaozhi/ota/        check-in / OTA         (8003)
 	#   /xiaozhi/heartbeat/  liveness + health      (8003)
+	#   /agent/              robot registration     (8003)
+	#   /mcp/v1/             robot MCP bridge       (8003)
 	handle /checkin/* {
 		reverse_proxy agent-hub:8003
 	}
@@ -38,6 +40,19 @@
 		reverse_proxy agent-hub:8003
 	}
 	handle /xiaozhi/heartbeat/* {
+		reverse_proxy agent-hub:8003
+	}
+
+	# Robot / MCP agent registration and its MCP bridge, both mounted on
+	# http_port. These are how a non-browser agent joins: /agent/register is
+	# gated by the enrollment token, and both /mcp/v1/ endpoints authenticate
+	# with the per-agent token that registration issues. The dashboard's own
+	# page-agent registration stays off this hostname — it belongs behind
+	# Cloudflare Access with the rest of the dashboard.
+	handle /agent/* {
+		reverse_proxy agent-hub:8003
+	}
+	handle /mcp/v1/* {
 		reverse_proxy agent-hub:8003
 	}
 

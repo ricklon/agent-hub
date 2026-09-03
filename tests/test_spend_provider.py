@@ -183,3 +183,33 @@ class TestLimitEnforcement:
             [_ async for _ in provider.stream([{"role": "user", "content": "hi"}])]
 
         assert completions.calls == []
+
+
+class TestToolArgumentParsing:
+    """Malformed tool arguments are recoverable, not fatal.
+
+    A cheap model that emits almost-JSON used to kill the whole turn with a
+    JSONDecodeError, losing the user's question. The loop now hands the parse
+    error back so the model can correct itself on the next round.
+    """
+
+    def test_valid_arguments_parse(self) -> None:
+        from agent_hub.providers.llm.openai_provider import _parse_tool_arguments
+
+        assert _parse_tool_arguments('{"speed": 5}') == ({"speed": 5}, None)
+        assert _parse_tool_arguments(None) == ({}, None)
+        assert _parse_tool_arguments("") == ({}, None)
+
+    def test_malformed_arguments_return_an_explanation(self) -> None:
+        from agent_hub.providers.llm.openai_provider import _parse_tool_arguments
+
+        args, error = _parse_tool_arguments('{"speed": 5, "secs"')
+        assert args == {}
+        assert error is not None and "valid JSON" in error
+
+    def test_non_object_arguments_are_rejected(self) -> None:
+        from agent_hub.providers.llm.openai_provider import _parse_tool_arguments
+
+        args, error = _parse_tool_arguments("[1, 2]")
+        assert args == {}
+        assert error is not None and "JSON object" in error
