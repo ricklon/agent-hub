@@ -41,6 +41,12 @@ class ServerConfig:
     # Comma-separated verified emails granted admin during provisioning/login.
     dashboard_admin_emails: str = ""
     enrollment_token: str = ""
+    # Role given to a Cloudflare Access identity the hub has never seen. The
+    # Access policy is the guest list; this decides what being on it means.
+    # "viewer" keeps the cautious default (read the dashboard, press nothing);
+    # "operator" suits an event where everyone admitted is a builder.
+    # "admin" is refused here — name bootstrap admins explicitly instead.
+    dashboard_default_role: str = "viewer"
     dashboard_image_root: str = "data/images"
     dashboard_allowed_origins: str = ""
     allowed_hosts: str = ""
@@ -64,6 +70,19 @@ class RegistryConfig:
 _TOP_LEVEL_CONFIGS = {
     "server": ServerConfig,
     "registry": RegistryConfig,
+}
+
+
+# Leaf keys containing an underscore that live in sections with no dataclass.
+# The generic rule assumes the first token after the section is a sub-section
+# name, which is right for `llm.openai.api_key` and wrong for `llm.free_only`:
+# AGENT_HUB_LLM_FREE_ONLY silently became `llm.free.only` and was ignored.
+# Anything listed here is treated as one leaf instead.
+_FLAT_LEAF_KEYS: dict[str, set[str]] = {
+    "llm": {"free_only", "default_provider", "vision_model"},
+    "tts": {"default_provider"},
+    "asr": {"default_provider"},
+    "vad": {"default_provider"},
 }
 
 
@@ -91,7 +110,7 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
 
         section = tokens[0]
         tail = tokens[1:]
-        section_keys = _section_leaf_keys(section)
+        section_keys = _section_leaf_keys(section) | _FLAT_LEAF_KEYS.get(section, set())
         flat_key = "_".join(tail)
 
         if flat_key in section_keys:
@@ -144,6 +163,7 @@ class Settings:
                 dashboard_access_audience=str(srv.get("dashboard_access_audience", "")),
                 dashboard_admin_emails=str(srv.get("dashboard_admin_emails", "")),
                 enrollment_token=str(srv.get("enrollment_token", "")),
+                dashboard_default_role=str(srv.get("dashboard_default_role", "viewer")),
                 dashboard_image_root=str(srv.get("dashboard_image_root", "data/images")),
                 dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),
                 allowed_hosts=str(srv.get("allowed_hosts", "")),
