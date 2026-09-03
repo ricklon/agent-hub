@@ -185,6 +185,12 @@ class Agent(Base):
     # for a room full of robots, not a security boundary: it decides what the
     # dashboard filter shows, never what anyone is allowed to do.
     owner: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # The verified Cloudflare Access subject that claimed this agent from the
+    # dashboard, if any. Unlike `owner` — which an agent types about itself at
+    # registration and anyone can edit — this can only be set by someone the
+    # hub authenticated, so "mine" means something. Still not a permission:
+    # it decides whose list an agent appears in, not who may drive it.
+    owner_subject: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     last_seen: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

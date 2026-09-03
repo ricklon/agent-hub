@@ -133,9 +133,25 @@ Behind Caddy, `/agent/*` and `/mcp/v1/*` are proxied to that port.
   Without it, registration is open to anyone who can reach the port, which is
   the right default only on a trusted LAN. Hand the token out at the start of
   the night.
-- **Ownership is a label, not a permission.** Anyone with dashboard access
-  can drive anyone's robot. That is deliberate for a room where everyone is
-  building together; it is not multi-tenancy.
+- **Builders need dashboard access, and it is two steps.** On a hub behind
+  Cloudflare Access, each builder's email must be allowed by the Access
+  policy, *and* a new identity is provisioned as a **viewer**, which can read
+  the dashboard but cannot press any button. Promote them to **operator** on
+  the Operators page or the tool console will 403. Do this before the night,
+  not during it.
+- **Claiming vs the owner label.** `--owner` is a string a robot says about
+  itself, so it is shown as an *unverified label*. The **Claim** button on an
+  agent page records the signed-in operator's verified identity instead, and
+  the **mine** filter chip keys off that. Claiming still does not restrict who
+  can drive a robot: anyone with dashboard access can drive anyone's. That is
+  deliberate for a room where everyone is building together; it is not
+  multi-tenancy.
+- **Reload Caddy after deploying** if `/agent/*` returns 404. The deploy
+  recreates only the app container, so a Caddyfile change needs
+  `docker exec agent-hub-caddy-1 caddy reload --config /etc/caddy/Caddyfile`.
+- **Cap the spend before a crowd arrives.** Every Ask is a model call on the
+  hub's key. Set `llm.spend` daily/total limits, and consider
+  `llm.free_only: true` so only free models can be selected.
 - **Cleanup**: robots idle for 14 days are offered for removal on the
   dashboard home; browser page agents go after 24 hours. Pin anything
   permanent with **Keep as long-term agent**.

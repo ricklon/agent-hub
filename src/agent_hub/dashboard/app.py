@@ -340,7 +340,11 @@ def make_router(
 
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(request: Request) -> HTMLResponse:
-        overview = await _render_agent_overview(store, heartbeat_timeout_seconds)
+        overview = await _render_agent_overview(
+            store,
+            heartbeat_timeout_seconds,
+            has_identity=getattr(request.state, "operator_identity", None) is not None,
+        )
         body = await _spend_panel() + overview + await _cleanup_panel()
         return HTMLResponse(_render_page(request, body))
 
@@ -382,6 +386,47 @@ def make_router(
         panel = await _cleanup_panel()
         note = f'<p class="msg">✓ Removed {len(removed)} agent(s).</p>'
         return HTMLResponse(panel.replace("</section>", note + "</section>", 1))
+
+    @router.post("/dashboard/agents/{device_id}/claim", response_class=HTMLResponse)
+    async def agent_claim(device_id: str, request: Request) -> HTMLResponse:
+        """Claim an agent as the signed-in operator.
+
+        The claim records the *verified* Access subject, so unlike the typed
+        owner label it cannot be spoofed by a robot registering with someone
+        else's name.
+        """
+        identity = getattr(request.state, "operator_identity", None)
+        if identity is None:
+            return HTMLResponse(
+                _claim_panel(None, None, None)
+                + '<p class="msg" style="color:#d29922">This hub has no verified sign-in, '
+                "so there is nobody to claim as. Set the owner label instead.</p>",
+                status_code=400,
+            )
+        if not await store.claim_agent(device_id, identity.subject, identity.email):
+            return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        agent = await store.get_agent(device_id)
+        return HTMLResponse(_claim_panel(agent, identity, _role(request)))
+
+    @router.post("/dashboard/agents/{device_id}/release", response_class=HTMLResponse)
+    async def agent_release(device_id: str, request: Request) -> HTMLResponse:
+        """Give up a claim. Yours always; anyone else's only as an admin."""
+        agent = await store.get_agent(device_id)
+        if agent is None:
+            return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        identity = getattr(request.state, "operator_identity", None)
+        role = _role(request)
+        mine = identity is not None and agent.owner_subject == identity.subject
+        if agent.owner_subject and not mine and role != OperatorRole.ADMIN.value:
+            return HTMLResponse(
+                _claim_panel(agent, identity, role)
+                + '<p class="msg" style="color:#d29922">That claim belongs to someone '
+                "else. An admin can release it.</p>",
+                status_code=403,
+            )
+        await store.release_agent(device_id)
+        agent = await store.get_agent(device_id)
+        return HTMLResponse(_claim_panel(agent, identity, role))
 
     @router.post("/dashboard/agents/{device_id}/owner", response_class=HTMLResponse)
     async def agent_owner(device_id: str, owner: str = Form(default="")) -> HTMLResponse:
@@ -485,13 +530,25 @@ def make_router(
         return _render_spend_panel(totals)
 
     @router.get("/dashboard/agents", response_class=HTMLResponse)
-    async def dashboard_agents_partial(request: Request, owner: str = "") -> HTMLResponse:
-        rows = await _render_agent_rows(store, heartbeat_timeout_seconds, owner=owner)
-        return HTMLResponse(_agent_table(rows, owner=owner))
+    async def dashboard_agents_partial(
+        request: Request, owner: str = "", mine: str = ""
+    ) -> HTMLResponse:
+        identity = getattr(request.state, "operator_identity", None)
+        subject = identity.subject if (mine and identity is not None) else ""
+        rows = await _render_agent_rows(
+            store, heartbeat_timeout_seconds, owner=owner, owner_subject=subject
+        )
+        return HTMLResponse(_agent_table(rows, owner=owner, mine=bool(mine)))
 
     @router.get("/dashboard/overview", response_class=HTMLResponse)
     async def dashboard_overview_partial(request: Request) -> HTMLResponse:
-        return HTMLResponse(await _render_agent_overview(store, heartbeat_timeout_seconds))
+        return HTMLResponse(
+            await _render_agent_overview(
+                store,
+                heartbeat_timeout_seconds,
+                has_identity=getattr(request.state, "operator_identity", None) is not None,
+            )
+        )
 
     # ── Project docs ─────────────────────────────────────────────────────────
 
@@ -1010,18 +1067,16 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 </form>"""
         )
         pin_form = _pin_form(device_id, agent.pinned)
-        owner_form = f"""\
-<h3>Owner</h3>
-<p style="color:#8b949e;font-size:0.85rem">Whose agent this is. Used to filter the fleet
-list on a busy build night; it does not restrict who can drive it.</p>
-<form hx-post="/dashboard/agents/{device_id}/owner"
-      hx-target="#owner-result" hx-swap="innerHTML"
-      style="display:inline-flex;gap:0.5rem;align-items:center">
-  <input type="text" name="owner" value="{html.escape(agent.owner or "")}"
-         placeholder="builder or team name" aria-label="Owner" style="width:240px">
-  <button type="submit">Save owner</button>
-</form>
-<span id="owner-result" role="status" aria-live="polite" style="margin-left:0.5rem"></span>"""
+        owner_form = (
+            "<h3>Owner</h3>"
+            '<p style="color:#8b949e;font-size:0.85rem">Whose agent this is. Used to filter '
+            "the fleet list on a busy build night; it does not restrict who can drive it.</p>"
+            + _claim_panel(
+                agent,
+                getattr(request.state, "operator_identity", None),
+                _role(request),
+            )
+        )
 
         # Tool console — call one tool by hand, no model in the loop. For a
         # bridged agent (robot or page) this is the fastest way to answer
@@ -1827,24 +1882,28 @@ def _render_spend_panel(totals: dict[str, Any]) -> str:
 </section>"""
 
 
-def _owner_filter(owners: list[str], current: str = "") -> str:
+def _owner_filter(owners: list[str], current: str = "", *, has_identity: bool = False) -> str:
     """Chips that filter the fleet table by whose agent it is."""
-    if not owners:
+    if not owners and not has_identity:
         return ""
 
-    def chip(value: str, label: str) -> str:
-        active = " selected" if value == current else ""
+    def chip(query: str, label: str) -> str:
         return (
-            f'<button class="owner-chip{active}" hx-get="/dashboard/agents?owner={quote(value)}" '
+            f'<button class="owner-chip" hx-get="/dashboard/agents{query}" '
             f'hx-target="#agent-table" hx-swap="outerHTML">{html.escape(label)}</button>'
         )
 
-    chips = chip("", "everyone") + "".join(chip(o, o) for o in owners)
+    chips = chip("", "everyone")
+    if has_identity:
+        # Keyed on the verified claim, so "mine" cannot be spoofed by a robot
+        # registering with someone else's owner label.
+        chips += chip("?mine=1", "mine")
+    chips += "".join(chip(f"?owner={quote(o)}", o) for o in owners)
     return f'<div class="owner-filter">Show: {chips}</div>'
 
 
-def _agent_table(rows: str, *, poll: bool = True, owner: str = "") -> str:
-    query = f"?owner={quote(owner)}" if owner else ""
+def _agent_table(rows: str, *, poll: bool = True, owner: str = "", mine: bool = False) -> str:
+    query = "?mine=1" if mine else (f"?owner={quote(owner)}" if owner else "")
     poll_attributes = (
         f' hx-get="/dashboard/agents{query}" hx-trigger="every 5s" hx-swap="outerHTML"'
         if poll
@@ -1981,11 +2040,16 @@ def _project_docs() -> str:
 
 
 async def _render_agent_rows(
-    store: RegistryStore, heartbeat_timeout_seconds: int, owner: str = ""
+    store: RegistryStore,
+    heartbeat_timeout_seconds: int,
+    owner: str = "",
+    owner_subject: str = "",
 ) -> str:
     try:
         rows_data = await store.list_agents_with_personas()
-        if owner:
+        if owner_subject:
+            rows_data = [(a, p) for a, p in rows_data if a.owner_subject == owner_subject]
+        elif owner:
             rows_data = [(a, p) for a, p in rows_data if (a.owner or "") == owner]
         spend_by_device = await store.llm_spend_by_device()
     except Exception as exc:
@@ -1998,6 +2062,8 @@ async def _render_agent_rows(
 async def _render_agent_overview(
     store: RegistryStore,
     heartbeat_timeout_seconds: int,
+    *,
+    has_identity: bool = False,
 ) -> str:
     try:
         rows_data = await store.list_agents_with_personas()
@@ -2015,7 +2081,10 @@ async def _render_agent_overview(
         spend_by_device = {}
     rows = _render_agent_rows_data(rows_data, heartbeat_timeout_seconds, spend_by_device)
     return _overview_poll_wrapper(
-        overview + "<h2>All agents</h2>" + _owner_filter(owners) + _agent_table(rows, poll=False)
+        overview
+        + "<h2>All agents</h2>"
+        + _owner_filter(owners, has_identity=has_identity)
+        + _agent_table(rows, poll=False)
     )
 
 
@@ -2206,6 +2275,71 @@ def _persona_status(persona: Any | None) -> dict[str, Any] | None:
 
 _MODELS_CACHE_TTL_S = 600.0
 _models_cache: tuple[float, list[dict[str, Any]]] | None = None
+
+
+def _role(request: Request) -> str:
+    """The operator role attached to this request by authentication."""
+    return str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
+
+
+def _claim_panel(
+    agent: Agent | None,
+    identity: OperatorIdentity | None,
+    role: str | None,
+) -> str:
+    """Owner state plus the button that changes it, as one swappable block.
+
+    Three cases matter: nobody has claimed it, you have, or somebody else has.
+    A typed owner label with no verified claim behind it is shown as
+    unverified, because a robot supplies that string about itself.
+    """
+    if agent is None:
+        return '<div id="claim-panel"></div>'
+    device_id = html.escape(agent.device_id)
+    claimed_by_me = identity is not None and agent.owner_subject == identity.subject
+    label = html.escape(agent.owner or "")
+
+    if agent.owner_subject and claimed_by_me:
+        state = f'<strong>Claimed by you</strong> <span class="doc-muted">({label})</span>'
+        button = "Release"
+    elif agent.owner_subject:
+        state = f"<strong>Claimed by {label}</strong>"
+        button = "Release" if role == OperatorRole.ADMIN.value else ""
+    elif agent.owner:
+        state = (
+            f"<strong>{label}</strong> "
+            '<span class="doc-muted" title="Set by the agent itself at registration, '
+            'not verified">unverified label</span>'
+        )
+        button = "Release"
+    else:
+        state = '<span class="doc-muted">Unclaimed</span>'
+        button = ""
+
+    actions = ""
+    if button:
+        actions += (
+            f'<form hx-post="/dashboard/agents/{device_id}/release" hx-target="#claim-panel" '
+            'hx-swap="outerHTML" style="display:inline">'
+            f'<button type="submit" style="background:#30363d">{button}</button></form> '
+        )
+    if identity is not None and not claimed_by_me:
+        actions += (
+            f'<form hx-post="/dashboard/agents/{device_id}/claim" hx-target="#claim-panel" '
+            'hx-swap="outerHTML" style="display:inline">'
+            f'<button type="submit">Claim as {html.escape(identity.email)}</button></form> '
+        )
+    hint = (
+        ""
+        if identity is not None
+        else '<div class="doc-muted" style="font-size:0.8rem;margin-top:0.3rem">'
+        "This hub has no verified sign-in, so agents can only carry the label they "
+        "register with.</div>"
+    )
+    return f"""\
+<div id="claim-panel" style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">
+  <span>{state}</span>{actions}
+</div>{hint}"""
 
 
 def _pin_form(device_id: str, pinned: bool) -> str:
