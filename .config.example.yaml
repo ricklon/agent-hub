@@ -66,6 +66,12 @@ llm:
   # Vision model used by the image explain endpoint (POST /xiaozhi/v1/image/).
   # Must support vision/image_url inputs. Defaults to google/gemma-3-27b-it on OpenRouter.
   vision_model: "google/gemma-3-27b-it"
+  # Free mode. When true the Models page lists only free OpenRouter models
+  # (prompt price $0, ids usually end in ":free") and the dashboard refuses to
+  # select or save a paid model id. Use it for class nights and public demos
+  # where nobody should be able to run up a bill from the UI. It does not
+  # change models already saved on personas.
+  free_only: false
   openai:
     api_key: "YOUR_OPENAI_API_KEY"
     model: "gpt-4o-mini"

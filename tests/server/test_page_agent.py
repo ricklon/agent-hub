@@ -137,3 +137,48 @@ async def test_page_agent_page_injects_the_persona_query(store: RegistryStore) -
     assert resp.status_code == 200
     assert "%%PERSONA%%" not in resp.text
     assert '"toaster3000"' in resp.text
+
+
+async def test_goodbye_marks_the_page_offline_and_drops_the_bridge(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        reg = await client.post("/page-agent/register", json={"device_id": "page-bye", "tools": []})
+        token = reg.json()["token"]
+        assert mcp_bridge.get_page_agent("page-bye") is not None
+
+        resp = await client.post(
+            "/page-agent/goodbye", json={"device_id": "page-bye", "token": token}
+        )
+    assert resp.status_code == 200
+    assert mcp_bridge.get_page_agent("page-bye") is None
+    agent = await store.get_agent("page-bye")
+    assert agent is not None
+    assert agent.status == "offline"
+    # No heartbeat left behind, so health reads offline right away rather
+    # than after the heartbeat timeout.
+    assert agent.last_heartbeat is None
+
+
+async def test_goodbye_rejects_a_bad_token(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        await client.post("/page-agent/register", json={"device_id": "page-keep", "tools": []})
+        resp = await client.post(
+            "/page-agent/goodbye", json={"device_id": "page-keep", "token": "nope"}
+        )
+    assert resp.status_code == 401
+    assert mcp_bridge.get_page_agent("page-keep") is not None
+
+
+async def test_page_html_works_outside_secure_contexts(store: RegistryStore) -> None:
+    """Plain http on a LAN address has no crypto.randomUUID and no mediaDevices."""
+    async with await _client(store) as client:
+        resp = await client.get("/dashboard/page-agent")
+    html = resp.text
+    # Identity must not depend on randomUUID being present …
+    assert "crypto.getRandomValues" in html
+    assert "if (crypto.randomUUID)" in html
+    # … and must be per tab so two personas can run side by side.
+    assert "sessionStorage.getItem" in html
+    assert "localStorage." not in html
+    # Media is only gated, never assumed.
+    assert "needs https or localhost" in html
+    assert "/page-agent/goodbye" in html

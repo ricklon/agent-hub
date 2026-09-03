@@ -32,7 +32,7 @@ from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.providers.llm import get_provider
 from agent_hub.registry.models import AgentKind, Persona
 from agent_hub.registry.store import RegistryStore
-from agent_hub.server import mcp_bridge
+from agent_hub.server import mcp_bridge, session_state
 from agent_hub.server._page_html import PAGE_HTML as _PAGE_AGENT_HTML
 from agent_hub.server.tool_policy import is_risky_tool
 
@@ -287,6 +287,29 @@ def make_router(
     async def heartbeat_preflight() -> JSONResponse:
         return JSONResponse({}, headers=_CORS)
 
+    @router.post("/page-agent/goodbye")
+    async def goodbye(request: Request) -> JSONResponse:
+        """The page is closing: drop its bridge handle and mark it offline now.
+
+        Sent via ``navigator.sendBeacon`` on ``pagehide``, so the body may be
+        a Blob rather than a fetch; it is still JSON. Token-authenticated like
+        the heartbeat, so a stray beacon cannot knock another agent offline.
+        """
+        try:
+            payload = json.loads((await request.body()) or b"{}")
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            return JSONResponse({"ok": False, "message": "expected object"}, status_code=400)
+        device_id = str(payload.get("device_id") or "").strip()
+        token = str(payload.get("token") or "").strip()
+        if not await store.mark_agent_offline(device_id, token):
+            return JSONResponse({"ok": False, "message": "invalid token"}, status_code=401)
+        mcp_bridge.unregister_page_agent(device_id)
+        session_state.set_pipeline_status(device_id, "idle")
+        logger.bind(tag=_TAG).info(f"Page agent {device_id!r} said goodbye")
+        return JSONResponse({"ok": True}, headers=_CORS)
+
     @router.options("/page-agent/ask")
     async def ask_preflight() -> JSONResponse:
         return JSONResponse({}, headers=_CORS)
@@ -394,16 +417,23 @@ def make_router(
             return f"unknown tool: {name!r}"
 
         # Run the LLM turn (non-streaming — the page displays the full text).
+        # Pipeline status is what the dashboard's activity column reads, so a
+        # page agent mid-turn shows "thinking" like a device would.
         llm = get_provider(persona.llm_provider, config, model_override=persona.llm_model or None)
+        session_state.set_pipeline_status(device_id, "thinking", text)
+        started = time.monotonic()
         try:
             reply = await llm.complete_with_tools(
                 history, tools, _exec_tool, system_prompt=system_prompt
             )
         except Exception as exc:
+            session_state.set_pipeline_status(device_id, "idle")
             logger.bind(tag=_TAG).error(f"Page agent LLM turn failed: {exc}")
             return JSONResponse(
                 {"ok": False, "message": f"LLM error: {exc}"}, status_code=500, headers=_CORS
             )
+        session_state.set_pipeline_status(device_id, "idle")
+        session_state.record_turn(device_id, 0, int((time.monotonic() - started) * 1000), 0)
 
         reply = (reply or "").strip()
         if reply:
@@ -517,6 +547,9 @@ def make_router(
                 return result.text
             return f"unknown tool: {name!r}"
 
+        asr_ms = 0
+        session_state.set_pipeline_status(device_id, "listening")
+
         async def _run_turn(transcript: str) -> None:
             async with pipeline_lock:
                 await websocket.send_text(
@@ -528,14 +561,17 @@ def make_router(
                     )
                 )
                 await websocket.send_text(json.dumps({"type": "thinking"}))
+                session_state.set_pipeline_status(device_id, "thinking", transcript)
                 llm = get_llm(
                     persona.llm_provider, config, model_override=persona.llm_model or None
                 )
+                llm_started = time.monotonic()
                 try:
                     reply = await llm.complete_with_tools(
                         conversation, tools, _exec_tool, system_prompt=system_prompt
                     )
                 except Exception as exc:
+                    session_state.set_pipeline_status(device_id, "listening")
                     logger.bind(tag=_TAG).error(f"Page voice LLM error: {exc}")
                     await websocket.send_text(
                         json.dumps(
@@ -546,8 +582,10 @@ def make_router(
                         )
                     )
                     return
+                llm_ms = int((time.monotonic() - llm_started) * 1000)
                 reply = (reply or "").strip()
                 if not reply:
+                    session_state.set_pipeline_status(device_id, "listening")
                     return
                 conversation.append({"role": "user", "content": transcript})
                 conversation.append({"role": "assistant", "content": reply})
@@ -555,12 +593,17 @@ def make_router(
                 await store.append_history(device_id, "assistant", reply)
 
                 # TTS: synthesize and stream PCM back
+                session_state.set_pipeline_status(device_id, "speaking", reply)
                 tts = get_tts(persona.tts_provider, config)
+                tts_started = time.monotonic()
                 try:
                     pcm_bytes, tts_rate = await tts.synthesize_pcm(reply, voice=persona.tts_voice)
                 except Exception as exc:
+                    session_state.set_pipeline_status(device_id, "listening")
                     logger.bind(tag=_TAG).error(f"Page voice TTS error: {exc}")
                     return
+                tts_ms = int((time.monotonic() - tts_started) * 1000)
+                session_state.record_turn(device_id, asr_ms, llm_ms, tts_ms)
                 # Resample if needed (browser plays 24kHz or we send 16kHz raw)
                 if tts_rate != 16000:
                     from agent_hub.server.audio import pcm_resample
@@ -581,6 +624,7 @@ def make_router(
                 for i in range(0, len(pcm_bytes), chunk_size):
                     await websocket.send_bytes(pcm_bytes[i : i + chunk_size])
                 await websocket.send_text(json.dumps({"type": "tts", "state": "stop"}))
+                session_state.set_pipeline_status(device_id, "listening")
                 logger.bind(tag=_TAG).info(
                     f"Page voice {device_id!r}: {transcript!r} → {reply[:60]!r}"
                 )
@@ -598,7 +642,9 @@ def make_router(
                         pcm_all = vad.take_pcm()
                         wav_bytes = pcm_to_wav(pcm_all, 16000)
                         asr = get_asr(persona.asr_provider, config)
+                        asr_started = time.monotonic()
                         result = await asr.transcribe(wav_bytes)
+                        asr_ms = int((time.monotonic() - asr_started) * 1000)
                         if not result.is_speech or not result.text:
                             continue
                         kind, text = classify_utterance(result.text, wake_word)
@@ -636,6 +682,7 @@ def make_router(
         except Exception as exc:
             logger.bind(tag=_TAG).error(f"Page voice error for {device_id!r}: {exc}")
         finally:
+            session_state.set_pipeline_status(device_id, "idle")
             logger.bind(tag=_TAG).info(f"Page voice WS disconnected: {device_id!r}")
 
     return router
