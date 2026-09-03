@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, WebSocket, status
+from loguru import logger
 
 from agent_hub.dashboard.access_identity import AccessIdentityError, AccessIdentityVerifier
 from agent_hub.registry.models import OperatorRole
@@ -42,6 +43,9 @@ class DashboardAuthorization:
         self._password = str(server.get("dashboard_password") or "")
         team_domain = str(server.get("dashboard_access_team_domain") or "")
         audience = str(server.get("dashboard_access_audience") or "")
+        self._default_role = self._resolve_default_role(
+            str(server.get("dashboard_default_role") or OperatorRole.VIEWER.value)
+        )
         self._admin_emails = {
             email.strip().lower()
             for email in str(server.get("dashboard_admin_emails") or "").split(",")
@@ -63,6 +67,30 @@ class DashboardAuthorization:
         self._origin_hosts = _normalise_hosts(
             server.get("dashboard_allowed_origins")
         ) | _normalise_hosts(server.get("allowed_hosts"))
+
+    @staticmethod
+    def _resolve_default_role(raw: str) -> str:
+        """Validate the configured role for first-seen identities.
+
+        Admin is deliberately not allowed: an Access policy is a guest list,
+        and a mistake in it should not hand out operator administration. Name
+        bootstrap admins explicitly in ``dashboard_admin_emails`` instead.
+        """
+        value = raw.strip().lower() or OperatorRole.VIEWER.value
+        allowed = {OperatorRole.VIEWER.value, OperatorRole.OPERATOR.value}
+        if value in allowed:
+            return value
+        if value == OperatorRole.ADMIN.value:
+            logger.warning(
+                "server.dashboard_default_role=admin is not allowed; using 'viewer'. "
+                "List bootstrap admins in server.dashboard_admin_emails instead."
+            )
+        else:
+            logger.warning(
+                f"Unknown server.dashboard_default_role {raw!r}; using 'viewer'. "
+                f"Valid values: {sorted(allowed)}."
+            )
+        return OperatorRole.VIEWER.value
 
     async def authenticate(self, request: Request) -> None:
         """Attach a trusted identity and role or reject the request."""
@@ -88,6 +116,7 @@ class DashboardAuthorization:
                 identity.subject,
                 identity.email,
                 self._admin_emails,
+                self._default_role,
             )
             if not operator.enabled:
                 raise HTTPException(

@@ -133,12 +133,16 @@ Behind Caddy, `/agent/*` and `/mcp/v1/*` are proxied to that port.
   Without it, registration is open to anyone who can reach the port, which is
   the right default only on a trusted LAN. Hand the token out at the start of
   the night.
-- **Builders need dashboard access, and it is two steps.** On a hub behind
-  Cloudflare Access, each builder's email must be allowed by the Access
-  policy, *and* a new identity is provisioned as a **viewer**, which can read
-  the dashboard but cannot press any button. Promote them to **operator** on
-  the Operators page or the tool console will 403. Do this before the night,
-  not during it.
+- **Builders need dashboard access.** Each builder's email must be allowed by
+  the Cloudflare Access policy. A one-time PIN policy is the least friction:
+  they type an email, get a code, and they are in, with no account to create.
+- **Decide what an admitted identity becomes.** By default a first-seen
+  identity is a **viewer**, which can read the dashboard but cannot press any
+  button, so the tool console will 403. For an event where everyone Access
+  admits is a builder, set `server.dashboard_default_role: operator`
+  (`AGENT_HUB_SERVER_DASHBOARD_DEFAULT_ROLE=operator`) before the night.
+  Otherwise promote each person on the Operators page. See
+  [`users-and-cost.md`](users-and-cost.md) for where this is going.
 - **Claiming vs the owner label.** `--owner` is a string a robot says about
   itself, so it is shown as an *unverified label*. The **Claim** button on an
   agent page records the signed-in operator's verified identity instead, and

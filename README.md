@@ -245,7 +245,9 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_DASHBOARD_ACCESS_TEAM_DOMAIN` | — | Cloudflare Access team domain; set with the audience to verify operator identity |
 | `AGENT_HUB_SERVER_DASHBOARD_ACCESS_AUDIENCE` | — | Cloudflare Access application AUD tag; set with the team domain |
 | `AGENT_HUB_SERVER_DASHBOARD_ADMIN_EMAILS` | — | Comma-separated verified emails promoted to dashboard admin; required with Access identity |
-| `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` | — | Optional shared check-in secret; empty allows LAN/classroom auto-registration |
+| `AGENT_HUB_SERVER_DASHBOARD_DEFAULT_ROLE` | `viewer` | Role for a Cloudflare Access identity the hub has not seen before. `operator` suits an event where everyone admitted is a builder; `admin` is refused |
+| `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` | — | Optional shared check-in secret; empty allows LAN/classroom auto-registration; also gates robot registration on `/agent/register` |
+| `AGENT_HUB_LLM_FREE_ONLY` | `false` | Free mode: only free OpenRouter models may be selected or saved |
 | `AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT` | `data/images` | Directory the dashboard may serve captured images from |
 | `AGENT_HUB_SERVER_DASHBOARD_ALLOWED_ORIGINS` | — | Extra origins allowed to submit dashboard forms, comma-separated; only needed behind a Host-rewriting proxy |
 | `AGENT_HUB_SERVER_ALLOWED_HOSTS` | — | Host allowlist for the dashboard, comma-separated; blocks DNS-rebinding. List every name/IP the dashboard is reached by |
@@ -353,6 +355,7 @@ TBD.
 - [`docs/deployment.md`](docs/deployment.md) — secure LAN, Tailscale, and HTTPS proxy deployment guidance
 - [`docs/lessons-learned.md`](docs/lessons-learned.md) — non-obvious bugs, root causes, and fixes
 - [`docs/agent-test-harness.md`](docs/agent-test-harness.md) — proposal: a hardware-free agent test harness built on the page agent
+- [`docs/users-and-cost.md`](docs/users-and-cost.md) — proposal: a workspace per person and bring-your-own-key, so the hub never needs billing
 - [`docs/robot-build-night.md`](docs/robot-build-night.md) — bring your own robot: register it, call its tools from the browser, give it a persona
 - [`docs/agent-management-plan.md`](docs/agent-management-plan.md) — proposal: one harness, one fleet view, headless runners; how tau/pi compare
 - `AGENTS.md` — coding-agent instructions and skill catalogue

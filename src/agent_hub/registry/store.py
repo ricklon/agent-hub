@@ -292,30 +292,36 @@ class RegistryStore:
         subject: str,
         email: str,
         admin_emails: set[str],
+        default_role: str = OperatorRole.VIEWER.value,
     ) -> DashboardOperator:
         """Resolve a verified Access identity to its dashboard authorization row.
 
-        New identities are viewers unless their normalized email is in the
-        configured bootstrap-admin set. A configured bootstrap admin is also
-        promoted on a later login, which makes initial deployment recoverable
-        without granting elevated access to the first arbitrary visitor.
+        New identities get ``default_role`` unless their normalized email is
+        in the configured bootstrap-admin set. A configured bootstrap admin is
+        also promoted on a later login, which makes initial deployment
+        recoverable without granting elevated access to the first arbitrary
+        visitor.
 
         Args:
             subject: Stable Cloudflare Access subject identifier.
             email: Verified email claim from the Access assertion.
             admin_emails: Normalized emails explicitly configured as admins.
+            default_role: Role for an identity the hub has never seen.
 
         Returns:
             Persisted operator row with current email and last-seen time.
         """
         async with self._operator_lock:
-            return await self._get_or_create_dashboard_operator(subject, email, admin_emails)
+            return await self._get_or_create_dashboard_operator(
+                subject, email, admin_emails, default_role
+            )
 
     async def _get_or_create_dashboard_operator(
         self,
         subject: str,
         email: str,
         admin_emails: set[str],
+        default_role: str = OperatorRole.VIEWER.value,
     ) -> DashboardOperator:
         """Provision one operator while the process-local identity lock is held."""
         normalized_email = email.strip().lower()
@@ -326,18 +332,18 @@ class RegistryStore:
             operator = result.scalar_one_or_none()
             now = datetime.now(UTC)
             if operator is None:
-                role = (
-                    OperatorRole.ADMIN if normalized_email in admin_emails else OperatorRole.VIEWER
+                role_value = (
+                    OperatorRole.ADMIN.value if normalized_email in admin_emails else default_role
                 )
                 operator = DashboardOperator(
                     subject=subject,
                     email=normalized_email,
-                    role=role.value,
+                    role=role_value,
                     enabled=True,
                     last_seen_at=now,
                 )
                 session.add(operator)
-                logger.info(f"Provisioned dashboard operator {normalized_email!r} as {role.value}")
+                logger.info(f"Provisioned dashboard operator {normalized_email!r} as {role_value}")
                 changed = True
             else:
                 changed = operator.email != normalized_email

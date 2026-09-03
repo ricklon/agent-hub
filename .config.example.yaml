@@ -21,6 +21,14 @@ server:
   # Optional shared secret required during device check-in.
   # Leave empty for trusted LAN/classroom auto-registration.
   enrollment_token: ""
+  # Role given to a Cloudflare Access identity the hub has never seen before.
+  # The Access policy is the guest list; this decides what being on it means.
+  #   viewer   — read the dashboard, press nothing (default, cautious)
+  #   operator — drive agents, edit personas; right for an event where
+  #              everyone Access admits is a builder
+  # "admin" is refused here: name bootstrap admins in dashboard_admin_emails.
+  # Ignored entirely when Cloudflare Access is not configured.
+  dashboard_default_role: "viewer"
   # Devices should heartbeat at this cadence. The dashboard marks a device
   # offline when no heartbeat or live voice session is seen before the timeout.
   heartbeat_interval_seconds: 60
