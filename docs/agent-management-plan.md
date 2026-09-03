@@ -159,13 +159,46 @@ on the edit page and the Models page silently edits only `hub-default`.
   "Free only" checkbox does the same on demand. The OpenRouter catalogue is
   now cached for ten minutes (it was fetched on every keystroke).
 
+## Landed in the follow-up PR
+
+- **Stale-agent cleanup.** `dashboard/cleanup.py` holds one policy: devices
+  stale after 14 days unseen, page agents after 24 hours (both configurable
+  under `registry:`). The dashboard home lists what is stale and sweeps it on
+  one click; the server prunes **page agents only** hourly, so a board is
+  never removed without a person. An agent with a live voice socket or an
+  open bridge stream is never stale regardless of its row.
+- **Long-term agents.** `Agent.pinned` marks the boards and pages that are
+  part of the furniture. Pinned agents are never counted as stale and never
+  pruned; the fleet table shows a `kept` badge and the agent page has the
+  toggle.
+- **Tool-capable models only.** The catalogue now reads
+  `supported_parameters`; models that cannot call tools are hidden from the
+  picker (with a count of what was hidden) and refused on select and on
+  persona save. Every persona here depends on function calling, so offering
+  a model without it was offering a trap. Ids the catalogue does not know
+  (a local Ollama model) still pass.
+- **Spend per agent, whatever the kind.** `spend.bind_device()` sets the
+  agent for the current task, so every provider call inside a voice session
+  or a page turn is attributed without threading an id through the provider
+  API. The fleet table gained a spend column and the agent page a spend line.
+- **Voices follow the voice system.** The persona editor swaps its voice list
+  when the TTS system changes, and a save that pairs a Kitten persona with an
+  Edge voice is refused instead of failing at synthesis time.
+- **The page agent speaks with the persona voice.** `POST /page-agent/tts`
+  synthesizes with the persona's TTS system and voice and returns WAV; the
+  page picks persona voice, browser built-in, or silent, and falls back to
+  the browser voice (saying so) when hub TTS is unreachable.
+- **Persona editor honesty.** Transcription mode dims the sections it
+  ignores, and the model box is a searchable datalist of usable ids rather
+  than an invitation to copy from another page.
+
 ## Things to know before relying on free mode
 
 - OpenRouter's free models are rate-limited per key per day and can be
   pulled at any time; a demo on free mode needs a fallback model in mind.
 - Many free models do **not** support tool calling, and the hub depends on
-  it (time, weather, camera, device tools). Next step: read
-  `supported_parameters` from the catalogue and badge models that lack
-  `tools`, or hide them in free mode.
+  it (time, weather, camera, device tools). Handled: the picker now hides
+  them everywhere and refuses them on save, so free mode lists only free
+  models that can actually run a persona.
 - Free mode does not touch models already saved on personas; it only gates
   new selections.

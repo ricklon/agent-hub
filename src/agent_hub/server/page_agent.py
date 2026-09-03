@@ -23,10 +23,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from loguru import logger
 
 from agent_hub import skills as server_skills
+from agent_hub import spend
 from agent_hub.config import Settings
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.providers.llm import get_provider
@@ -420,6 +421,7 @@ def make_router(
         # Pipeline status is what the dashboard's activity column reads, so a
         # page agent mid-turn shows "thinking" like a device would.
         llm = get_provider(persona.llm_provider, config, model_override=persona.llm_model or None)
+        spend.bind_device(device_id)
         session_state.set_pipeline_status(device_id, "thinking", text)
         started = time.monotonic()
         try:
@@ -452,6 +454,59 @@ def make_router(
             headers=_CORS,
         )
 
+    @router.options("/page-agent/tts")
+    async def tts_preflight() -> JSONResponse:
+        return JSONResponse({}, headers=_CORS)
+
+    @router.post(
+        "/page-agent/tts",
+        dependencies=[
+            Depends(auth.authenticate),
+            Depends(auth.require_same_origin),
+            Depends(auth.require_operator),
+        ],
+    )
+    async def tts(request: Request) -> Response:
+        """Synthesize text with the page's persona voice; returns a WAV body.
+
+        This is how the page speaks with the *system-chosen* voice (the
+        persona's TTS provider and voice) instead of the browser's built-in
+        SpeechSynthesis, so a page agent sounds like the same persona on a
+        device would.
+        """
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            return JSONResponse({"ok": False, "message": "expected object"}, status_code=400)
+        device_id = str(payload.get("device_id") or "").strip()
+        token = str(payload.get("token") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        if not device_id or not token or not text:
+            return JSONResponse(
+                {"ok": False, "message": "device_id, token and text required"}, status_code=400
+            )
+        if not await store.validate_websocket_token(device_id, token):
+            return JSONResponse({"ok": False, "message": "invalid token"}, status_code=401)
+        persona = await store.get_persona_for_device(device_id)
+        if persona is None:
+            return JSONResponse({"ok": False, "message": "no persona assigned"}, status_code=500)
+
+        from agent_hub.providers.tts import get_provider as get_tts
+        from agent_hub.server.audio import pcm_to_wav
+
+        session_state.set_pipeline_status(device_id, "speaking", text)
+        try:
+            provider = get_tts(persona.tts_provider, config)
+            pcm, rate = await provider.synthesize_pcm(text, voice=persona.tts_voice)
+        except Exception as exc:
+            logger.bind(tag=_TAG).error(f"Page agent TTS failed for {device_id!r}: {exc}")
+            return JSONResponse({"ok": False, "message": f"TTS error: {exc}"}, status_code=502)
+        finally:
+            session_state.set_pipeline_status(device_id, "idle")
+        return Response(content=pcm_to_wav(pcm, rate), media_type="audio/wav", headers=_CORS)
+
     # ── Voice WebSocket: browser mic → hub VAD + ASR + LLM + TTS ──────────
 
     @router.websocket("/page-agent/voice")
@@ -481,6 +536,7 @@ def make_router(
             return
 
         await websocket.accept()
+        spend.bind_device(device_id)
         logger.bind(tag=_TAG).info(f"Page voice WS connected: {device_id!r}")
 
         persona = await store.get_persona_for_device(device_id)

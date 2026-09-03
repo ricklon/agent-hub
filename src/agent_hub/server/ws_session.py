@@ -29,6 +29,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 import agent_hub.skills as server_skills
+from agent_hub import spend
 from agent_hub.providers.asr import get_provider as get_asr
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.tts import get_provider as get_tts
@@ -887,6 +888,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
         await websocket.accept()
         logger.bind(tag=_TAG).info(f"WS connected: {device_id!r}")
+        spend.bind_device(device_id)
 
         session_id = uuid.uuid4().hex
         pipeline_lock = asyncio.Lock()

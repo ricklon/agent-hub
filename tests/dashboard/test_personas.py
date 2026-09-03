@@ -56,7 +56,8 @@ async def test_edit_page_renders_guided_controls(store: RegistryStore) -> None:
         resp = await c.get("/dashboard/personas/hub-default")
     assert resp.status_code == 200
     body = resp.text
-    assert '<select name="tts_provider">' in body
+    # The TTS system select now also swaps the voice list, so it carries hx attrs.
+    assert '<select name="tts_provider"' in body
     assert '<select name="asr_provider">' in body
     assert 'type="checkbox" name="server_skills"' in body
     assert 'name="preset"' in body

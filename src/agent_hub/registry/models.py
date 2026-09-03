@@ -178,6 +178,9 @@ class Agent(Base):
     health_fault: Mapped[str | None] = mapped_column(Text, nullable=True)
     reported_activity: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reported_mcp_tools: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A long-term agent: never counted as stale, never pruned. Set from the
+    # dashboard for the boards and pages that are part of the furniture.
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
