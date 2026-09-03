@@ -555,6 +555,35 @@ class RegistryStore:
                 agent.last_seen = datetime.now(UTC)
                 await session.commit()
 
+    async def mark_agent_offline(self, device_id: str, token: str) -> bool:
+        """Record that an agent announced it is going away.
+
+        Used by page agents on tab close. Clears the heartbeat so health
+        reads offline immediately instead of after the heartbeat timeout.
+
+        Args:
+            device_id: The departing agent.
+            token: Its current token; the call is ignored when it does not match.
+
+        Returns:
+            True when the agent existed and the token matched.
+        """
+        if not token:
+            return False
+        async with self._sessions() as session:
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
+            agent = result.scalar_one_or_none()
+            if agent is None or not agent.websocket_token:
+                return False
+            if not secrets.compare_digest(agent.websocket_token, token):
+                return False
+            agent.status = AgentStatus.OFFLINE.value
+            agent.last_heartbeat = None
+            agent.reported_activity = "idle"
+            agent.last_seen = datetime.now(UTC)
+            await session.commit()
+            return True
+
     async def list_agents_with_personas(self) -> list[tuple[Agent, Persona | None]]:
         """Return all agents with their assigned persona, ordered by last_seen desc."""
         async with self._sessions() as session:

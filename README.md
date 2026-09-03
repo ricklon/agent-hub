@@ -115,6 +115,10 @@ agent-hub needs a language model to power conversation. The easiest option
 is **OpenRouter**, which provides free access to many models and accepts a
 single API key for all of them.
 
+Set `llm.free_only: true` in `data/.config.yaml` to put the hub in **free mode**:
+the Models page then lists only free OpenRouter models and refuses paid ids
+(handy for class nights and public demos).
+
 1. Go to [openrouter.ai](https://openrouter.ai) and sign in
 2. Click your profile → **Keys** → **Create key**
 3. Copy the key (starts with `sk-or-`)
@@ -349,6 +353,7 @@ TBD.
 - [`docs/deployment.md`](docs/deployment.md) — secure LAN, Tailscale, and HTTPS proxy deployment guidance
 - [`docs/lessons-learned.md`](docs/lessons-learned.md) — non-obvious bugs, root causes, and fixes
 - [`docs/agent-test-harness.md`](docs/agent-test-harness.md) — proposal: a hardware-free agent test harness built on the page agent
+- [`docs/agent-management-plan.md`](docs/agent-management-plan.md) — proposal: one harness, one fleet view, headless runners; how tau/pi compare
 - `AGENTS.md` — coding-agent instructions and skill catalogue
 - Firmware fork (use this): https://github.com/ricklon/xiaozhi-esp32
 - Upstream xiaozhi-server: https://github.com/xinnan-tech/xiaozhi-esp32-server

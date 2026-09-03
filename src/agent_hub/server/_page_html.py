@@ -83,19 +83,44 @@ Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
 <span id="meterlabel">mic</span></div>
 
 <script>
-const LS_KEY = "agenthub.pageAgent.deviceId";
-let deviceId = localStorage.getItem(LS_KEY);
+const ID_KEY = "agenthub.pageAgent.deviceId";
+// crypto.randomUUID only exists in secure contexts (https or localhost). Over
+// plain http on a LAN address — the class-night laptop setup — it is undefined,
+// which used to throw here and leave the page on "initialising…" forever.
+function newDeviceId() {
+  if (crypto.randomUUID) return "page-" + crypto.randomUUID();
+  const b = new Uint8Array(8);
+  crypto.getRandomValues(b);
+  return "page-" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+// One identity per tab (sessionStorage), not per browser (localStorage): two
+// tabs are two agents. With a shared id the second tab's registration
+// re-issued the token and silently broke the first tab, so you could never
+// run two personas side by side.
+let deviceId = sessionStorage.getItem(ID_KEY);
 if (!deviceId) {
-  deviceId = "page-" + crypto.randomUUID();
-  localStorage.setItem(LS_KEY, deviceId);
+  deviceId = newDeviceId();
+  sessionStorage.setItem(ID_KEY, deviceId);
 }
 let token = "", respondUrl = "", eventUrl = "", hbUrl = "", hbInterval = 30;
 let volume = 1.0;
 let stream = null;
 let asking = false;
+// What the heartbeat reports; the dashboard shows it next to health.
+let activity = "idle";
 // Persona to register with, injected from ?persona= by the server ("" = default).
 const PERSONA = %%PERSONA%%;
 if (PERSONA) document.getElementById("personaline").textContent = "persona: " + PERSONA;
+// Camera and microphone are only available in secure contexts. Say so up
+// front instead of letting every getUserMedia call fail with "denied".
+const MEDIA_OK = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+if (!MEDIA_OK) {
+  const warn = document.createElement("div");
+  warn.id = "insecure";
+  warn.style.cssText = "font-size:.8rem;color:#d29922;margin:.3rem 0";
+  warn.textContent = "camera and microphone need https or localhost — text chat still works";
+  document.getElementById("personaline").after(warn);
+}
 
 const TOOLS = [
   {name: "page.audio_speaker.speak", description: "Speak text aloud via SpeechSynthesis.",
@@ -113,7 +138,8 @@ const TOOLS = [
 function setStatus(s) { document.getElementById("status").textContent = s; }
 
 async function register() {
-  const label = navigator.userAgent.includes("Mobile") ? "page-mobile" : "page";
+  const kind = navigator.userAgent.includes("Mobile") ? "page-mobile" : "page";
+  const label = PERSONA ? kind + " · " + PERSONA : kind;
   const resp = await fetch("/page-agent/register", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -127,12 +153,21 @@ async function register() {
   hbUrl = data.heartbeat_url;
   hbInterval = data.heartbeat_interval_seconds || 30;
   deviceId = data.device_id;
-  localStorage.setItem(LS_KEY, deviceId);
+  sessionStorage.setItem(ID_KEY, deviceId);
   setStatus("registered " + deviceId + " · " + TOOLS.length + " tools");
   openStream();
   startHeartbeat();
   registerWebMcp();
 }
+
+// Tell the hub the page is going away so the dashboard shows it offline now
+// rather than after the heartbeat timeout. sendBeacon survives tab close.
+window.addEventListener("pagehide", () => {
+  if (!token) return;
+  const body = new Blob([JSON.stringify({device_id: deviceId, token: token})],
+    {type: "application/json"});
+  navigator.sendBeacon("/page-agent/goodbye", body);
+});
 
 function openStream() {
   const u = eventUrl + "?device_id=" + encodeURIComponent(deviceId) + "&token=" + encodeURIComponent(token);
@@ -194,6 +229,7 @@ async function dispatch(name, args) {
       return textResult(t.slice(0, 4000));
     }
     case "page.camera.take_photo": {
+      if (!MEDIA_OK) throw new Error("camera unavailable: page needs https or localhost");
       if (!stream) { stream = await navigator.mediaDevices.getUserMedia({video: true}); }
       const v = document.getElementById("video");
       v.srcObject = stream; v.style.display = "block"; v.play();
@@ -214,19 +250,30 @@ async function dispatch(name, args) {
   }
 }
 
+async function sendHeartbeat() {
+  try {
+    await fetch(hbUrl, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        device_id: deviceId, token: token,
+        activity: activity, mcp_tools: TOOLS.map(t => t.name)
+      })
+    });
+  } catch (e) {}
+}
+
 function startHeartbeat() {
-  setInterval(async () => {
-    try {
-      await fetch(hbUrl, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          device_id: deviceId, token: token,
-          activity: "idle", mcp_tools: TOOLS.map(t => t.name)
-        })
-      });
-    } catch (e) {}
-  }, hbInterval * 1000);
+  sendHeartbeat();
+  setInterval(sendHeartbeat, hbInterval * 1000);
+}
+
+// Activity changes are pushed straight away so the dashboard does not wait a
+// whole heartbeat interval to notice the page started listening.
+function setActivity(a) {
+  if (a === activity) return;
+  activity = a;
+  if (token) sendHeartbeat();
 }
 
 // Optional WebMCP: expose the same tools to browser agents (Chrome flag/origin-trial).
@@ -249,6 +296,7 @@ async function askAgent() {
   const text = input.value.trim();
   if (!text || !token) return;
   asking = true;
+  setActivity("thinking");
   const btn = document.getElementById("post");
   btn.disabled = true;
   btn.textContent = "…";
@@ -299,6 +347,7 @@ async function askAgent() {
   }
   logEl.scrollTop = logEl.scrollHeight;
   asking = false;
+  setActivity(listening ? "listening" : "idle");
   btn.disabled = false;
   btn.textContent = "Send";
 }
@@ -308,6 +357,10 @@ document.getElementById("discuss").addEventListener("keydown", (e) => {
   if (e.key === "Enter") askAgent();
 });
 document.getElementById("cam").onclick = async () => {
+  if (!MEDIA_OK) {
+    document.getElementById("camstate").textContent = "needs https or localhost";
+    return;
+  }
   try {
     stream = await navigator.mediaDevices.getUserMedia({video: true});
     const v = document.getElementById("video");
@@ -384,6 +437,9 @@ function setVoiceState(name, revertAfterMs) {
   document.getElementById("voicehint").textContent = s.hint();
   document.getElementById("voicedot").style.background = s.color;
   box.classList.toggle("voice-live", s.live);
+  // Mirror the voice state into the heartbeat activity the dashboard shows.
+  setActivity({listening: "listening", ignored: "listening", thinking: "thinking",
+               speaking: "speaking"}[name] || "idle");
   if (voiceStateTimer) { clearTimeout(voiceStateTimer); voiceStateTimer = null; }
   // Transient states (like "heard you, ignored") fall back to the real one.
   if (revertAfterMs) {
@@ -432,6 +488,10 @@ function downsampleTo16k(buf, inRate) {
 
 async function startListening() {
   if (listening) return;
+  if (!MEDIA_OK) {
+    voiceLog("microphone unavailable: the page needs https or localhost", "#f85149");
+    return;
+  }
   // The mic permission prompt and WS handshake take a moment; without this the
   // badge sits on "off" and the button says "Stop", which reads as broken.
   setVoiceState("starting");

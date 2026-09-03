@@ -184,7 +184,7 @@ _PAGE = """\
 <nav>
   <a href="/dashboard/">Agents</a>
   <a href="/dashboard/personas">Personas</a>
-  <a href="/dashboard/models">Models</a>
+  <a href="/dashboard/models">Models</a>{free_badge}
   {admin_nav}
   {operator_nav}
   <a href="/dashboard/docs">Docs</a>
@@ -258,6 +258,17 @@ def make_router(
         ]
     )
     api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
+    # Free mode: the model picker only lists free OpenRouter models and paid
+    # ids are refused on select/save. For hubs running on a $0 budget.
+    free_only: bool = bool(config.get("llm", {}).get("free_only", False))
+
+    async def _reject_paid_model(model_id: str) -> str | None:
+        """Reason a model id is not allowed under free mode, or None if it is."""
+        if not free_only or not model_id:
+            return None
+        if await is_free_model(model_id, api_key):
+            return None
+        return f"Free mode is on (llm.free_only): {model_id!r} is not a free model."
 
     # ── Static image serving ──────────────────────────────────────────────────
 
@@ -288,11 +299,18 @@ def make_router(
             if role in {OperatorRole.ADMIN.value, OperatorRole.OPERATOR.value}
             else ""
         )
+        free_badge = (
+            ' <span class="badge badge-free" title="llm.free_only is on: only free '
+            'OpenRouter models can be selected">free mode</span>'
+            if free_only
+            else ""
+        )
         return _PAGE.format(
             css=_full_css,
             operator=operator,
             admin_nav=admin_nav,
             operator_nav=operator_nav,
+            free_badge=free_badge,
             body=body,
         )
 
@@ -1113,6 +1131,11 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 
         prompt_val = html.escape(persona.system_prompt or "")
         llm_model_val = html.escape(persona.llm_model or "")
+        free_hint = (
+            ' <span class="badge badge-free">free mode: free models only</span>'
+            if free_only
+            else ""
+        )
         tts_voice_val = html.escape(persona.tts_voice or "")
         tools_val_esc = html.escape(tools_val)
         transcription_checked = " checked" if persona.transcription else ""
@@ -1155,7 +1178,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
     <h3>Providers</h3>
     <div class="field-row">
       <div><label>LLM provider</label>{llm_select}</div>
-      <div><label>LLM model (blank = config default)</label>
+      <div><label>LLM model (blank = config default){free_hint}</label>
         <input type="text" name="llm_model" value="{llm_model_val}"
           style="width:300px" placeholder="browse ids on the Models page"></div>
     </div>
@@ -1260,6 +1283,10 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         linked = sorted({str(a).strip() for a in form.getlist("linked_agents") if str(a).strip()})
         linked_arg = _json.dumps(linked) if linked else ""
 
+        refusal = await _reject_paid_model(llm_model.strip())
+        if refusal:
+            return HTMLResponse(f'<p style="color:#f85149">{html.escape(refusal)}</p>', 403)
+
         ok = await store.update_persona(
             name,
             system_prompt=system_prompt,
@@ -1287,6 +1314,14 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         current = next(
             (p.llm_model for p in personas if p.name == "hub-default"), None
         ) or config.get("llm", {}).get("openai", {}).get("model", "")
+        free_attrs = " checked disabled" if free_only else ""
+        free_note = (
+            '<p class="doc-muted" style="margin:.3rem 0 0">Free mode is on in config '
+            "(<code>llm.free_only</code>): only free models are listed and paid ids "
+            "are refused.</p>"
+            if free_only
+            else ""
+        )
         body = f"""\
 <h2>Model Picker</h2>
 <p>Current: <strong id="current-model">{current or "not set"}</strong></p>
@@ -1295,21 +1330,30 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
     hx-get="/dashboard/models/list"
     hx-trigger="input changed delay:300ms"
     hx-target="#model-list"
-    hx-include="#multimodal-only"
+    hx-include="#multimodal-only,#free-only"
     name="search">
   <label>
     <input id="multimodal-only" type="checkbox" name="multimodal" value="1"
       hx-get="/dashboard/models/list"
       hx-trigger="change"
       hx-target="#model-list"
-      hx-include="#search">
+      hx-include="#search,#free-only">
     Multimodal only
   </label>
+  <label>
+    <input id="free-only" type="checkbox" name="free" value="1"{free_attrs}
+      hx-get="/dashboard/models/list"
+      hx-trigger="change"
+      hx-target="#model-list"
+      hx-include="#search,#multimodal-only">
+    Free only
+  </label>
 </div>
+{free_note}
 <div id="model-list"
   hx-get="/dashboard/models/list"
   hx-trigger="load"
-  hx-include="#search,#multimodal-only">
+  hx-include="#search,#multimodal-only,#free-only">
   Loading…
 </div>
 """
@@ -1320,6 +1364,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         request: Request,
         search: str = "",
         multimodal: str = "",
+        free: str = "",
     ) -> HTMLResponse:
         models = await _fetch_openrouter_models(api_key)
         personas = await store.list_personas()
@@ -1328,6 +1373,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         ) or config.get("llm", {}).get("openai", {}).get("model", "")
 
         only_multi = bool(multimodal)
+        only_free = bool(free) or free_only
         q = search.lower()
 
         filtered = [
@@ -1335,6 +1381,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             for m in models
             if (not q or q in m["id"].lower() or q in m["name"].lower())
             and (not only_multi or m["multimodal"])
+            and (not only_free or m["free"])
         ]
 
         if not filtered:
@@ -1377,6 +1424,9 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
         model_id: str = Form(...),
         persona: str = Form(default="hub-default"),
     ) -> HTMLResponse:
+        refusal = await _reject_paid_model(model_id)
+        if refusal:
+            return HTMLResponse(f'<p style="color:#f85149">{html.escape(refusal)}</p>', 403)
         ok = await store.update_persona_model(persona, model_id)
         if ok:
             logger.info(f"Persona '{persona}' model set to {model_id!r}")
@@ -1695,9 +1745,18 @@ def _render_agent_rows_data(
             "degraded": "#d29922",
             "offline": "#6e7681",
         }[health]
-        transport = "voice connected" if ws_connected else "wake-word standby"
-        if mcp_client and mcp_client.ready:
-            transport += f" · {len(mcp_client.tools)} MCP tools"
+        if agent.kind == "page":
+            # A page agent has no wake-word firmware; what matters is whether
+            # the browser tab still holds its MCP bridge stream open.
+            bridge = mcp_bridge.get_page_agent(agent.device_id)
+            if bridge is not None and bridge.connected:
+                transport = f"page open · bridge connected · {len(bridge.tools)} page tools"
+            else:
+                transport = "page closed"
+        else:
+            transport = "voice connected" if ws_connected else "wake-word standby"
+            if mcp_client and mcp_client.ready:
+                transport += f" · {len(mcp_client.tools)} MCP tools"
         fault_detail = (
             f'<div style="font-size:0.75rem;color:#d29922">{html.escape(agent.health_fault)}</div>'
             if agent.health_fault and health == "degraded"
@@ -1783,7 +1842,30 @@ def _persona_status(persona: Any | None) -> dict[str, Any] | None:
     }
 
 
+_MODELS_CACHE_TTL_S = 600.0
+_models_cache: tuple[float, list[dict[str, Any]]] | None = None
+
+
+async def is_free_model(model_id: str, api_key: str) -> bool:
+    """True when OpenRouter prices ``model_id`` at $0 for prompt tokens.
+
+    Falls back to the ``:free`` id suffix when the catalogue cannot be
+    fetched, so free mode still works offline (and never lets a paid model
+    through just because the network was down).
+    """
+    models = await _fetch_openrouter_models(api_key)
+    if models:
+        return any(m["id"] == model_id and m["free"] for m in models)
+    return model_id.endswith(":free")
+
+
 async def _fetch_openrouter_models(api_key: str) -> list[dict[str, Any]]:
+    # Cached for a few minutes: the picker, free-mode checks, and persona
+    # saves all consult the catalogue, and it changes rarely.
+    global _models_cache
+    now = asyncio.get_running_loop().time()
+    if _models_cache is not None and now - _models_cache[0] < _MODELS_CACHE_TTL_S:
+        return _models_cache[1]
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -1824,4 +1906,5 @@ async def _fetch_openrouter_models(api_key: str) -> list[dict[str, Any]]:
         )
 
     out.sort(key=lambda x: (not x["multimodal"], x["id"]))
+    _models_cache = (now, out)
     return out
