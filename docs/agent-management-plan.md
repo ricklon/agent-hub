@@ -192,6 +192,35 @@ on the edit page and the Models page silently edits only `hub-default`.
   ignores, and the model box is a searchable datalist of usable ids rather
   than an invitation to copy from another page.
 
+## Landed for robot build night
+
+Step 4 of the plan (headless agents) and the first half of step 1 (one
+harness), driven by needing a room of people to manage their own robots.
+
+- **A third registration door.** `server/agent_api.py` serves `/agent/register`,
+  `/agent/heartbeat` and `/agent/goodbye` on the **device** port, with the MCP
+  bridge mounted there too. Page agents register through the dashboard port
+  behind Cloudflare Access, which a headless robot cannot authenticate to;
+  robots use the port Caddy already exposes, gated by the enrollment token.
+  A robot is `AgentKind.MCP` and is otherwise an ordinary bridged agent.
+- **`examples/robot_agent.py`** — the whole client in one file: declare tools,
+  run it, done. This is what makes build night self-service.
+- **One shared turn.** `server/agent_turn.py` holds the loop `/page-agent/ask`
+  used to own inline: tool assembly, the LLM call, bridge routing, history.
+  The page agent, the robot console and the dashboard now run the same code.
+  `ws_session` still has its own copy — that is the rest of step 1.
+- **A tool console.** The agent page lists every tool a bridged agent declared,
+  each with a JSON argument box and a Call button, plus an "Ask this agent" box
+  that runs a full persona turn. Testing a robot no longer needs a script.
+- **Ownership.** `Agent.owner` plus filter chips on the fleet table. A label
+  for organising a busy room, explicitly not a permission boundary.
+- **Kind-aware agent pages.** Reboot, Inject and Speak are firmware actions and
+  are hidden for bridged agents; the connection table reports the bridge and
+  its tools instead of "wake-word standby" and "MCP —".
+- **Malformed tool arguments are recoverable.** A model emitting almost-JSON
+  used to kill the whole turn with a `JSONDecodeError`. The provider now hands
+  the parse error back as the tool result so the model can correct itself.
+
 ## Things to know before relying on free mode
 
 - OpenRouter's free models are rate-limited per key per day and can be

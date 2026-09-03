@@ -181,6 +181,10 @@ class Agent(Base):
     # A long-term agent: never counted as stale, never pruned. Set from the
     # dashboard for the boards and pages that are part of the furniture.
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Who brought this agent — a builder or team name. An organising label
+    # for a room full of robots, not a security boundary: it decides what the
+    # dashboard filter shows, never what anyone is allowed to do.
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     last_seen: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

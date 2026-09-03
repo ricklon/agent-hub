@@ -5,7 +5,8 @@ The real registry (``agent_hub.providers.llm.get_provider``) only knows
 does history persist, is the system prompt assembled from tool defs — swap in a
 :class:`ScriptedLLM` whose tool calls and reply are fixed.
 
-``page_agent`` binds ``get_provider`` at import time, so patch it there::
+The text turn lives in ``agent_hub.server.agent_turn``, which binds
+``get_provider`` at import time, so patch it there::
 
     from tests.harness import ScriptedLLM, install_scripted_llm
 
@@ -80,9 +81,18 @@ class ScriptedLLM(LLMProvider):
 
 
 def install_scripted_llm(monkeypatch: pytest.MonkeyPatch, llm: ScriptedLLM) -> ScriptedLLM:
-    """Route ``/page-agent/ask`` (and the voice path) at ``llm``. Returns it."""
+    """Route every text turn at ``llm``. Returns it.
+
+    Patches both places a turn can get a provider: ``agent_turn`` (the shared
+    loop behind ``/page-agent/ask``, the robot console and the dashboard) and
+    ``page_agent``'s own page-voice path, which still builds its own.
+    """
     monkeypatch.setattr(
-        "agent_hub.server.page_agent.get_provider",
+        "agent_hub.server.agent_turn.get_provider",
+        lambda *_a, **_k: llm,
+    )
+    monkeypatch.setattr(
+        "agent_hub.providers.llm.get_provider",
         lambda *_a, **_k: llm,
     )
     return llm

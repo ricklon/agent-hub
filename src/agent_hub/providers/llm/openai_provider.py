@@ -6,6 +6,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
+from loguru import logger
 from openai import AsyncOpenAI
 
 from agent_hub import spend
@@ -15,6 +16,29 @@ from agent_hub.providers.llm import LLMProvider
 # often reject the extra fields, so usage reporting is opt-in by host rather
 # than sent blindly to whatever base_url is configured.
 _USAGE_CAPABLE_HOSTS = ("openrouter.ai", "api.openai.com")
+
+
+def _parse_tool_arguments(raw: str | None) -> tuple[dict[str, Any], str | None]:
+    """Decode a tool call's arguments, or explain what was wrong with them.
+
+    Smaller and cheaper models sometimes emit arguments that are not quite
+    JSON. Killing the whole turn over that loses the user's question; handing
+    the parse error back as the tool result lets the model correct itself on
+    the next round, which is usually all it needs.
+
+    Returns:
+        ``(arguments, None)`` on success, or ``({}, message)`` to send back.
+    """
+    try:
+        parsed = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError) as exc:
+        return {}, (
+            f"Your tool arguments were not valid JSON ({exc}). "
+            f"Call the tool again with a single valid JSON object."
+        )
+    if not isinstance(parsed, dict):
+        return {}, 'Tool arguments must be a JSON object, e.g. {"speed": 5}.'
+    return parsed, None
 
 
 class OpenAILLMProvider(LLMProvider):
@@ -138,7 +162,16 @@ class OpenAILLMProvider(LLMProvider):
             for tc in msg.tool_calls:
                 if tc is None or tc.function is None:
                     continue
-                args = json.loads(tc.function.arguments or "{}")
+                args, arg_error = _parse_tool_arguments(tc.function.arguments)
+                if arg_error is not None:
+                    logger.warning(
+                        f"{tc.function.name!r} called with unparsable arguments: "
+                        f"{tc.function.arguments!r}"
+                    )
+                    working.append(
+                        {"role": "tool", "tool_call_id": tc.id or "", "content": arg_error}
+                    )
+                    continue
                 result = await tool_executor(tc.function.name or "", args)
                 # Image results (data URLs) need multimodal content blocks.
                 # Some providers reject image_url in a tool-role message, so
@@ -259,10 +292,16 @@ class OpenAILLMProvider(LLMProvider):
 
             for call in assistant_tool_calls:
                 fn = cast(dict[str, Any], call["function"])
-                try:
-                    args = json.loads(fn.get("arguments") or "{}")
-                except json.JSONDecodeError:
-                    args = {}
+                args, arg_error = _parse_tool_arguments(fn.get("arguments"))
+                if arg_error is not None:
+                    logger.warning(
+                        f"{fn.get('name')!r} called with unparsable arguments: "
+                        f"{fn.get('arguments')!r}"
+                    )
+                    working.append(
+                        {"role": "tool", "tool_call_id": call["id"], "content": arg_error}
+                    )
+                    continue
                 result = await tool_executor(str(fn.get("name") or ""), args)
                 if isinstance(result, str) and result.startswith("data:"):
                     working.append(
