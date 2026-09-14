@@ -28,7 +28,7 @@ from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.overview import render_fleet_overview
 from agent_hub.registry.models import Agent, AgentKind, OperatorRole, Persona
 from agent_hub.registry.store import RegistryStore
-from agent_hub.server import mcp_bridge, session_state, tool_policy
+from agent_hub.server import listen_mode, mcp_bridge, session_state, tool_policy
 from agent_hub.server.agent_turn import TurnError, call_one_tool, run_turn
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -513,6 +513,16 @@ def make_router(
             return HTMLResponse("<p>Agent not found.</p>", status_code=404)
         logger.info(f"Dashboard {'pinned' if keep else 'unpinned'} agent {device_id!r}")
         return HTMLResponse(_pin_form(device_id, keep))
+
+    @router.post("/dashboard/agents/{device_id}/listen", response_class=HTMLResponse)
+    async def agent_listen(device_id: str, listen: str = Form(default="")) -> HTMLResponse:
+        """Turn listen mode on (transcribe only, never answer) or off."""
+        if await store.get_agent(device_id) is None:
+            return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        on = listen.strip() in {"1", "true", "on", "yes"}
+        listen_mode.set_listen_only(device_id, on)
+        logger.info(f"Dashboard turned listen mode {'on' if on else 'off'} for {device_id!r}")
+        return HTMLResponse(_listen_form(device_id, on))
 
     @router.post("/dashboard/agents/{device_id}/remove", response_class=HTMLResponse)
     async def agent_remove(device_id: str, request: Request) -> Response:
@@ -1067,6 +1077,11 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 </form>"""
         )
         pin_form = _pin_form(device_id, agent.pinned)
+        listen_form = (
+            ""
+            if is_transcriber or agent.kind != AgentKind.XIAOZHI.value
+            else _listen_form(device_id, listen_mode.is_listen_only(device_id))
+        )
         owner_form = (
             "<h3>Owner</h3>"
             '<p style="color:#8b949e;font-size:0.85rem">Whose agent this is. Used to filter '
@@ -1133,6 +1148,7 @@ re-register on its next check-in.">
 {reboot_btn}
 {camera_btn}
 {pin_form}
+{listen_form}
 {remove_btn}
 {owner_form}
 {console_html}
@@ -2350,6 +2366,21 @@ def _pin_form(device_id: str, pinned: bool) -> str:
       title="Long-term agents are never counted as stale or pruned">
   <input type="hidden" name="pinned" value="{"0" if pinned else "1"}">
   <button type="submit" style="background:{"#1f6feb" if pinned else "#30363d"}">{label}</button>
+</form>"""
+
+
+def _listen_form(device_id: str, listening: bool) -> str:
+    """Toggle for listen mode; swaps itself on submit."""
+    label = (
+        "👂 Listen mode on — click to interact again"
+        if listening
+        else "👂 Listen mode (no replies)"
+    )
+    return f"""\
+<form hx-post="/dashboard/agents/{device_id}/listen" hx-swap="outerHTML" style="display:inline"
+      title="Transcribe and log speech without answering or calling device tools">
+  <input type="hidden" name="listen" value="{"0" if listening else "1"}">
+  <button type="submit" style="background:{"#8a6d1f" if listening else "#30363d"}">{label}</button>
 </form>"""
 
 
