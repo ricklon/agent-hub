@@ -2,7 +2,8 @@
 
 While a builder debugs a robot, room chatter otherwise becomes LLM turns that
 talk back and call servo tools. In listen mode each utterance is still
-transcribed and logged, but no LLM, TTS or device tool runs. It is toggled by
+transcribed and logged, and the robot only says a short "Okay" so the builder
+knows it heard; no LLM turn or device tool runs. It is toggled by
 voice ("robot, go into listen mode" / "robot, interact again") or from the
 dashboard, and is held in hub memory per device so it survives the device
 reconnecting or rebooting, but not a hub restart.
@@ -17,6 +18,8 @@ Command = Literal["listen", "interact"]
 
 LISTEN_CONFIRMATION = "Listen mode. I'll stay quiet until you say interact again."
 INTERACT_CONFIRMATION = "Okay, I'm back."
+# Spoken after each utterance heard in listen mode, in place of an answer.
+LISTEN_ACK = "Okay."
 
 # Phrases are matched on normalized text (lowercase, punctuation stripped), so
 # ASR punctuation and casing don't matter. "robot" is not required: ASR often

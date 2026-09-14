@@ -694,8 +694,8 @@ async def _run_voice_turn(
         )
     )
 
-    # Listen mode — a voice command toggles it; while on, log and stop here so
-    # nothing is said and no device tool is called.
+    # Listen mode — a voice command toggles it; while on, log, acknowledge with
+    # a bare "Okay" and stop here so no LLM turn or device tool runs.
     command = listen_mode.parse_command(transcript) if device_id else None
     if command is not None:
         listen_mode.set_listen_only(device_id, command == "listen")
@@ -719,6 +719,7 @@ async def _run_voice_turn(
             llm_ms=0,
             tts_ms=0,
         )
+        await _speak(websocket, listen_mode.LISTEN_ACK, persona, config, session_id)
         return
 
     session_state.set_pipeline_status(device_id, "thinking", transcript)

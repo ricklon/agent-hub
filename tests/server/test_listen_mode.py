@@ -1,4 +1,4 @@
-"""Listen mode: voice/dashboard toggle that transcribes without answering."""
+"""Listen mode: voice/dashboard toggle that transcribes and only says okay."""
 
 from __future__ import annotations
 
@@ -103,12 +103,12 @@ async def test_voice_command_enters_listen_mode_and_confirms(monkeypatch) -> Non
     assert sent[0]["type"] == "stt"
 
 
-async def test_listen_mode_logs_speech_without_answering(monkeypatch) -> None:
+async def test_listen_mode_logs_speech_and_only_says_okay(monkeypatch) -> None:
     listen_mode.set_listen_only(DEVICE, True)
 
     sent, spoken, logged = await _voice_turn(monkeypatch, "Look to the left and wink at me.")
 
-    assert spoken == []
+    assert spoken == [listen_mode.LISTEN_ACK]
     assert [m["type"] for m in sent] == ["stt"]
     assert len(logged) == 1
     assert logged[0]["text"] == "Look to the left and wink at me." and logged[0]["reply"] == ""
@@ -134,6 +134,6 @@ async def test_dashboard_listen_toggle(store: RegistryStore) -> None:
         missing = await c.post("/dashboard/agents/nope/listen", data={"listen": "1"})
 
     assert on.status_code == 200 and "interact again" in on.text
-    assert off.status_code == 200 and "no replies" in off.text
+    assert off.status_code == 200 and "only says okay" in off.text
     assert not listen_mode.is_listen_only(DEVICE)
     assert missing.status_code == 404
