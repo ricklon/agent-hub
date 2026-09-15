@@ -2374,11 +2374,11 @@ def _listen_form(device_id: str, listening: bool) -> str:
     label = (
         "👂 Listen mode on — click to interact again"
         if listening
-        else "👂 Listen mode (only says okay)"
+        else "👂 Listen mode (stays quiet)"
     )
     return f"""\
 <form hx-post="/dashboard/agents/{device_id}/listen" hx-swap="outerHTML" style="display:inline"
-      title="Transcribe and log speech, reply only \"Okay\", never call device tools">
+      title="Transcribe and log speech without answering or calling device tools">
   <input type="hidden" name="listen" value="{"0" if listening else "1"}">
   <button type="submit" style="background:{"#8a6d1f" if listening else "#30363d"}">{label}</button>
 </form>"""
