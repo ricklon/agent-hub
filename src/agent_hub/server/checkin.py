@@ -71,6 +71,15 @@ def _heartbeat_url(settings: Settings) -> str:
     from urllib.parse import urlparse, urlunparse
 
     p = urlparse(http_base)
+    # The heartbeat router is mounted on the HTTP port beside check-in, not on
+    # the WebSocket port. When the WebSocket URL carries an explicit ws_port,
+    # swap it for http_port; a URL with no explicit port is a proxied
+    # deployment that fronts every route on one host, so leave it alone.
+    if p.port == settings.server.ws_port:
+        host = p.hostname or ""
+        if ":" in host:  # IPv6 literal
+            host = f"[{host}]"
+        p = p._replace(netloc=f"{host}:{settings.server.http_port}")
     return urlunparse(p._replace(path="/xiaozhi/heartbeat/", query="", fragment=""))
 
 
