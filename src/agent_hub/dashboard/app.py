@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from loguru import logger
 
 from agent_hub import spend
@@ -478,6 +478,31 @@ def make_router(
                 f'<img src="{html.escape(result)}" style="max-width:320px;border-radius:4px">'
             )
         return HTMLResponse(f'<div class="tool-result">{html.escape(result)}</div>')
+
+    @router.post("/dashboard/agents/{device_id}/call_tool.json")
+    async def agent_call_tool_json(device_id: str, request: Request) -> JSONResponse:
+        """Call one tool and return the result as JSON, for scripts and MCP proxies.
+
+        Body: ``{"tool": "<name>", "arguments": {...}}``. The result is the
+        tool's text, or a ``data:`` URL for an image.
+        """
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "body must be JSON"}, status_code=400)
+        tool = body.get("tool") if isinstance(body, dict) else None
+        args = body.get("arguments", {}) if isinstance(body, dict) else None
+        if not isinstance(tool, str) or not tool:
+            return JSONResponse({"ok": False, "error": "tool is required"}, status_code=400)
+        if not isinstance(args, dict):
+            return JSONResponse(
+                {"ok": False, "error": "arguments must be a JSON object"}, status_code=400
+            )
+        try:
+            result = await call_one_tool(device_id, tool, args)
+        except TurnError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "result": result})
 
     @router.post("/dashboard/agents/{device_id}/ask", response_class=HTMLResponse)
     async def agent_ask(device_id: str, text: str = Form(default="")) -> HTMLResponse:
