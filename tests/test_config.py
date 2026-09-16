@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from agent_hub.config import Settings, load_config
+import pytest
+
+from agent_hub.config import Settings, config_bool, load_config
 
 
 def test_env_overrides_server_fields_with_underscored_names(monkeypatch, tmp_path):
@@ -104,3 +106,54 @@ def test_to_local_treats_naive_input_as_utc():
     local = to_local(datetime(2026, 9, 1, 23, 48, 0), ny)  # 23:48 UTC
     assert (local.hour, local.minute) == (19, 48)  # EDT = UTC-4
     assert local.tzinfo is ny
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        ("true", True),
+        ("True", True),
+        (" yes ", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("FALSE", False),
+        ("no", False),
+        ("off", False),
+        ("0", False),
+    ],
+)
+def test_config_bool_reads_on_and_off(value, expected):
+    assert config_bool(value, not expected, key="llm.free_only") is expected
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+@pytest.mark.parametrize("default", [True, False])
+def test_config_bool_blank_or_missing_means_default(value, default):
+    """`KEY=` in an env file means "not set", as the deploy templates use it."""
+    assert config_bool(value, default, key="llm.free_only") is default
+
+
+@pytest.mark.parametrize("value", ["ture", "enabled", 2, 0.5, ["true"]])
+def test_config_bool_refuses_what_it_cannot_read(value):
+    with pytest.raises(ValueError, match="llm.free_only"):
+        config_bool(value, False, key="llm.free_only")
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"), [("false", False), ("0", False), ("true", True)]
+)
+def test_env_override_string_parses_as_a_real_boolean(monkeypatch, tmp_path, env_value, expected):
+    """Env overrides arrive as strings; bool("false") is True, which kept free mode on."""
+    config_path = tmp_path / ".config.yaml"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("AGENT_HUB_LLM_FREE_ONLY", env_value)
+
+    config = load_config(config_path)
+
+    assert config["llm"]["free_only"] == env_value
+    assert config_bool(config["llm"]["free_only"], False, key="llm.free_only") is expected

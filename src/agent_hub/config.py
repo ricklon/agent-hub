@@ -15,6 +15,48 @@ from loguru import logger
 
 _ENV_PREFIX = "AGENT_HUB_"
 
+_TRUE_WORDS = {"1", "true", "yes", "on"}
+_FALSE_WORDS = {"0", "false", "no", "off"}
+
+
+def config_bool(value: Any, default: bool, *, key: str) -> bool:
+    """Read an on/off config value that may have arrived as a string.
+
+    Environment overrides land in the config dict as raw strings, and
+    ``bool("false")`` is True: ``AGENT_HUB_LLM_FREE_ONLY=false`` used to leave
+    free mode on. YAML booleans, 0/1, and the usual words are accepted; a blank
+    or missing value means "not set" and gives ``default``. Anything else is
+    refused rather than guessed at, since these flags gate spend and models.
+
+    Args:
+        value: The raw value from the config dict.
+        default: Returned when the value is missing or blank.
+        key: Dotted config key, named in the error for an unreadable value.
+
+    Returns:
+        The parsed flag.
+
+    Raises:
+        ValueError: If the value is not recognisably on or off.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if not word:
+            return default
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    raise ValueError(
+        f"{key}: {value!r} is not an on/off value; use true/false, yes/no, on/off or 1/0"
+    )
+
 
 @dataclass
 class ServerConfig:

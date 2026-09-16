@@ -117,7 +117,10 @@ single API key for all of them.
 
 Set `llm.free_only: true` in `data/.config.yaml` to put the hub in **free mode**:
 the Models page then lists only free OpenRouter models and refuses paid ids
-(handy for class nights and public demos).
+(handy for class nights and public demos). The environment equivalent is
+`AGENT_HUB_LLM_FREE_ONLY`, which takes `true`/`false`, `yes`/`no`, `on`/`off`
+or `1`/`0`; blank means off, and any other value stops the hub at startup.
+Free mode is read at startup, so restart after changing it.
 
 1. Go to [openrouter.ai](https://openrouter.ai) and sign in
 2. Click your profile → **Keys** → **Create key**
