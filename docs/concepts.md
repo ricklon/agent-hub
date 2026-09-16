@@ -53,6 +53,25 @@ agent-hub uses Microsoft Edge TTS by default (free, no key required, many
 voices and languages). KittenTTS is also supported for higher-quality
 local synthesis.
 
+## What is listen mode?
+
+Normally all three pipeline steps run on every utterance. In **listen mode**
+only the first one does: speech is transcribed and logged, then the turn
+stops. No model call, no reply, no device tool, and no "thinking" face — the
+device keeps hearing but never answers.
+
+It exists because a device left connected in a busy room treats every
+overheard sentence as a turn, which is expensive and, on a robot with servo
+tools, physically disruptive. It is toggled by voice ("go into listen mode" /
+"interact again") or from the device's dashboard page, and the robot speaks
+only to confirm the switch. The state is per device and lives in hub memory:
+it survives the device rebooting, but a hub restart clears it.
+
+This is not the same as a **transcriber agent** (see
+[transcriber-agent.md](transcriber-agent.md)), which is a persona built for
+recording a whole session. Listen mode is a temporary switch on an ordinary
+talking agent.
+
 ## What is a persona?
 
 A persona is a named configuration bundle: which AI model to use, which

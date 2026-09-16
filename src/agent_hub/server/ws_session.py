@@ -35,7 +35,7 @@ from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.tts import get_provider as get_tts
 from agent_hub.registry.models import AgentStatus, Persona
 from agent_hub.registry.store import RegistryStore
-from agent_hub.server import debug_audio, session_state, tool_policy, transcript_log
+from agent_hub.server import debug_audio, listen_mode, session_state, tool_policy, transcript_log
 from agent_hub.server import emotion as emotion_utils
 from agent_hub.server.audio import (
     AudioRateController,
@@ -683,7 +683,6 @@ async def _run_voice_turn(
     logger.bind(tag=_TAG).info(
         f"ASR ({asr_ms}ms): {transcript!r} [emotion={result.emotion} lang={result.language or '?'}]"
     )
-    session_state.set_pipeline_status(device_id, "thinking", transcript)
 
     await websocket.send_text(
         json.dumps(
@@ -694,6 +693,35 @@ async def _run_voice_turn(
             }
         )
     )
+
+    # Listen mode — a voice command toggles it (the only time it speaks); while
+    # on, log and stop here so nothing is said and no device tool is called.
+    command = listen_mode.parse_command(transcript) if device_id else None
+    if command is not None:
+        listen_mode.set_listen_only(device_id, command == "listen")
+        logger.bind(tag=_TAG).info(f"{device_id!r} voice command: {command} mode")
+        confirmation = (
+            listen_mode.LISTEN_CONFIRMATION
+            if command == "listen"
+            else listen_mode.INTERACT_CONFIRMATION
+        )
+        await _speak(websocket, confirmation, persona, config, session_id)
+        return
+    if device_id and listen_mode.is_listen_only(device_id):
+        session_state.set_pipeline_status(device_id, "listening", transcript)
+        transcript_log.log_turn(
+            device_id=device_id,
+            text=transcript,
+            emotion=result.emotion,
+            language=result.language or "",
+            reply="",
+            asr_ms=asr_ms,
+            llm_ms=0,
+            tts_ms=0,
+        )
+        return
+
+    session_state.set_pipeline_status(device_id, "thinking", transcript)
 
     # Reactive emotion: mirror user's detected tone on device face immediately
     if supports_emoji:
@@ -1001,7 +1029,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     )
                     return
                 # Signal device that we're thinking only for assistant turns.
-                if hello.supports_emoji and not transcription_mode:
+                if (
+                    hello.supports_emoji
+                    and not transcription_mode
+                    and not listen_mode.is_listen_only(device_id)
+                ):
                     with suppress(Exception):
                         await websocket.send_text(
                             json.dumps(
@@ -1151,7 +1183,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
 
             # 4. Greeting — speak once before entering the audio loop so it
             #    always precedes any voice turn regardless of device timing.
-            if not transcription_mode and not session_state.has_greeted(device_id):
+            if (
+                not transcription_mode
+                and not listen_mode.is_listen_only(device_id)
+                and not session_state.has_greeted(device_id)
+            ):
                 session_state.mark_greeted(device_id)
                 await _speak(websocket, _GREETING, persona, config, session_id)
 
