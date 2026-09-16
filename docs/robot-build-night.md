@@ -102,6 +102,32 @@ chips), and click it.
 If a tool misbehaves, fix your Python, restart the script, and reload the
 page. Your agent keeps its id, persona, owner and history.
 
+## 4b. Make it stop talking back
+
+While you debug over serial, room audio — a TV, the person at the next table,
+your own muttering — becomes a real turn: the robot answers out loud and calls
+your servo tools. **Listen mode** stops that without unplugging anything.
+
+Turn it on either way:
+
+- Say **"go into listen mode"** (or "listening mode", "listen only"). The
+  "robot," in front is optional — ASR usually drops it.
+- Click **👂 Listen mode** on your robot's dashboard page.
+
+While it is on, every utterance is still transcribed, shown on the page and
+written to the transcript — but no model runs, nothing is spoken, and no
+device tool is called. The robot confirms the switch out loud and is then
+quiet until you bring it back:
+
+- Say **"interact again"** (or "exit listen mode", "listen mode off",
+  "interactive mode").
+- Click the same toggle, now reading **👂 Listen mode on — click to interact
+  again**.
+
+The tool console keeps working the whole time, so you can still drive servos
+by hand while the robot stays silent. The setting is per robot and survives it
+rebooting or reconnecting; restarting the hub clears it.
+
 ## 5. Give it a personality (optional)
 
 On the **Personas** page, make a new persona, pick a starter prompt, choose a
@@ -120,6 +146,7 @@ persona editor.
 | `stream dropped; reconnecting` | Network hiccup. It retries by itself; if it repeats, check you can reach the hub address. |
 | Robot shows **not connected** on the dashboard | The script is not running, or it cannot reach the hub. Its own terminal says which. |
 | `does not expose a tool called …` | The name in the console does not match a `name` in your `TOOLS`. |
+| Robot hears you but never answers | Listen mode is on. Say "interact again", or click the 👂 toggle on its page. |
 | The model answers without calling your tool | Your description is too vague. Say what the tool does and when to use it, in plain words. |
 | The model calls the tool with junk arguments | It gets one chance to correct itself automatically. If it keeps happening, tighten `inputSchema` and mention the units in the description. |
 

@@ -282,6 +282,15 @@ tools, and is driven by the hub over the MCP bridge the same way a xiaozhi
 device's tools are. The `page_speak` / `page_see` server skills route LLM
 tool calls to a connected page agent. See `skills/mcp-bridge/SKILL.md`.
 
+**Listen mode** keeps a device transcribing without answering: each utterance
+is logged, but no LLM turn, TTS reply or device tool call runs. It is for
+debugging a robot in a room where ambient speech would otherwise become turns
+that talk back and drive servos. Toggle it by voice ("go into listen mode" /
+"interact again") or with the 👂 button on the agent's dashboard page
+(`POST /dashboard/agents/{id}/listen`). State is per device in hub memory, so
+it survives a device reboot but not a hub restart. See
+[docs/concepts.md](docs/concepts.md).
+
 ## Architecture (target)
 
 ```
