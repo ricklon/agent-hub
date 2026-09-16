@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from agent_hub.config import Settings, load_config
+import pytest
+
+from agent_hub.config import Settings, config_bool, load_config
 
 
 def test_env_overrides_server_fields_with_underscored_names(monkeypatch, tmp_path):
@@ -115,3 +117,58 @@ def test_page_agents_allow_anonymous_reads_env_words(monkeypatch, tmp_path):
     assert Settings.from_dict(load_config(config_path)).server.page_agents_allow_anonymous is False
     monkeypatch.setenv("AGENT_HUB_SERVER_PAGE_AGENTS_ALLOW_ANONYMOUS", "true")
     assert Settings.from_dict(load_config(config_path)).server.page_agents_allow_anonymous is True
+    # It decides whether unsigned-in users get page agents: a typo must not guess.
+    monkeypatch.setenv("AGENT_HUB_SERVER_PAGE_AGENTS_ALLOW_ANONYMOUS", "ture")
+    with pytest.raises(ValueError, match="server.page_agents_allow_anonymous"):
+        Settings.from_dict(load_config(config_path))
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        ("true", True),
+        ("True", True),
+        (" yes ", True),
+        ("on", True),
+        ("1", True),
+        ("false", False),
+        ("FALSE", False),
+        ("no", False),
+        ("off", False),
+        ("0", False),
+    ],
+)
+def test_config_bool_reads_on_and_off(value, expected):
+    assert config_bool(value, not expected, key="llm.free_only") is expected
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+@pytest.mark.parametrize("default", [True, False])
+def test_config_bool_blank_or_missing_means_default(value, default):
+    """`KEY=` in an env file means "not set", as the deploy templates use it."""
+    assert config_bool(value, default, key="llm.free_only") is default
+
+
+@pytest.mark.parametrize("value", ["ture", "enabled", 2, 0.5, ["true"]])
+def test_config_bool_refuses_what_it_cannot_read(value):
+    with pytest.raises(ValueError, match="llm.free_only"):
+        config_bool(value, False, key="llm.free_only")
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"), [("false", False), ("0", False), ("true", True)]
+)
+def test_env_override_string_parses_as_a_real_boolean(monkeypatch, tmp_path, env_value, expected):
+    """Env overrides arrive as strings; bool("false") is True, which kept free mode on."""
+    config_path = tmp_path / ".config.yaml"
+    config_path.write_text("{}\n")
+    monkeypatch.setenv("AGENT_HUB_LLM_FREE_ONLY", env_value)
+
+    config = load_config(config_path)
+
+    assert config["llm"]["free_only"] == env_value
+    assert config_bool(config["llm"]["free_only"], False, key="llm.free_only") is expected

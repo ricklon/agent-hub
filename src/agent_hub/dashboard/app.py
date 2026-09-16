@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, Response
 from loguru import logger
 
 from agent_hub import spend
-from agent_hub.config import resolve_timezone
+from agent_hub.config import config_bool, resolve_timezone
 from agent_hub.dashboard import cleanup, persona_options
 from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
@@ -294,7 +294,9 @@ def make_router(
     default_model: str = str(config.get("llm", {}).get("openai", {}).get("model", "") or "")
     # Free mode: the model picker only lists free OpenRouter models and paid
     # ids are refused on select/save. For hubs running on a $0 budget.
-    free_only: bool = bool(config.get("llm", {}).get("free_only", False))
+    free_only: bool = config_bool(
+        config.get("llm", {}).get("free_only"), False, key="llm.free_only"
+    )
 
     stale_policy = cleanup.StalePolicy.from_config(config)
 
