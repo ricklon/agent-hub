@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
+from typing import Any
 
 from agent_hub.providers.asr import Transcript
 from agent_hub.providers.llm import LLMProvider
@@ -127,17 +128,28 @@ async def test_transcription_turn_sends_and_persists_text_without_llm_or_tts(mon
 
     session_state.end_transcription_session("AA:BB")
     sent: list[dict[str, str]] = []
-    saved: list[tuple[str, str, str, str | None]] = []
+    saved: list[tuple[str, str, str, str | None, int | None]] = []
+    opened: list[str] = []
 
     class _WebSocket:
         async def send_text(self, payload: str) -> None:
             sent.append(json.loads(payload))
 
     class _Store:
+        async def transcript_conversation(self, device_id: str, session_id: str, persona) -> Any:
+            opened.append(session_id)
+            return SimpleNamespace(id=42)
+
         async def append_history(
-            self, device_id: str, role: str, content: str, session_id: str | None = None
+            self,
+            device_id: str,
+            role: str,
+            content: str,
+            session_id: str | None = None,
+            *,
+            conversation_id: int | None = None,
         ) -> None:
-            saved.append((device_id, role, content, session_id))
+            saved.append((device_id, role, content, session_id, conversation_id))
 
     class _Decoder:
         def __init__(self, *_args) -> None:
@@ -178,7 +190,7 @@ async def test_transcription_turn_sends_and_persists_text_without_llm_or_tts(mon
         }
     ]
     assert len(saved) == 1
-    device_id, role, content, sid = saved[0]
+    device_id, role, content, sid, conversation_id = saved[0]
     assert (device_id, role, content) == (
         "AA:BB",
         "transcript",
@@ -187,4 +199,7 @@ async def test_transcription_turn_sends_and_persists_text_without_llm_or_tts(mon
     # The turn was tagged with a freshly-started transcription session.
     assert sid == session_state.current_transcription_session("AA:BB")
     assert sid and sid.endswith(tuple("0123456789abcdef"))
+    # …and lands in that listen session's transcript conversation.
+    assert opened == [sid]
+    assert conversation_id == 42
     session_state.end_transcription_session("AA:BB")

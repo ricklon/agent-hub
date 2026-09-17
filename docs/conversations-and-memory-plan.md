@@ -92,10 +92,13 @@ the transcriber paths move over, then is dropped.
 
 **Migration** (runs in `store._migrate()` on start): group existing rows per
 device into conversations by the same 30-minute idle gap; transcript rows by
-their `session_id`. Backfilled conversations get fallback titles ("first words
-of the first message… · Sep 16 19:17") and no summary. No model is called
-during migration. Each gets a **Title this** button instead, so nobody's bill
-jumps on upgrade.
+their `session_id` (which becomes the public id). Backfilled conversations get
+fallback titles from their first words (the first reply, if the user's words
+were lost), shown next to their start time rather than baked into the title,
+since the store doesn't know the hub's time zone. They get no summary, and no
+model is called during migration. Each gets a **Title this** button instead,
+so nobody's bill jumps on upgrade. Each device's latest chat conversation stays
+open, so a chat in progress at upgrade isn't cut off.
 
 **Store API** replaces the ad-hoc `load_history` calls:
 
