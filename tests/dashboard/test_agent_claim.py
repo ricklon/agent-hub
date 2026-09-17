@@ -183,3 +183,123 @@ async def test_the_table_keeps_its_filter_while_polling(store: RegistryStore, mi
         resp = await c.get("/dashboard/agents", params={"mine": mine} if mine else {})
     expected = "/dashboard/agents?mine=1" if mine else "/dashboard/agents"
     assert f'hx-get="{expected}"' in resp.text
+
+
+async def _named_page(store: RegistryStore, name: str, identity: OperatorIdentity) -> str:
+    from agent_hub.registry.page_identity import named_page_device_id
+
+    device_id = named_page_device_id(identity.subject, name)
+    await store.get_or_create_agent(
+        device_id,
+        kind=AgentKind.PAGE,
+        label=name,
+        owner=identity.email,
+        owner_subject=identity.subject,
+    )
+    return device_id
+
+
+async def test_the_fleet_table_is_grouped_by_owner_with_mine_first(store: RegistryStore) -> None:
+    await _robot(store, "robot-mine")
+    await _robot(store, "robot-ada")
+    await _robot(store, "robot-typed")
+    await _robot(store, "robot-nobody")
+    async with await _client(store) as rick:
+        await rick.post("/dashboard/agents/robot-mine/claim")
+    async with await _client(store, _ADA) as ada:
+        await ada.post("/dashboard/agents/robot-ada/claim")
+    await store.set_agent_owner("robot-typed", "team-zeta")
+    await store.get_or_create_agent("board-mine", kind=AgentKind.XIAOZHI, label="a board")
+    await store.claim_agent("board-mine", _RICK.subject, _RICK.email)
+    page = await _named_page(store, "kitchen", _RICK)
+
+    async with await _client(store) as c:
+        home = await c.get("/dashboard/")
+    text = home.text
+    order = [
+        text.index(">Mine <"),
+        text.index(">ada@example.com <"),
+        text.index(">team-zeta (unverified label) <"),
+        text.index(">Unowned <"),
+    ]
+    assert order == sorted(order)
+    # Inside a section: boards, then robots, then pages.
+    mine = text[order[0] : order[1]]
+    assert mine.index("a board") < mine.index("robot-mine") < mine.index(page)
+
+
+async def test_named_page_agents_cannot_change_hands(store: RegistryStore) -> None:
+    page = await _named_page(store, "kitchen", _RICK)
+    async with await _client(store, _ADA, OperatorRole.ADMIN.value) as ada:
+        detail = await ada.get(f"/dashboard/agents/{page}")
+        claim = await ada.post(f"/dashboard/agents/{page}/claim")
+        release = await ada.post(f"/dashboard/agents/{page}/release")
+        relabel = await ada.post(f"/dashboard/agents/{page}/owner", data={"owner": "ada"})
+
+    # Changing the owner would orphan the agent: its id is derived from it.
+    assert "Named page agent of rick@example.com" in detail.text
+    assert "Claim as" not in detail.text
+    assert claim.status_code == release.status_code == relabel.status_code == 409
+    agent = await store.get_agent(page)
+    assert agent is not None
+    assert agent.owner_subject == _RICK.subject and agent.owner == _RICK.email
+
+
+async def test_persona_page_lists_the_agents_that_use_it(store: RegistryStore) -> None:
+    await _robot(store, "robot-mine")
+    await store.claim_agent("robot-mine", _RICK.subject, _RICK.email)
+    await _robot(store, "robot-nobody")
+    async with await _client(store) as c:
+        page = await c.get("/dashboard/personas/hub-default")
+    assert "Used by 2 agents" in page.text
+    assert page.text.index("<strong>Mine</strong>") < page.text.index("robot-mine")
+    assert page.text.index("<strong>Unowned</strong>") < page.text.index("robot-nobody")
+
+
+@pytest.mark.parametrize(
+    ("query", "shown", "hidden"),
+    [
+        ({"mine": "1"}, "robot-mine", "robot-ada"),
+        ({"owner": "ada@example.com"}, "robot-ada", "robot-mine"),
+    ],
+)
+async def test_the_home_filter_is_never_replaced_by_a_refresh(
+    store: RegistryStore, query: dict[str, str], shown: str, hidden: str
+) -> None:
+    await _robot(store, "robot-mine")
+    await _robot(store, "robot-ada")
+    await store.claim_agent("robot-mine", _RICK.subject, _RICK.email)
+    await store.claim_agent("robot-ada", _ADA.subject, _ADA.email)
+    async with await _client(store) as c:
+        home = await c.get("/dashboard/", params=query)
+        table_refresh = await c.get("/dashboard/agents", params=query)
+        health_refresh = await c.get("/dashboard/overview", params=query)
+    expected = "?mine=1" if "mine" in query else "?owner=ada%40example.com"
+
+    # The chosen filter is shown as selected, and a chip swaps only the table.
+    assert f'aria-pressed="true" hx-get="/dashboard/agents{expected}"' in home.text
+    assert 'hx-target="#agent-table"' in home.text
+    # The table polls itself with the same filter, and a refresh of it stays filtered.
+    for resp in (home, table_refresh):
+        table = resp.text[resp.text.index('id="agent-table"') :]
+        assert f'hx-get="/dashboard/agents{expected}" hx-trigger="every 5s"' in table
+        assert shown in table and hidden not in table
+    # The health poll carries no filter bar or table, so it cannot clobber them,
+    # and fleet health stays fleet-wide.
+    assert 'id="fleet-health" hx-get="/dashboard/overview"' in health_refresh.text
+    assert "owner-chip" not in health_refresh.text
+    assert 'id="agent-table"' not in health_refresh.text
+    assert '<span class="overview-value">2</span>' in health_refresh.text
+
+
+async def test_an_empty_fleet_switches_to_the_full_layout_when_an_agent_appears(
+    store: RegistryStore,
+) -> None:
+    async with await _client(store) as c:
+        empty = await c.get("/dashboard/")
+        await _robot(store)
+        fleet = await c.get("/dashboard/fleet")
+    assert 'id="fleet-overview" hx-get="/dashboard/fleet"' in empty.text
+    assert "All agents" in fleet.text and "robot-01" in fleet.text
+    # Once there are agents the outer section stops polling.
+    assert 'id="fleet-overview">' in fleet.text
