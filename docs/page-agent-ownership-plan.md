@@ -24,15 +24,15 @@ random per tab.
 | Register | `POST /page-agent/register` | Same auth. `request.state.operator_identity` is set. |
 | Create the row | `store.get_or_create_agent(...)` then `claim_agent` | Since #86 the verified operator is recorded as owner. Rows made before #86 have no owner. |
 | Identity of the agent | `_page_html.py`, `sessionStorage` | A random `page-xxxxxxxxxxxxxxxx` for each tab. A new tab or restarted browser makes a new agent. |
-| Cleanup | `cleanup.StalePolicy.page_after` (24h) | Unseen page rows are pruned. Their conversation history is keyed to a device id that never comes back. |
+| Cleanup | `cleanup.StalePolicy.page_after` (24h) | Unseen page rows are pruned, and `store.delete_agent` deletes their conversation history with them. |
 
 Consequences:
 
 1. **No grouping by owner.** Since #86 new page agents are owned and show
    under "mine", but the agents list is still one flat table.
 2. **No continuity.** Reopening "my kitchen assistant" tomorrow makes a
-   stranger with no memory. The old row is pruned and its history is left
-   orphaned.
+   stranger with no memory. The old row is pruned after 24h, and its history
+   is deleted with it.
 3. ~~**Any operator can take over a page agent.**~~ **Fixed in #86.**
    Registration trusted the `device_id` in the payload and re-issued that
    row's token, including for boards. It now reuses an id only for a page
@@ -98,12 +98,21 @@ Consequences:
 
 ### Cleanup
 
-- Named, owned page agents follow the **device** stale policy
-  (`stale_device_days`), not the 24h page policy. They are meant to come back.
-- Anonymous page agents (only possible with the opt-in flag) keep the 24h
-  policy.
-- Deleting a page agent from the dashboard asks whether to keep or delete its
-  history. Today history is silently orphaned.
+Built in step 3a.
+
+- **Named** page agents follow the **device** stale policy
+  (`stale_device_days`), not the 24h page policy, and the hourly automatic
+  sweep never removes them. They are meant to come back. "Named" is decided
+  by `registry.page_identity.is_named_page_agent`: the row's id must be the
+  named id for its owner and label.
+- This includes named agents on a hub with `page_agents_allow_anonymous`
+  (owner `local`). An earlier draft kept those on the 24h policy, but a named
+  agent on a LAN hub is just as much meant to be reopened.
+- Per-tab page agents (random ids) keep the 24h policy and the hourly sweep.
+- Removing an agent from its dashboard page has a "keep conversation history"
+  checkbox, on by default for named page agents. Kept history comes back when
+  the name is reopened, since the id is the same. Before this, removing always
+  deleted the history.
 
 ### Dashboard grouping
 
@@ -121,8 +130,9 @@ to register one adopt it while it isn't live, which covers a tab reload. No
 further adoption:
 
 - Leave the rest to the current 24h prune.
-- Add a one-off admin button, "Remove unowned page agents", on the cleanup
-  panel for hubs that want the list clean now.
+- ~~Add a one-off admin button, "Remove unowned page agents".~~ Dropped: once
+  step 2 is deployed no page creates per-tab rows any more, so the hourly
+  sweep clears the old ones within a day anyway.
 - No schema change: `owner` and `owner_subject` already exist
   (`registry/models.py`).
 
@@ -153,7 +163,7 @@ In `tests/`, alongside the existing page-agent and authorization tests:
 
 1. Server: identity derivation, owner on create, registration rules, flag.
 2. Page UI: name field, existing-agent picker.
-3. Dashboard grouping and cleanup policy.
+3. (a) Cleanup policy and keeping history. (b) Dashboard grouping.
 4. Deploy to the droplet. Announce that open page tabs need to be reopened
    once, since their old random ids won't be adopted.
 

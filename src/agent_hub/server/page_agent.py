@@ -16,7 +16,6 @@ providers as xiaozhi devices rather than browser-only speech APIs.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import secrets
 import time
@@ -33,6 +32,11 @@ from agent_hub import spend
 from agent_hub.config import Settings
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.registry.models import AgentKind
+from agent_hub.registry.page_identity import (
+    LOCAL_OWNER,
+    is_named_page_agent,
+    named_page_device_id,
+)
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge, session_state
 from agent_hub.server._page_html import PAGE_HTML as _PAGE_AGENT_HTML
@@ -174,7 +178,6 @@ async def _resolve_device_id(store: RegistryStore, requested: str, identity: Any
     return _new_device_id()
 
 
-_LOCAL_OWNER = "local"
 _MAX_NAME_LEN = 64
 
 
@@ -192,17 +195,6 @@ def _clean_page_name(raw: Any) -> str | None:
     if len(name) > _MAX_NAME_LEN or not name.isprintable():
         return None
     return name
-
-
-def _named_device_id(owner_key: str, name: str) -> str:
-    """Stable page agent id for one owner's named agent.
-
-    Deterministic, so reopening a name finds the same row and its history;
-    scoped to the owner, so two people can each have a "kitchen". Names match
-    case-insensitively: "Kitchen" and "kitchen" are the same agent.
-    """
-    digest = hashlib.sha256(f"{owner_key}\n{name.casefold()}".encode()).hexdigest()
-    return "page-" + digest[:16]
 
 
 async def _check_named_registration(
@@ -288,17 +280,12 @@ def make_router(
         if identity is None and not settings.server.page_agents_allow_anonymous:
             return _anonymous_refusal()
         owner_subject = identity.subject if identity is not None else None
-        owner_key = owner_subject or _LOCAL_OWNER
         agents = []
         for agent, persona in await store.list_agents_with_personas():
-            if agent.kind != AgentKind.PAGE.value or agent.owner_subject != owner_subject:
-                continue
-            if owner_subject is None and agent.owner != _LOCAL_OWNER:
+            # Only rows whose id is the named id for their owner are reopenable.
+            if agent.owner_subject != owner_subject or not is_named_page_agent(agent):
                 continue
             name = agent.label or ""
-            # Only rows whose id is the named id for this owner are reopenable.
-            if not name or _named_device_id(owner_key, name) != agent.device_id:
-                continue
             bridge = mcp_bridge.get_page_agent(agent.device_id)
             agents.append(
                 {
@@ -339,7 +326,7 @@ def make_router(
         if identity is None and not settings.server.page_agents_allow_anonymous:
             return _anonymous_refusal()
         owner_subject = identity.subject if identity is not None else None
-        owner = identity.email if identity is not None else _LOCAL_OWNER
+        owner = identity.email if identity is not None else LOCAL_OWNER
 
         name = _clean_page_name(payload.get("name"))
         if name is None:
@@ -354,7 +341,7 @@ def make_router(
         if name:
             # A named agent: the id comes from who you are and what you called
             # it, never from the browser.
-            device_id = _named_device_id(owner_subject or _LOCAL_OWNER, name)
+            device_id = named_page_device_id(owner_subject or LOCAL_OWNER, name)
             refusal = await _check_named_registration(
                 store, device_id, name, owner_subject, payload.get("takeover") is True
             )

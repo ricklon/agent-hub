@@ -28,6 +28,7 @@ from agent_hub.registry.models import (
     OperatorRole,
     Persona,
 )
+from agent_hub.registry.page_identity import is_named_page_agent
 
 _DEFAULT_PERSONA_NAME = "hub-default"
 _TRANSCRIBER_PERSONA_NAME = "transcriber"
@@ -601,11 +602,16 @@ class RegistryStore:
             await session.commit()
             return True
 
-    async def delete_agent(self, device_id: str) -> bool:
-        """Remove an agent and its conversation history. Spend rows are kept.
+    async def delete_agent(self, device_id: str, *, keep_history: bool = False) -> bool:
+        """Remove an agent and, unless kept, its conversation history.
+
+        Spend rows are always kept. Kept history is keyed by device id, so an
+        agent that comes back with the same id (a named page agent reopened,
+        a board checking in again) picks it up where it left off.
 
         Args:
             device_id: The agent to remove.
+            keep_history: Leave the agent's conversation history in place.
 
         Returns:
             True when a row was deleted.
@@ -615,12 +621,14 @@ class RegistryStore:
             agent = result.scalar_one_or_none()
             if agent is None:
                 return False
-            await session.execute(
-                delete(ConversationTurn).where(ConversationTurn.device_id == device_id)
-            )
+            if not keep_history:
+                await session.execute(
+                    delete(ConversationTurn).where(ConversationTurn.device_id == device_id)
+                )
             await session.delete(agent)
             await session.commit()
-            logger.info(f"Removed agent {device_id!r} ({agent.kind})")
+            kept = ", history kept" if keep_history else ""
+            logger.info(f"Removed agent {device_id!r} ({agent.kind}{kept})")
             return True
 
     async def list_stale_agents(
@@ -632,12 +640,14 @@ class RegistryStore:
     ) -> list[Agent]:
         """Agents not seen for longer than the threshold for their kind.
 
-        Page agents are ephemeral (one row per browser tab) so they go stale
-        much sooner than a board that is merely powered off for the week.
+        Per-tab page agents are ephemeral so they go stale much sooner than a
+        board that is merely powered off for the week. A named page agent is
+        meant to be reopened, so it gets the device threshold.
 
         Args:
-            device_after: Staleness threshold for every kind except ``page``.
-            page_after: Staleness threshold for page agents.
+            device_after: Staleness threshold for devices, robots, and named
+                page agents.
+            page_after: Staleness threshold for per-tab page agents.
             now: Reference time; defaults to now (UTC).
 
         Returns:
@@ -655,7 +665,8 @@ class RegistryStore:
                 continue
             if seen.tzinfo is None:
                 seen = seen.replace(tzinfo=UTC)
-            limit = page_after if agent.kind == AgentKind.PAGE.value else device_after
+            ephemeral = agent.kind == AgentKind.PAGE.value and not is_named_page_agent(agent)
+            limit = page_after if ephemeral else device_after
             if reference - seen > limit:
                 stale.append(agent)
         stale.sort(key=lambda a: a.last_seen or a.created_at or reference)

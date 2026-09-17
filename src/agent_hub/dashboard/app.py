@@ -27,6 +27,7 @@ from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.overview import render_fleet_overview
 from agent_hub.registry.models import Agent, AgentKind, OperatorRole, Persona
+from agent_hub.registry.page_identity import is_named_page_agent
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge, session_state, tool_policy
 from agent_hub.server.agent_turn import TurnError, call_one_tool, run_turn
@@ -515,10 +516,11 @@ def make_router(
         return HTMLResponse(_pin_form(device_id, keep))
 
     @router.post("/dashboard/agents/{device_id}/remove", response_class=HTMLResponse)
-    async def agent_remove(device_id: str, request: Request) -> Response:
-        if not await cleanup.remove_agent(store, device_id):
+    async def agent_remove(device_id: str, keep_history: str = Form(default="")) -> Response:
+        keep = bool(keep_history)
+        if not await cleanup.remove_agent(store, device_id, keep_history=keep):
             return HTMLResponse("<p>Agent not found.</p>", status_code=404)
-        logger.info(f"Dashboard removed agent {device_id!r}")
+        logger.info(f"Dashboard removed agent {device_id!r}{' (history kept)' if keep else ''}")
         return Response(status_code=204, headers={"HX-Redirect": "/dashboard/"})
 
     async def _spend_panel() -> str:
@@ -1123,11 +1125,16 @@ the same loop the page agent and voice sessions use. Costs one model call.</p>
 </form>
 <div id="ask-result" role="status" aria-live="polite" style="margin-top:0.5rem"></div>"""
 
+        # Named page agents come back under the same id when their name is
+        # reopened, so keeping their history is the default there.
+        keep_checked = " checked" if is_named_page_agent(agent) else ""
         remove_btn = f"""\
 <form hx-post="/dashboard/agents/{device_id}/remove" style="display:inline"
-      hx-confirm="Remove this agent and its conversation history? A device will
-re-register on its next check-in.">
+      hx-confirm="Remove this agent? A device re-registers on its next check-in, and a
+named page agent when its name is reopened.">
   <button type="submit" style="background:#b62324">✕ Remove agent</button>
+  <label style="font-size:0.8rem;color:#8b949e"><input type="checkbox" name="keep_history"
+    value="1"{keep_checked}> keep conversation history</label>
 </form>"""
         speak_form = f"""\
 {reboot_btn}

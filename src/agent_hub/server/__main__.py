@@ -128,8 +128,9 @@ def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any
 async def _prune_page_agents(store: RegistryStore, config: dict[str, Any]) -> None:
     """Hourly sweep that removes page-agent rows left behind by closed tabs.
 
-    Only page agents are removed automatically; devices are pruned solely
-    from the dashboard, by a person. Guarded by a module-level flag like the
+    Only per-tab page agents are removed automatically; devices and named page
+    agents, which are meant to come back, are pruned solely from the
+    dashboard, by a person. Guarded by a module-level flag like the
     prewarm, because startup fires once per uvicorn server instance (three
     times in the multi-port setup) and one sweeper is enough.
     """
@@ -138,12 +139,12 @@ async def _prune_page_agents(store: RegistryStore, config: dict[str, Any]) -> No
         return
     _pruning = True
 
-    from agent_hub.dashboard.cleanup import PAGE_ONLY, StalePolicy, prune
+    from agent_hub.dashboard.cleanup import StalePolicy, is_per_tab_page, prune
 
     policy = StalePolicy.from_config(config)
     while True:
         try:
-            await prune(store, policy, kinds=PAGE_ONLY)
+            await prune(store, policy, select=is_per_tab_page)
         except Exception as exc:  # noqa: BLE001 - a sweep failure must not kill the loop
             logger.warning(f"page-agent prune failed: {exc}")
         await asyncio.sleep(3600)
