@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +45,13 @@ async def test_voice_turn_includes_current_question_and_finishes(
             assert messages[-1] == {"role": "user", "content": "how are you"}
             return result
 
+        async def stream_with_tools(
+            self, messages: list, *args: object, **kwargs: object
+        ) -> AsyncIterator[str]:
+            assert messages[-1] == {"role": "user", "content": "how are you"}
+            if result:
+                yield result
+
     class Tts:
         async def synthesize_pcm(self, text: str, **kwargs: object) -> tuple[bytes, int]:
             if result == "tts_failure":
@@ -65,7 +74,15 @@ async def test_voice_turn_includes_current_question_and_finishes(
     sent: list[dict] = []
 
     async def receive() -> dict:
-        return next(events)
+        event = next(events)
+        if event["type"] == "websocket.disconnect":
+            # The turn runs as its own task; hang up once it has finished.
+            for _ in range(200):
+                texts = [json.loads(e["text"]) for e in sent if "text" in e]
+                if any(m["type"] == "error" or m.get("state") == "stop" for m in texts):
+                    break
+                await asyncio.sleep(0.01)
+        return event
 
     async def send(message: dict) -> None:
         sent.append(message)
@@ -86,7 +103,11 @@ async def test_voice_turn_includes_current_question_and_finishes(
     messages = [json.loads(event["text"]) for event in sent if "text" in event]
     assert any(message["type"] == "thinking" for message in messages)
     if result == "Hello there":
-        assert messages[-1] == {"type": "tts", "state": "stop"}
+        assert messages[-1] == {"type": "tts", "state": "stop", "interrupted": False}
         assert sum(len(event.get("bytes", b"")) for event in sent) == 4000
+    elif result == "tts_failure":
+        # One sentence failing to synthesize is reported, and the turn still ends.
+        assert any(message["type"] == "tts_error" for message in messages)
+        assert messages[-1]["state"] == "stop"
     else:
         assert messages[-1]["type"] == "error"

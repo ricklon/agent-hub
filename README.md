@@ -326,7 +326,9 @@ The browser workspace puts discussion and hands-free voice first; camera and
 speaker tools are under **Camera and speaker controls**. Microphone/camera need
 HTTPS or localhost. Clear the wake word for open mic. Incoming voice chunks
 play sequentially, and the speaking indicator stays active until playback ends.
-Microphone audio is withheld during replies to avoid feeding the reply back into ASR.
+Microphone audio is withheld during replies to avoid feeding the reply back into ASR,
+unless the wake word runs on a model: then the mic stays open so saying the wake
+word interrupts the reply (barge-in).
 For local JavaScript playback/cancellation regressions, run
 `node tests/browser/page_voice.cjs`; `just test` also runs this harness when
 Node is installed. These use media doubles; live microphone and provider

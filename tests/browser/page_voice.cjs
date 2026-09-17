@@ -58,6 +58,11 @@ el('voiceMode').value = 'hub';  // the page's selected default
   assert.ok(Math.abs(finishPlayback.ms - 180) < 0.001);
   finishPlayback.callback();
   assert.equal(vm.runInContext('replyPlaying', context), false);
+  // Barge-in only when the hub listens with a wake word model.
+  assert.equal(vm.runInContext('bargeIn', context), false);
+  await active.onmessage({data: JSON.stringify({type: 'wake_mode', model: true})});
+  assert.equal(vm.runInContext('bargeIn', context), true);
+  await active.onmessage({data: JSON.stringify({type: 'wake_mode', model: false})});
   await active.onmessage({data: JSON.stringify({type: 'thinking'})});
   await active.onmessage({data: JSON.stringify({type: 'error', message: 'failed'})});
   assert.equal(vm.runInContext('replyPlaying', context), false);

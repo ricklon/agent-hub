@@ -12,6 +12,8 @@ download-models:
     uv run python scripts/copy_silero.py
     echo "Downloading SenseVoiceSmall ONNX from HuggingFace..."
     uv run python scripts/download_models.py
+    echo "Downloading wake word models..."
+    uv run python scripts/download_wake_word.py
     echo "Models ready."
 
 # Wipe transcripts, images and ASR captures between public sessions (keeps the registry). --dry-run / --yes / --clear-spend; see scripts/reset_data.py --help.
