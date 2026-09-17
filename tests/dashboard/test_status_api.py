@@ -136,7 +136,10 @@ async def test_agent_actions_have_confirmations_and_accessible_feedback(
     assert (
         'hx-confirm="Reboot this device now? Its active session will disconnect."' in response.text
     )
-    assert 'hx-confirm="Clear all conversation history for this device?"' in response.text
+    assert (
+        'hx-confirm="Delete every conversation for this device, with its messages and summaries?"'
+        in response.text
+    )
     assert 'id="reboot-result" role="status" aria-live="polite"' in response.text
     assert 'id="speak-result" role="status" aria-live="polite"' in response.text
     assert 'aria-label="Utterance to inject"' in response.text
