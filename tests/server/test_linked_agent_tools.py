@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from agent_hub.config import Settings
+from agent_hub.config import ServerConfig, Settings
 from agent_hub.registry.models import Persona
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge
@@ -89,7 +89,8 @@ async def test_call_linked_tool_when_offline_returns_a_clear_message() -> None:
 
 async def _client(store: RegistryStore) -> AsyncClient:
     app = FastAPI()
-    app.include_router(make_page_agent_router(store, Settings(), {}))
+    settings = Settings(server=ServerConfig(page_agents_allow_anonymous=True))
+    app.include_router(make_page_agent_router(store, settings, {}))
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 

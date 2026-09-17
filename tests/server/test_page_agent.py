@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from agent_hub.config import Settings
+from agent_hub.config import ServerConfig, Settings
 from agent_hub.registry.models import AgentKind
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge
@@ -14,7 +14,9 @@ from agent_hub.server.page_agent import make_router as make_page_agent_router
 
 async def _client(store: RegistryStore) -> AsyncClient:
     app = FastAPI()
-    app.include_router(make_page_agent_router(store, Settings(), {}))
+    # No Access here, so page agents are only allowed with the opt-in.
+    settings = Settings(server=ServerConfig(page_agents_allow_anonymous=True))
+    app.include_router(make_page_agent_router(store, settings, {}))
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
@@ -250,3 +252,65 @@ async def test_register_again_keeps_the_page_id(store: RegistryStore) -> None:
     assert first.json()["device_id"] == "page-r"
     assert again.json()["device_id"] == "page-r"
     mcp_bridge.unregister_page_agent("page-r")
+
+
+async def test_register_is_refused_without_a_user_unless_allowed(store: RegistryStore) -> None:
+    app = FastAPI()
+    app.include_router(make_page_agent_router(store, Settings(), {}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/page-agent/register", json={"name": "kitchen", "tools": []})
+    assert resp.status_code == 403
+    assert "page_agents_allow_anonymous" in resp.json()["message"]
+    assert await store.list_agents_with_personas() == []
+
+
+async def test_anonymous_named_agent_is_owned_by_local_and_stable(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        first = await client.post("/page-agent/register", json={"name": "Kitchen", "tools": []})
+        mcp_bridge.unregister_page_agent(first.json()["device_id"])
+        again = await client.post(
+            "/page-agent/register",
+            # A different tab, casing, and spacing, and a spoofed id: still the
+            # same agent.
+            json={"name": "  kitchen ", "device_id": "page-other", "tools": []},
+        )
+    device_id = first.json()["device_id"]
+    assert first.status_code == 200
+    assert first.json()["name"] == "Kitchen"
+    assert again.json()["device_id"] == device_id
+    agent = await store.get_agent(device_id)
+    assert agent is not None
+    assert agent.owner == "local"
+    assert agent.owner_subject is None
+    assert await store.get_agent("page-other") is None
+    mcp_bridge.unregister_page_agent(device_id)
+
+
+async def test_named_agent_open_in_another_tab_needs_takeover(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        first = await client.post("/page-agent/register", json={"name": "desk", "tools": []})
+        device_id = first.json()["device_id"]
+        handle = mcp_bridge.get_page_agent(device_id)
+        assert handle is not None
+        handle.connected = True
+        blocked = await client.post("/page-agent/register", json={"name": "desk", "tools": []})
+        taken = await client.post(
+            "/page-agent/register", json={"name": "desk", "takeover": True, "tools": []}
+        )
+    assert blocked.status_code == 409
+    assert "already open" in blocked.json()["message"]
+    assert await store.validate_websocket_token(device_id, first.json()["token"]) is False
+    assert taken.status_code == 200
+    assert taken.json()["device_id"] == device_id
+    assert await store.validate_websocket_token(device_id, taken.json()["token"])
+    mcp_bridge.unregister_page_agent(device_id)
+
+
+async def test_register_rejects_an_unusable_name(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        long_name = await client.post("/page-agent/register", json={"name": "x" * 65, "tools": []})
+        control = await client.post("/page-agent/register", json={"name": "a\x00b", "tools": []})
+        not_text = await client.post("/page-agent/register", json={"name": 7, "tools": []})
+    assert long_name.status_code == 400
+    assert control.status_code == 400
+    assert not_text.status_code == 400
