@@ -131,6 +131,66 @@ def classify_utterance(raw: str, wake_word: str) -> tuple[str, str]:
     return ("command", command or "yes?")
 
 
+def voice_turn_messages(
+    conversation: list[dict[str, str]], window: int, transcript: str
+) -> list[dict[str, str]]:
+    """What a page voice turn sends the model: recent chat turns, then the utterance.
+
+    The utterance used to be left out (it was appended only after the reply),
+    so the model answered the previous turns instead of what was just said.
+    Photo and transcript rows are dropped, since a model rejects them.
+    """
+    return [
+        *history_for_llm(conversation[-window:]),
+        {"role": "user", "content": transcript},
+    ]
+
+
+class _AudioStats:
+    """Periodic proof that browser audio is arriving, and how loud it is.
+
+    A silent log used to make "no audio", "too quiet" and "never detected as
+    speech" look identical.
+    """
+
+    REPORT_EVERY_S = 15.0
+
+    def __init__(self) -> None:
+        self._started = time.monotonic()
+        self._last_report = self._started
+        self._bytes = 0
+        self._sum_squares = 0.0
+        self._samples = 0
+        self._peak = 0
+
+    def add(self, pcm: bytes) -> str | None:
+        """Account for one push; return a log line when a report is due."""
+        import numpy as np
+
+        samples = np.frombuffer(pcm[: len(pcm) - len(pcm) % 2], dtype=np.int16).astype(np.int64)
+        self._bytes += len(pcm)
+        if samples.size:
+            self._sum_squares += float(np.square(samples).sum())
+            self._peak = max(self._peak, int(np.abs(samples).max()))
+        self._samples += int(samples.size)
+        now = time.monotonic()
+        first = self._bytes == len(pcm)
+        if not first and now - self._last_report < self.REPORT_EVERY_S:
+            return None
+        rms = int((self._sum_squares / self._samples) ** 0.5) if self._samples else 0
+        seconds = self._samples / 16000
+        line = (
+            "first audio received"
+            if first
+            else f"audio {seconds:.1f}s in the last {now - self._last_report:.0f}s, "
+            f"rms {rms}, peak {self._peak} (of 32767)"
+        )
+        self._last_report = now
+        if not first:
+            self._sum_squares, self._samples, self._peak = 0.0, 0, 0
+        return line
+
+
 def _new_device_id() -> str:
     return "page-" + secrets.token_hex(8)
 
@@ -624,6 +684,11 @@ def make_router(
         )
         pipeline_lock = asyncio.Lock()
         wake_word = "computer"
+        window = (persona.memory_window or 20) * 2
+        # "hub" streams the persona's TTS; "browser" and "off" skip synthesis
+        # (the page speaks the text itself, or stays silent).
+        voice_mode = "hub"
+        audio = _AudioStats()
 
         # Tool setup: page MCP tools + server skills (same as /page-agent/ask).
         page_tool_defs = mcp_bridge.list_page_tool_definitions(device_id)
@@ -682,8 +747,7 @@ def make_router(
                 llm_started = time.monotonic()
                 try:
                     reply = await llm.complete_with_tools(
-                        # Only chat turns: photo and transcript rows are rejected.
-                        history_for_llm(conversation),
+                        voice_turn_messages(conversation, window, transcript),
                         tools,
                         _exec_tool,
                         system_prompt=system_prompt,
@@ -707,8 +771,23 @@ def make_router(
                     return
                 conversation.append({"role": "user", "content": transcript})
                 conversation.append({"role": "assistant", "content": reply})
+                del conversation[:-window]
                 await store.append_history(device_id, "user", transcript)
                 await store.append_history(device_id, "assistant", reply)
+
+                if voice_mode != "hub":
+                    # The page voices (or silences) the reply itself.
+                    await websocket.send_text(
+                        json.dumps({"type": "tts", "state": "start", "text": reply})
+                    )
+                    await websocket.send_text(json.dumps({"type": "tts", "state": "stop"}))
+                    session_state.record_turn(device_id, asr_ms, llm_ms, 0)
+                    session_state.set_pipeline_status(device_id, "listening")
+                    logger.bind(tag=_TAG).info(
+                        f"Page voice {device_id!r}: {transcript!r} → {reply[:60]!r} "
+                        f"(voice: {voice_mode})"
+                    )
+                    return
 
                 # TTS: synthesize and stream PCM back
                 session_state.set_pipeline_status(device_id, "speaking", reply)
@@ -753,20 +832,40 @@ def make_router(
                 if msg.get("type") == "websocket.disconnect":
                     break
                 if "bytes" in msg:
+                    pcm = msg["bytes"]
+                    report = audio.add(pcm)
+                    if report:
+                        logger.bind(tag=_TAG).info(f"Page voice {device_id!r}: {report}")
                     if pipeline_lock.locked():
                         continue  # drop audio while thinking/speaking
-                    pcm = msg["bytes"]
                     if vad.push(pcm):
+                        segment_ms = vad.segment_ms
                         pcm_all = vad.take_pcm()
                         wav_bytes = pcm_to_wav(pcm_all, 16000)
                         asr = get_asr(persona.asr_provider, config)
                         asr_started = time.monotonic()
                         result = await asr.transcribe(wav_bytes)
                         asr_ms = int((time.monotonic() - asr_started) * 1000)
-                        if not result.is_speech or not result.text:
+                        heard = (result.text or "").strip()
+                        if not result.is_speech or not heard:
+                            logger.bind(tag=_TAG).info(
+                                f"Page voice {device_id!r}: {segment_ms} ms of speech, "
+                                f"ASR {asr_ms} ms heard nothing"
+                            )
+                            await websocket.send_text(
+                                json.dumps({"type": "heard", "text": "", "reason": "no words"})
+                            )
                             continue
-                        kind, text = classify_utterance(result.text, wake_word)
+                        kind, text = classify_utterance(heard, wake_word)
+                        logger.bind(tag=_TAG).info(
+                            f"Page voice {device_id!r}: {segment_ms} ms, ASR {asr_ms} ms "
+                            f"heard {heard!r} → {kind}"
+                            + (f" (wake word {wake_word!r})" if wake_word else " (open mic)")
+                        )
                         if kind == "ignore":
+                            await websocket.send_text(
+                                json.dumps({"type": "heard", "text": heard, "reason": "too short"})
+                            )
                             continue
                         if kind == "command":
                             await websocket.send_text(
@@ -792,7 +891,13 @@ def make_router(
                     ctrl = json.loads(msg["text"])
                     if ctrl.get("type") == "wake_word":
                         # Browser can set/clear the wake word at runtime
-                        wake_word = ctrl.get("word", "")
+                        wake_word = str(ctrl.get("word", "")).strip().lower()
+                        logger.bind(tag=_TAG).info(
+                            f"Page voice {device_id!r}: wake word {wake_word or '(open mic)'!r}"
+                        )
+                    elif ctrl.get("type") == "voice_mode":
+                        requested = str(ctrl.get("mode", "hub"))
+                        voice_mode = requested if requested in {"hub", "browser", "off"} else "hub"
                     elif ctrl.get("type") == "stop":
                         vad.reset()
         except (WebSocketDisconnect, RuntimeError):

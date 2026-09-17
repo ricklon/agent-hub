@@ -323,16 +323,27 @@ class PcmSileroVAD:
     """Silero VAD that accepts raw 16kHz int16 PCM directly (no Opus decode).
 
     Used by the page-agent voice WebSocket, where the browser sends raw PCM
-    instead of Opus-encoded packets. Otherwise identical to SileroVAD: dual
-    threshold + sliding window + silence-frame count to detect speech turns.
+    instead of Opus-encoded packets: dual threshold + sliding window to decide
+    each 32 ms chunk, and a run of silent chunks to end a speech turn.
+
+    The browser sends audio in pushes of several chunks (a ScriptProcessor
+    buffer), so everything here is counted per chunk, not per push. It used to
+    be per push, and ``take_pcm`` returned only the unconsumed remainder of the
+    buffer, a few milliseconds, so ASR never got the speech and hands-free
+    voice could not hear anyone.
     """
 
     THRESHOLD: float = 0.5
     THRESHOLD_LOW: float = 0.2
+    # Silent 32 ms chunks after speech that end a turn (~0.5 s).
     SILENCE_FRAMES: int = 16
     WINDOW_SIZE: int = 8
     WINDOW_THRESHOLD: int = 3
+    # Longest turn, in chunks (~8 s); a longer one is cut and transcribed.
     MAX_FRAMES: int = 250
+    # Chunks kept from before speech is detected, so the first word isn't clipped (~320 ms).
+    PRE_ROLL_FRAMES: int = 10
+    _CHUNK_BYTES: int = 512 * 2
 
     def __init__(self, model_path: str, sample_rate: int = 16000) -> None:
         import onnxruntime
@@ -358,6 +369,10 @@ class PcmSileroVAD:
         self._silent_count: int = 0
         self._speech_stopped: bool = False
         self._total_pcm: int = 0
+        # Audio of the current turn, from the pre-roll through the trailing silence.
+        self._segment = bytearray()
+        self._segment_frames: int = 0
+        self._pre_roll: list[bytes] = []
 
     def push(self, pcm_bytes: bytes) -> bool:
         """Feed raw int16 LE PCM. Returns True when a speech turn is complete.
@@ -366,26 +381,40 @@ class PcmSileroVAD:
             pcm_bytes: Raw signed 16-bit little-endian PCM at 16 kHz.
 
         Returns:
-            True when enough silence follows speech to trigger ASR.
+            True when enough silence follows speech (or the turn hit its
+            maximum length) to trigger ASR. Collect the turn with ``take_pcm``.
         """
         self._pcm_buf.extend(pcm_bytes)
-        chunk_bytes = 512 * 2
-        active = False
-        while len(self._pcm_buf) >= chunk_bytes:
-            chunk = bytes(self._pcm_buf[:chunk_bytes])
-            self._pcm_buf = self._pcm_buf[chunk_bytes:]
+        while len(self._pcm_buf) >= self._CHUNK_BYTES and not self._speech_stopped:
+            chunk = bytes(self._pcm_buf[: self._CHUNK_BYTES])
+            del self._pcm_buf[: self._CHUNK_BYTES]
             active = self._infer_chunk(chunk)
-
-        if active:
-            self._has_speech = True
-            self._silent_count = 0
-            self._speech_stopped = False
-        elif self._has_speech:
-            self._silent_count += 1
-            if self._silent_count >= self.SILENCE_FRAMES:
+            if not self._has_speech:
+                if active:
+                    self._has_speech = True
+                    for earlier in self._pre_roll:
+                        self._segment.extend(earlier)
+                    self._segment_frames = len(self._pre_roll)
+                    self._pre_roll = []
+                else:
+                    self._pre_roll.append(chunk)
+                    if len(self._pre_roll) > self.PRE_ROLL_FRAMES:
+                        self._pre_roll.pop(0)
+                    continue
+            self._segment.extend(chunk)
+            self._segment_frames += 1
+            if active:
+                self._silent_count = 0
+            else:
+                self._silent_count += 1
+            if self._silent_count >= self.SILENCE_FRAMES or self._segment_frames >= self.MAX_FRAMES:
                 self._speech_stopped = True
-
         return self._speech_stopped
+
+    @property
+    def segment_ms(self) -> int:
+        """Length of the audio collected for the current turn."""
+        return len(self._segment) * 1000 // (2 * self._sample_rate)
 
     def _infer_chunk(self, samples_int16: bytes) -> bool:
         audio_int16 = np.frombuffer(samples_int16, dtype=np.int16)
@@ -418,11 +447,15 @@ class PcmSileroVAD:
         return self._voice_window.count(True) >= self.WINDOW_THRESHOLD
 
     def take_pcm(self) -> bytes:
-        """Return all accumulated raw PCM for this speech turn and reset."""
-        # Include any partial chunk still in the buffer
-        all_pcm = bytes(self._pcm_buf)
+        """Return the audio of the completed speech turn and start listening afresh.
+
+        Audio pushed after the turn ended stays buffered for the next turn.
+        """
+        segment = bytes(self._segment)
+        leftover = bytes(self._pcm_buf)
         self._reset_state()
-        return all_pcm
+        self._pcm_buf.extend(leftover)
+        return segment
 
     def reset(self) -> None:
         self._reset_state()
