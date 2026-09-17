@@ -37,10 +37,16 @@ async def test_dashboard_ask_never_sends_photo_or_transcript_rows(
     store: RegistryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await store.get_or_create_agent("robot-cam", kind=AgentKind.MCP)
-    await store.append_history("robot-cam", "user", "take a photo")
-    await store.append_history("robot-cam", "assistant", "Done.\n[image:captured]")
-    await store.append_history("robot-cam", "image", "[photo] a red mug on a desk")
-    await store.append_history("robot-cam", "transcript", "someone talking nearby")
+    persona = await store.get_persona_for_device("robot-cam")
+    current = await store.open_conversation("robot-cam", persona=persona, idle_minutes=30)
+    assert current is not None
+    for role, content in [
+        ("user", "take a photo"),
+        ("assistant", "Done.\n[image:captured]"),
+        ("image", "[photo] a red mug on a desk"),
+        ("transcript", "someone talking nearby"),
+    ]:
+        await store.append_history("robot-cam", role, content, conversation_id=current.id)
     sent: list[list[dict[str, Any]]] = []
 
     class _RecordingLLM:

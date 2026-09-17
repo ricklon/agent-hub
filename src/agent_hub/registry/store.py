@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -22,6 +23,8 @@ from agent_hub.registry.models import (
     AgentStatus,
     AuditEvent,
     Base,
+    Conversation,
+    ConversationKind,
     ConversationTurn,
     DashboardOperator,
     LLMSpend,
@@ -31,6 +34,21 @@ from agent_hub.registry.models import (
 from agent_hub.registry.page_identity import is_named_page_agent
 
 _DEFAULT_PERSONA_NAME = "hub-default"
+# Idle gap used to split history written before conversations existed.
+_BACKFILL_IDLE_MINUTES = 30
+# Turns that count toward a conversation's turn_count.
+_COUNTED_ROLES = frozenset({"user", "transcript"})
+
+
+def _utcnow() -> datetime:
+    """Naive UTC, matching what SQLite's CURRENT_TIMESTAMP stores."""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _naive_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+
+
 _TRANSCRIBER_PERSONA_NAME = "transcriber"
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful voice assistant. "
@@ -93,6 +111,7 @@ class RegistryStore:
             async with self._sessions() as session:
                 await self._ensure_default_persona(session)
                 await self._ensure_transcriber_persona(session)
+            await self._backfill_conversations()
             self._initialized = True
             logger.info("Registry store initialized")
 
@@ -113,11 +132,119 @@ class RegistryStore:
             "ALTER TABLE agents ADD COLUMN pinned BOOLEAN DEFAULT 0 NOT NULL",
             "ALTER TABLE agents ADD COLUMN owner VARCHAR(64)",
             "ALTER TABLE agents ADD COLUMN owner_subject VARCHAR(255)",
+            # Conversations and memory.
+            "ALTER TABLE conversation_history ADD COLUMN conversation_id INTEGER",
+            "CREATE INDEX IF NOT EXISTS ix_conversation_history_conversation_id "
+            "ON conversation_history (conversation_id)",
+            "ALTER TABLE personas ADD COLUMN conversation_idle_minutes INTEGER DEFAULT 30 NOT NULL",
+            "ALTER TABLE personas ADD COLUMN auto_title BOOLEAN DEFAULT 1 NOT NULL",
+            "ALTER TABLE personas ADD COLUMN summarize_conversations BOOLEAN DEFAULT 1 NOT NULL",
+            "ALTER TABLE personas ADD COLUMN remember_conversations INTEGER DEFAULT 3 NOT NULL",
+            "ALTER TABLE agents ADD COLUMN conversation_idle_minutes INTEGER",
+            "ALTER TABLE agents ADD COLUMN memory_window INTEGER",
+            "ALTER TABLE agents ADD COLUMN auto_title BOOLEAN",
+            "ALTER TABLE agents ADD COLUMN summarize_conversations BOOLEAN",
+            "ALTER TABLE agents ADD COLUMN remember_conversations INTEGER",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
                 with suppress(Exception):
                     await conn.execute(text(stmt))
+
+    async def _backfill_conversations(self) -> None:
+        """Group history written before conversations existed into conversations.
+
+        Idempotent: only rows with no ``conversation_id`` are touched, so it
+        costs one indexed count on every start after the first. Transcript rows
+        keep their listen session as the conversation (its id becomes the
+        public id). Chat rows are split per device by a 30-minute idle gap.
+        Every backfilled conversation is ended except each device's latest chat
+        one, which the normal idle-gap rule then continues or closes. No model
+        is called; titles come from the first words and are marked fallback.
+        """
+        async with self._sessions() as session:
+            pending = int(
+                await session.scalar(
+                    select(func.count(ConversationTurn.id)).where(
+                        ConversationTurn.conversation_id.is_(None)
+                    )
+                )
+                or 0
+            )
+            if not pending:
+                return
+            rows = (
+                (
+                    await session.execute(
+                        select(ConversationTurn)
+                        .where(ConversationTurn.conversation_id.is_(None))
+                        .order_by(ConversationTurn.device_id, ConversationTurn.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            personas = {
+                a.device_id: p
+                for a, p in (
+                    await session.execute(
+                        select(Agent, Persona).outerjoin(Persona, Agent.persona_id == Persona.id)
+                    )
+                ).all()
+            }
+
+            groups: list[tuple[str, str, str | None, list[ConversationTurn]]] = []
+            open_chat: dict[str, list[ConversationTurn]] = {}
+            by_session: dict[tuple[str, str], list[ConversationTurn]] = {}
+            gap = timedelta(minutes=_BACKFILL_IDLE_MINUTES)
+            for row in rows:
+                if row.session_id:
+                    key = (row.device_id, row.session_id)
+                    if key not in by_session:
+                        by_session[key] = []
+                        groups.append(
+                            (
+                                row.device_id,
+                                ConversationKind.TRANSCRIPT.value,
+                                row.session_id,
+                                by_session[key],
+                            )
+                        )
+                    by_session[key].append(row)
+                    continue
+                current = open_chat.get(row.device_id)
+                if current is None or row.created_at - current[-1].created_at > gap:
+                    current = []
+                    open_chat[row.device_id] = current
+                    groups.append((row.device_id, ConversationKind.CHAT.value, None, current))
+                current.append(row)
+            latest_chat = {device_id: turns[0].id for device_id, turns in open_chat.items()}
+
+            for device_id, kind, session_id, turns in groups:
+                persona = personas.get(device_id)
+                first = turns[0]
+                still_open = (
+                    kind == ConversationKind.CHAT.value and latest_chat.get(device_id) == first.id
+                )
+                conversation = Conversation(
+                    public_id=session_id or secrets.token_hex(8),
+                    device_id=device_id,
+                    kind=kind,
+                    persona_id=persona.id if persona else None,
+                    persona_name=persona.name if persona else None,
+                    title=_fallback_title(turns),
+                    title_source="fallback",
+                    started_at=first.created_at,
+                    last_turn_at=turns[-1].created_at,
+                    ended_at=None if still_open else turns[-1].created_at,
+                    turn_count=sum(1 for t in turns if t.role in _COUNTED_ROLES),
+                )
+                session.add(conversation)
+                await session.flush()
+                for turn in turns:
+                    turn.conversation_id = conversation.id
+            await session.commit()
+        logger.info(f"Backfilled {len(groups)} conversation(s) from {pending} message(s)")
 
     async def _ensure_default_persona(self, session: AsyncSession) -> None:
         result = await session.execute(select(Persona).where(Persona.name == _DEFAULT_PERSONA_NAME))
@@ -625,6 +752,9 @@ class RegistryStore:
                 await session.execute(
                     delete(ConversationTurn).where(ConversationTurn.device_id == device_id)
                 )
+                await session.execute(
+                    delete(Conversation).where(Conversation.device_id == device_id)
+                )
             await session.delete(agent)
             await session.commit()
             kept = ", history kept" if keep_history else ""
@@ -966,11 +1096,16 @@ class RegistryStore:
             persona = persona_result.scalar_one_or_none()
             if persona is None:
                 return False
+            switched = agent.persona_id != persona.id
             agent.persona_id = persona.id
             agent.status = AgentStatus.CLAIMED.value
             await session.commit()
             logger.info(f"Assigned persona '{persona_name}' to agent '{device_id}'")
-            return True
+        # A different persona starts a new conversation. Reassigning the same
+        # one (every page agent registration does) must not split it.
+        if switched:
+            await self.end_open_conversations(device_id, ConversationKind.CHAT)
+        return True
 
     async def update_persona(
         self,
@@ -1019,23 +1154,25 @@ class RegistryStore:
             await session.commit()
             return True
 
-    async def load_history(self, device_id: str, limit: int = 40) -> list[dict[str, str]]:
+    async def load_history(
+        self, device_id: str, limit: int = 40, *, conversation_id: int | None = None
+    ) -> list[dict[str, str]]:
         """Return the most recent messages for device_id, oldest first.
 
         Args:
             device_id: The device to load history for.
             limit: Maximum number of messages (not turns) to return.
+            conversation_id: Only this conversation's messages.
 
         Returns:
-            List of {role, content} dicts ready for LLM context.
+            List of {role, content, created_at} dicts; pass through
+            ``server.history.history_for_llm`` before sending to a model.
         """
         async with self._sessions() as session:
-            result = await session.execute(
-                select(ConversationTurn)
-                .where(ConversationTurn.device_id == device_id)
-                .order_by(ConversationTurn.id.desc())
-                .limit(limit)
-            )
+            query = select(ConversationTurn).where(ConversationTurn.device_id == device_id)
+            if conversation_id is not None:
+                query = query.where(ConversationTurn.conversation_id == conversation_id)
+            result = await session.execute(query.order_by(ConversationTurn.id.desc()).limit(limit))
             rows = list(result.scalars().all())
         rows.reverse()
         return [
@@ -1121,24 +1258,221 @@ class RegistryStore:
             ]
 
     async def append_history(
-        self, device_id: str, role: str, content: str, session_id: str | None = None
+        self,
+        device_id: str,
+        role: str,
+        content: str,
+        session_id: str | None = None,
+        *,
+        conversation_id: int | None = None,
     ) -> None:
-        """Append one message to the persisted conversation history."""
+        """Append one message to the persisted history, in a conversation if given.
+
+        Appending to a conversation also moves its ``last_turn_at`` (which the
+        idle gap is measured from) and counts user and transcript turns.
+        """
         async with self._sessions() as session:
             session.add(
                 ConversationTurn(
-                    device_id=device_id, role=role, content=content, session_id=session_id
+                    device_id=device_id,
+                    role=role,
+                    content=content,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
                 )
             )
+            if conversation_id is not None:
+                conversation = await session.get(Conversation, conversation_id)
+                if conversation is not None:
+                    conversation.last_turn_at = _utcnow()
+                    if role in _COUNTED_ROLES:
+                        conversation.turn_count = (conversation.turn_count or 0) + 1
             await session.commit()
 
+    # ── Conversations ────────────────────────────────────────────────────────
+
+    async def open_conversation(
+        self,
+        device_id: str,
+        *,
+        persona: Persona | None,
+        idle_minutes: int,
+        kind: ConversationKind = ConversationKind.CHAT,
+        create: bool = True,
+        now: datetime | None = None,
+    ) -> Conversation | None:
+        """The device's current conversation of ``kind``, applying the boundaries.
+
+        An open conversation continues unless the silence since its last turn is
+        longer than ``idle_minutes`` or it ran under a different persona; then
+        it is ended. With ``create`` a new one is started when there is none to
+        continue; without it (a device connecting, not yet speaking) None is
+        returned instead, so connections don't leave empty conversations.
+        """
+        reference = _naive_utc(now) if now else _utcnow()
+        async with self._sessions() as session:
+            current = await session.scalar(
+                select(Conversation)
+                .where(Conversation.device_id == device_id)
+                .where(Conversation.kind == kind.value)
+                .where(Conversation.ended_at.is_(None))
+                .order_by(Conversation.id.desc())
+                .limit(1)
+            )
+            if current is not None:
+                last = current.last_turn_at or current.started_at
+                idle = last is not None and reference - _naive_utc(last) > timedelta(
+                    minutes=idle_minutes
+                )
+                switched = persona is not None and current.persona_id not in (None, persona.id)
+                if idle or switched:
+                    current.ended_at = _naive_utc(last) if last else reference
+                    await session.commit()
+                    current = None
+            if current is None and create:
+                current = Conversation(
+                    public_id=secrets.token_hex(8),
+                    device_id=device_id,
+                    kind=kind.value,
+                    persona_id=persona.id if persona else None,
+                    persona_name=persona.name if persona else None,
+                    started_at=reference,
+                    turn_count=0,
+                )
+                session.add(current)
+                await session.commit()
+                await session.refresh(current)
+            return current
+
+    async def transcript_conversation(
+        self, device_id: str, session_id: str, persona: Persona | None
+    ) -> Conversation:
+        """The transcript conversation for one listen session, created on first use."""
+        async with self._sessions() as session:
+            conversation = await session.scalar(
+                select(Conversation).where(Conversation.public_id == session_id)
+            )
+            if conversation is None:
+                conversation = Conversation(
+                    public_id=session_id,
+                    device_id=device_id,
+                    kind=ConversationKind.TRANSCRIPT.value,
+                    persona_id=persona.id if persona else None,
+                    persona_name=persona.name if persona else None,
+                    started_at=_utcnow(),
+                    turn_count=0,
+                )
+                session.add(conversation)
+                await session.commit()
+                await session.refresh(conversation)
+            return conversation
+
+    async def end_open_conversations(
+        self, device_id: str, kind: ConversationKind | None = None
+    ) -> int:
+        """End a device's open conversations now (New conversation, persona switch).
+
+        Returns:
+            How many were ended.
+        """
+        async with self._sessions() as session:
+            query = (
+                select(Conversation)
+                .where(Conversation.device_id == device_id)
+                .where(Conversation.ended_at.is_(None))
+            )
+            if kind is not None:
+                query = query.where(Conversation.kind == kind.value)
+            open_ones = list((await session.execute(query)).scalars().all())
+            now = _utcnow()
+            for conversation in open_ones:
+                conversation.ended_at = conversation.last_turn_at or now
+            await session.commit()
+            return len(open_ones)
+
+    async def end_transcript_conversation(self, session_id: str) -> None:
+        """End the transcript conversation for a listen session (on stop)."""
+        async with self._sessions() as session:
+            conversation = await session.scalar(
+                select(Conversation).where(Conversation.public_id == session_id)
+            )
+            if conversation is not None and conversation.ended_at is None:
+                conversation.ended_at = conversation.last_turn_at or _utcnow()
+                await session.commit()
+
+    async def list_conversations(
+        self, device_id: str, *, before_id: int | None = None, limit: int = 20
+    ) -> list[Conversation]:
+        """A device's conversations with at least one message, newest first, paged."""
+        async with self._sessions() as session:
+            query = (
+                select(Conversation)
+                .where(Conversation.device_id == device_id)
+                .where(Conversation.last_turn_at.is_not(None))
+            )
+            if before_id is not None:
+                query = query.where(Conversation.id < before_id)
+            result = await session.execute(query.order_by(Conversation.id.desc()).limit(limit))
+            return list(result.scalars().all())
+
+    async def get_conversation(self, public_id: str) -> Conversation | None:
+        """One conversation by its public id."""
+        async with self._sessions() as session:
+            conversation: Conversation | None = await session.scalar(
+                select(Conversation).where(Conversation.public_id == public_id)
+            )
+            return conversation
+
+    async def conversation_messages(self, conversation_id: int) -> list[dict[str, str]]:
+        """Every message of one conversation, oldest first, uncapped."""
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(ConversationTurn)
+                .where(ConversationTurn.conversation_id == conversation_id)
+                .order_by(ConversationTurn.id.asc())
+            )
+            rows = list(result.scalars().all())
+        return [
+            {"role": r.role, "content": r.content, "created_at": r.created_at.isoformat()}
+            for r in rows
+        ]
+
+    async def rename_conversation(self, public_id: str, title: str) -> bool:
+        """Set a person's title, which wrap-up never replaces."""
+        async with self._sessions() as session:
+            conversation = await session.scalar(
+                select(Conversation).where(Conversation.public_id == public_id)
+            )
+            if conversation is None:
+                return False
+            conversation.title = title.strip()[:160] or None
+            conversation.title_source = "manual" if conversation.title else None
+            await session.commit()
+            return True
+
+    async def delete_conversation(self, public_id: str) -> bool:
+        """Delete a conversation, its messages, and its summary."""
+        async with self._sessions() as session:
+            conversation = await session.scalar(
+                select(Conversation).where(Conversation.public_id == public_id)
+            )
+            if conversation is None:
+                return False
+            await session.execute(
+                delete(ConversationTurn).where(ConversationTurn.conversation_id == conversation.id)
+            )
+            await session.delete(conversation)
+            await session.commit()
+            return True
+
     async def clear_history(self, device_id: str) -> None:
-        """Delete all conversation history for a device."""
+        """Delete all conversations and history (and so summaries) for a device."""
 
         async with self._sessions() as session:
             await session.execute(
                 delete(ConversationTurn).where(ConversationTurn.device_id == device_id)
             )
+            await session.execute(delete(Conversation).where(Conversation.device_id == device_id))
             await session.commit()
         logger.info(f"Cleared conversation history for {device_id!r}")
 
@@ -1160,6 +1494,7 @@ class RegistryStore:
         async with self._sessions() as session:
             removed = int(await session.scalar(select(func.count(ConversationTurn.id))) or 0)
             await session.execute(delete(ConversationTurn))
+            await session.execute(delete(Conversation))
             await session.commit()
         logger.info(f"Cleared all conversation history ({removed} messages)")
         return removed
@@ -1193,3 +1528,20 @@ class RegistryStore:
         async with self._sessions() as session:
             result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             return result.scalar_one_or_none()
+
+
+def _fallback_title(turns: list[ConversationTurn], max_words: int = 8) -> str | None:
+    """The first words of the conversation, for untitled conversations.
+
+    Prefers what was said to the agent. Some older history holds only replies
+    (a bug once dropped the user's words from a full context window), so it
+    falls back to the first reply rather than leaving the title empty.
+    """
+    for roles in ({"user", "transcript"}, {"assistant"}):
+        for turn in turns:
+            text = re.sub(r"\[(?:image|volatile-tools):[^\]]*\]", "", turn.content).strip()
+            if turn.role in roles and text:
+                words = text.split()
+                title = " ".join(words[:max_words])
+                return (title + "…" if len(words) > max_words else title)[:160]
+    return None
