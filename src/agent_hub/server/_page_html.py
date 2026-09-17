@@ -104,7 +104,8 @@ voice: <select id="voiceMode" title="How replies and page.audio_speaker.speak ar
 <button id="listen">Listen</button>
 <label style="display:inline-flex;align-items:center;gap:.2rem;font-size:.8rem">
 Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
-<span style="font-size:.75rem;color:#8b949e">clear it for open mic</span>
+<span style="font-size:.75rem;color:#8b949e">a name with a model installed
+  (e.g. computer) is detected by sound; clear it for open mic</span>
 </div>
 <div class="row"><div id="voicestate">
   <span id="voicedot"></span>
@@ -698,6 +699,16 @@ let voiceWs = null;
 // How the current hands-free reply is voiced ("hub", "browser", "off"),
 // captured when the reply starts so switching mid-reply doesn't mix voices.
 let handsFreeVoice = "hub";
+// Reply audio currently queued, so it can be cut off when interrupted.
+const playing = new Set();
+let playAt = 0;
+
+function stopPlayback() {
+  for (const src of playing) { try { src.stop(); } catch (e) {} }
+  playing.clear();
+  playAt = 0;
+  if (window.speechSynthesis) speechSynthesis.cancel();
+}
 let audioCtx = null;
 let micStream = null;
 let micSource = null;
@@ -817,7 +828,12 @@ async function startListening() {
       if (msg.type === "stt") {
         voiceLog("heard: " + msg.text, "#58a6ff");
       } else if (msg.type === "wake") {
-        voiceLog("wake word detected: '" + msg.word + "' → " + msg.command, "#f0883e");
+        // A new request while it is talking: drop the rest of the old reply.
+        stopPlayback();
+        voiceLog(msg.command
+          ? "wake word '" + msg.word + "' → " + msg.command
+          : "wake word '" + msg.word + "' heard", "#f0883e");
+        if (!msg.command) return;
         const logEl = document.getElementById("log");
         if (logEl.dataset.empty) { logEl.textContent = ""; delete logEl.dataset.empty; }
         const line = document.createElement("div");
@@ -829,11 +845,11 @@ async function startListening() {
       } else if (msg.type === "heard") {
         // Something was picked up but not acted on: say so instead of nothing.
         voiceLog(msg.text ? "(" + msg.reason + ") " + msg.text : "heard sound, but no words", "#6e7681");
-      } else if (msg.type === "tts" && msg.state === "start") {
+      } else if (msg.type === "tts" && (msg.state === "start" || msg.state === "more")) {
         setVoiceState("speaking");
         // The voice option applies here too: the hub streams audio only in
         // "hub" mode; "browser" speaks the text; "off" stays quiet.
-        handsFreeVoice = voiceMode();
+        if (msg.state === "start") handsFreeVoice = voiceMode();
         if (handsFreeVoice === "browser") speakBuiltin(msg.text || "");
         const logEl = document.getElementById("log");
         const line = document.createElement("div");
@@ -842,7 +858,10 @@ async function startListening() {
         logEl.appendChild(line);
         logEl.scrollTop = logEl.scrollHeight;
       } else if (msg.type === "tts" && msg.state === "stop") {
+        if (msg.interrupted) stopPlayback();
         setVoiceState("listening");
+      } else if (msg.type === "tts_error") {
+        voiceLog("could not speak that: " + msg.message, "#d29922");
       } else if (msg.type === "transcript") {
         voiceLog("(not wake word) " + msg.text, "#6e7681");
         setVoiceState("ignored", 2500);
@@ -860,7 +879,10 @@ async function startListening() {
       const src = audioCtx.createBufferSource();
       src.buffer = buf;
       src.connect(audioCtx.destination);
-      src.start();
+      src.onended = () => { playing.delete(src); };
+      playing.add(src);
+      src.start(Math.max(audioCtx.currentTime, playAt));
+      playAt = Math.max(audioCtx.currentTime, playAt) + buf.duration;
     }
   };
   voiceWs.onerror = () => { voiceLog("WS error", "#f85149"); };
