@@ -63,6 +63,8 @@ button.secondary:hover{background:#30363d}
 <div id="status">initialising…</div>
 <div id="personaline" style="font-size:.8rem;color:#8b949e"></div>
 <div id="agentline" class="row" hidden><span id="agentname"></span>
+<button id="newconversation" class="secondary"
+  title="End the current conversation; the next thing you say starts a new one">New conversation</button>
 <button id="switchagent" class="secondary" title="Close this agent and pick another">Switch agent</button></div>
 
 <form id="connect" hidden>
@@ -257,6 +259,30 @@ async function loadMyAgents() {
 
 document.getElementById("connect").addEventListener("submit", (ev) => { ev.preventDefault(); openAgent(false); });
 document.getElementById("takeover").onclick = () => openAgent(true);
+document.getElementById("newconversation").onclick = async () => {
+  if (!token) return;
+  const btn = document.getElementById("newconversation");
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/page-agent/conversation/new", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({device_id: deviceId, token: token})
+    });
+    const data = await resp.json();
+    voiceLog(data.ok ? "new conversation started" : "could not start one: " + (data.message || resp.status),
+      data.ok ? "#3fb950" : "#f85149");
+    if (data.ok) {
+      const logEl = document.getElementById("log");
+      logEl.textContent = "dialogue will appear here…";
+      logEl.dataset.empty = "1";
+    }
+  } catch (e) {
+    voiceLog("could not start one: " + e, "#f85149");
+  }
+  btn.disabled = false;
+};
+
 document.getElementById("switchagent").onclick = () => {
   storeDel(sessionStorage, TAB_NAME_KEY);
   // Reloading closes the stream, voice socket, and timers in one go; the

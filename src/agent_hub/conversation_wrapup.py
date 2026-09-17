@@ -103,9 +103,18 @@ def _fallback_title(messages: list[dict[str, str]], max_words: int = 8) -> str |
 
 
 async def wrap_up_conversation(
-    store: RegistryStore, config: dict[str, Any], conversation: Conversation
+    store: RegistryStore,
+    config: dict[str, Any],
+    conversation: Conversation,
+    *,
+    force: bool = False,
 ) -> WrapUpResult:
-    """Title and summarize one ended conversation, as its settings allow."""
+    """Title and summarize one ended conversation, as its settings allow.
+
+    ``force`` is a person pressing "Title this": it asks the model even when
+    the settings are off or the conversation is short. A title someone typed
+    is still never replaced.
+    """
     agent = await store.get_agent(conversation.device_id)
     persona: Persona | None = None
     if conversation.persona_id is not None:
@@ -115,11 +124,12 @@ async def wrap_up_conversation(
     settings = effective_settings(persona, agent)
     messages = await store.conversation_messages(conversation.id)
     fallback = conversation.title or _fallback_title(messages)
-    wants_title = settings.auto_title and conversation.title_source != "manual"
-    wants_summary = settings.summarize
+    wants_title = (settings.auto_title or force) and conversation.title_source != "manual"
+    wants_summary = settings.summarize or force
 
     turns = conversation.turn_count or 0
-    if persona is None or not (wants_title or wants_summary) or turns < MIN_TURNS_FOR_MODEL:
+    too_short = turns < MIN_TURNS_FOR_MODEL and not force
+    if persona is None or not (wants_title or wants_summary) or too_short:
         await store.save_wrap_up(
             conversation.id,
             title=None if conversation.title else fallback,

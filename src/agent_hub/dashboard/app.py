@@ -16,13 +16,18 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from loguru import logger
 
 from agent_hub import spend
 from agent_hub.config import config_bool, resolve_timezone
-from agent_hub.conversations import effective_settings
-from agent_hub.dashboard import cleanup, persona_options
+from agent_hub.conversation_wrapup import wrap_up_conversation
+from agent_hub.conversations import (
+    effective_settings,
+    memory_note_for_turn,
+)
+from agent_hub.conversations import settings_for_device as conversation_settings_for_device
+from agent_hub.dashboard import cleanup, conversations_view, persona_options
 from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.audit import render_audit_table
@@ -30,13 +35,16 @@ from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.overview import render_fleet_overview
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import ModelCheck, check_model
-from agent_hub.registry.models import Agent, AgentKind, OperatorRole, Persona
+from agent_hub.registry.models import Agent, AgentKind, Conversation, OperatorRole, Persona
 from agent_hub.registry.page_identity import is_named_page_agent
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge, session_state, tool_policy
 from agent_hub.server.agent_turn import TurnError, call_one_tool, run_turn
+from agent_hub.server.history import history_for_llm
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+# Conversations per page on an agent's page.
+_PAGE_SIZE = 20
 
 _CSS = """\
 body{font-family:monospace;padding:2rem;background:#0d1117;color:#c9d1d9;margin:0}
@@ -749,11 +757,189 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             f'<p style="color:#8b949e;font-size:0.8rem">{caption}</p>'
         )
 
+    async def _conversation_list(device_id: str, before: int | None = None) -> str:
+        persona = await store.get_persona_for_device(device_id)
+        noun = "recording" if (persona and persona.transcription) else "conversation"
+        page = await store.list_conversations(device_id, before_id=before, limit=_PAGE_SIZE)
+        more = None
+        if len(page) == _PAGE_SIZE:
+            older = await store.list_conversations(device_id, before_id=page[-1].id, limit=1)
+            more = page[-1].id if older else None
+        return conversations_view.render_list(
+            page, device_id, display_tz, more_before_id=more, noun=noun
+        )
+
+    @router.get("/dashboard/agents/{device_id}/conversations", response_class=HTMLResponse)
+    async def agent_conversations(device_id: str, before: int | None = None) -> HTMLResponse:
+        """One page of an agent's conversations, newest first."""
+        return HTMLResponse(await _conversation_list(device_id, before))
+
+    @router.post("/dashboard/agents/{device_id}/conversations/new", response_class=HTMLResponse)
+    async def agent_conversation_new(device_id: str) -> HTMLResponse:
+        """End the open conversation; the next turn starts a new one."""
+        ended = await store.end_open_conversations(device_id)
+        logger.info(f"Dashboard ended {ended} open conversation(s) for {device_id!r}")
+        return HTMLResponse(await _conversation_list(device_id))
+
+    @router.get("/dashboard/agents/{device_id}/context", response_class=HTMLResponse)
+    async def agent_context(device_id: str) -> HTMLResponse:
+        """What the model will be sent on the next turn."""
+        settings = await conversation_settings_for_device(store, device_id)
+        persona = await store.get_persona_for_device(device_id)
+        open_conversation = await store.open_conversation(
+            device_id, persona=persona, idle_minutes=settings.idle_minutes, create=False
+        )
+        conversation_id = open_conversation.id if open_conversation else None
+        note = await memory_note_for_turn(store, config, device_id, conversation_id, settings)
+        messages = (
+            history_for_llm(
+                await store.load_history(
+                    device_id, limit=settings.memory_window * 2, conversation_id=conversation_id
+                )
+            )
+            if conversation_id is not None
+            else []
+        )
+        return HTMLResponse(conversations_view.render_context(note, messages, device_id))
+
+    @router.get("/dashboard/agents/{device_id}/conversations.json")
+    async def agent_conversations_json(device_id: str, before: int | None = None) -> JSONResponse:
+        page = await store.list_conversations(device_id, before_id=before, limit=_PAGE_SIZE)
+        return JSONResponse(
+            {"conversations": [conversations_view.conversation_json(c) for c in page]}
+        )
+
+    async def _conversation_of(device_id: str, public_id: str) -> Conversation | None:
+        conversation = await store.get_conversation(public_id)
+        return conversation if conversation and conversation.device_id == device_id else None
+
+    @router.get("/dashboard/agents/{device_id}/conversations/{public_id}.json")
+    async def agent_conversation_json(device_id: str, public_id: str) -> JSONResponse:
+        conversation = await _conversation_of(device_id, public_id)
+        if conversation is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        data = conversations_view.conversation_json(conversation)
+        data["messages"] = await store.conversation_messages(conversation.id)
+        return JSONResponse(data)
+
+    @router.get("/dashboard/agents/{device_id}/conversations/{public_id}.{suffix}")
+    async def agent_conversation_export(device_id: str, public_id: str, suffix: str) -> Response:
+        """Download one conversation as .txt or .md."""
+        if suffix not in {"txt", "md"}:
+            return Response(status_code=404)
+        conversation = await _conversation_of(device_id, public_id)
+        if conversation is None:
+            return Response(status_code=404)
+        agent = await store.get_agent(device_id)
+        body = conversations_view.export_text(
+            conversation,
+            await store.conversation_messages(conversation.id),
+            display_tz,
+            agent_label=(agent.label or device_id) if agent else device_id,
+            device_id=device_id,
+            markdown=suffix == "md",
+        )
+        filename = conversations_view.export_filename(conversation, device_id, suffix)
+        return Response(
+            content=body,
+            media_type=("text/markdown" if suffix == "md" else "text/plain") + "; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @router.get(
+        "/dashboard/agents/{device_id}/conversations/{public_id}", response_class=HTMLResponse
+    )
+    async def agent_conversation_page(
+        device_id: str, public_id: str, request: Request
+    ) -> HTMLResponse:
+        """One conversation in full: every message, uncapped."""
+        conversation = await _conversation_of(device_id, public_id)
+        if conversation is None:
+            return HTMLResponse(_render_page(request, "<p>Conversation not found.</p>"), 404)
+        agent = await store.get_agent(device_id)
+        messages = await store.conversation_messages(conversation.id)
+        body = conversations_view.render_conversation(
+            conversation,
+            messages,
+            device_id,
+            display_tz,
+            agent_label=(agent.label or device_id) if agent else device_id,
+        )
+        return HTMLResponse(_render_page(request, body))
+
+    async def _conversation_actions(device_id: str, public_id: str, note: str) -> HTMLResponse:
+        conversation = await _conversation_of(device_id, public_id)
+        if conversation is None:
+            return HTMLResponse("<p>Conversation not found.</p>", status_code=404)
+        agent = await store.get_agent(device_id)
+        rendered = conversations_view.render_conversation(
+            conversation,
+            [],
+            device_id,
+            display_tz,
+            agent_label=(agent.label or device_id) if agent else device_id,
+        )
+        start = rendered.index('<div id="conversation-actions"')
+        end = rendered.index("</div>", rendered.index("Delete</button>")) + len("</div>")
+        return HTMLResponse(rendered[start:end] + note)
+
+    @router.post(
+        "/dashboard/agents/{device_id}/conversations/{public_id}/rename",
+        response_class=HTMLResponse,
+    )
+    async def agent_conversation_rename(
+        device_id: str, public_id: str, title: str = Form(default="")
+    ) -> HTMLResponse:
+        if await _conversation_of(device_id, public_id) is None:
+            return HTMLResponse("<p>Conversation not found.</p>", status_code=404)
+        await store.rename_conversation(public_id, title)
+        return await _conversation_actions(device_id, public_id, '<p class="msg">✓ Renamed.</p>')
+
+    @router.post(
+        "/dashboard/agents/{device_id}/conversations/{public_id}/title",
+        response_class=HTMLResponse,
+    )
+    async def agent_conversation_title(device_id: str, public_id: str) -> HTMLResponse:
+        """Ask the model for a title and summary now, whatever the settings say."""
+        conversation = await _conversation_of(device_id, public_id)
+        if conversation is None:
+            return HTMLResponse("<p>Conversation not found.</p>", status_code=404)
+        result = await wrap_up_conversation(store, config, conversation, force=True)
+        note = (
+            '<p class="msg">✓ Named.</p>'
+            if result.status == "model"
+            else f'<p class="msg" style="color:#d29922">Could not name it: '
+            f"{html.escape(result.error or result.status)}</p>"
+        )
+        return await _conversation_actions(device_id, public_id, note)
+
+    @router.post(
+        "/dashboard/agents/{device_id}/conversations/{public_id}/delete",
+        response_class=HTMLResponse,
+    )
+    async def agent_conversation_delete(device_id: str, public_id: str) -> Response:
+        if await _conversation_of(device_id, public_id) is None:
+            return HTMLResponse("<p>Conversation not found.</p>", status_code=404)
+        await store.delete_conversation(public_id)
+        logger.info(f"Dashboard deleted conversation {public_id!r} of {device_id!r}")
+        return Response(
+            status_code=204, headers={"HX-Redirect": f"/dashboard/agents/{quote(device_id)}"}
+        )
+
     @router.get("/dashboard/agents/{device_id}/transcript.txt")
     async def agent_transcript_download(device_id: str, session: str = "") -> Response:
+        """The old transcript link: one session now redirects to its conversation."""
         agent = await store.get_agent(device_id)
         if agent is None:
             return Response(status_code=404)
+        if session != "all":
+            wanted = session or await store.latest_session_id(device_id)
+            if wanted and await store.get_conversation(wanted) is not None:
+                return RedirectResponse(
+                    f"/dashboard/agents/{quote(device_id)}/conversations/"
+                    f"{quote(wanted, safe='')}.txt",
+                    status_code=307,
+                )
         # ?session=<id> exports one transcription session; ?session=all the whole
         # history; default is the current (latest) session, or all history for a
         # device that has never run a transcription session.
@@ -1112,18 +1298,9 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 <div id="speak-result" role="status" aria-live="polite"></div>"""
         )
 
-        history_heading = "Transcript" if is_transcriber else "Conversation history"
-        clear_confirm = (
-            "Clear the full transcript for this device?"
-            if is_transcriber
-            else "Clear all conversation history for this device?"
-        )
-        download_link = (
-            f'&nbsp;·&nbsp;<a href="/dashboard/agents/{device_id}/transcript.txt" '
-            f'style="color:#58a6ff;font-size:0.85rem">⬇ download .txt</a>'
-            if is_transcriber
-            else ""
-        )
+        noun = "recording" if is_transcriber else "conversation"
+        history_heading = "Recordings" if is_transcriber else "Conversations"
+        clear_confirm = f"Delete every {noun} for this device, with its messages and summaries?"
 
         # Reboot is a firmware action. Only a xiaozhi board has firmware; a
         # page agent or a robot script has nothing to reboot.
@@ -1216,7 +1393,7 @@ named page agent when its name is reopened.">
 <span id="reboot-result" role="status" aria-live="polite"
       style="margin-left:0.75rem"></span>
 {assistant_actions}
-<h3>{history_heading}{download_link}</h3>
+<h3>{history_heading}</h3>
 <div style="margin-bottom:0.4rem;font-size:0.85rem">
   Pipeline:&nbsp;<span
     hx-get="/dashboard/agents/{device_id}/pipeline_status"
@@ -1224,15 +1401,28 @@ named page agent when its name is reopened.">
     hx-swap="innerHTML"
     id="pipeline-status">—</span>
 </div>
-<div hx-get="/dashboard/agents/{device_id}/history"
-     hx-trigger="load, every 2s"
-     hx-swap="innerHTML"
-     id="history-view">Loading…</div>
+<div style="margin-bottom:0.5rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+  <form hx-post="/dashboard/agents/{device_id}/conversations/new"
+        hx-target="#conversation-list" hx-swap="outerHTML" style="display:inline">
+    <button type="submit">New {noun}</button>
+  </form>
+  <span class="doc-muted" style="font-size:.8rem">Ends the open {noun}; the next turn
+  starts a fresh one.</span>
+</div>
+<div hx-get="/dashboard/agents/{device_id}/conversations"
+     hx-trigger="load, every 10s"
+     hx-swap="outerHTML"
+     id="conversation-list">Loading…</div>
+<h3>What the model sees next</h3>
+<div hx-get="/dashboard/agents/{device_id}/context"
+     hx-trigger="load"
+     hx-swap="outerHTML"
+     id="model-context">Loading…</div>
 <form hx-post="/dashboard/agents/{device_id}/clear_history"
-      hx-target="#history-view" hx-swap="innerHTML"
+      hx-target="#conversation-list" hx-swap="outerHTML"
       hx-confirm="{clear_confirm}"
       style="margin-top:0.5rem">
-  <button type="submit" style="background:#b62324">Clear history</button>
+  <button type="submit" style="background:#b62324">Delete all {noun}s</button>
 </form>"""
 
         spend_rows = await store.llm_spend_by_device()
