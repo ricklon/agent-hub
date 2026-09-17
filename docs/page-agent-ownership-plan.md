@@ -116,6 +116,12 @@ Built in step 3a.
 
 ### Dashboard grouping
 
+Built in step 3b. The list is grouped Mine, verified owners, unverified owner
+labels, Unowned, each boards then robots then pages. Sections are not
+collapsible: the table refreshes every 5 seconds, which would reset them. The
+owner filter bar is no longer re-rendered by that refresh (it used to be, and
+clicks on it were lost), and the filter is kept in the page URL.
+
 - Agents list: "Mine" section first, then one collapsible section per owner,
   then "Unowned". Within a section, sort by kind (boards, robots, pages).
 - Agent detail: show the verified owner. Show Release (owner or admin) in

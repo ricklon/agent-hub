@@ -60,6 +60,8 @@ tr:hover td{background:#161b22}
 .owner-chip{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:999px;
   padding:.15rem .7rem;font-size:.8rem;cursor:pointer}
 .owner-chip:hover{background:#30363d}
+.owner-chip[aria-pressed="true"]{background:#1f6feb;border-color:#1f6feb;color:#fff}
+.owner-group th{text-align:left;background:#161b22;color:#58a6ff;padding-top:.7rem}
 .owner-chip.selected{background:#1f6feb;border-color:#1f6feb;color:#fff}
 .tool-console{border:1px solid #30363d;border-radius:6px;padding:.6rem;margin:.4rem 0;
   background:#0d1117}
@@ -340,11 +342,14 @@ def make_router(
         )
 
     @router.get("/dashboard/", response_class=HTMLResponse)
-    async def dashboard_index(request: Request) -> HTMLResponse:
+    async def dashboard_index(request: Request, owner: str = "", mine: str = "") -> HTMLResponse:
         overview = await _render_agent_overview(
             store,
             heartbeat_timeout_seconds,
             has_identity=getattr(request.state, "operator_identity", None) is not None,
+            viewer_subject=_viewer_subject(request),
+            owner=owner,
+            mine=bool(mine),
         )
         body = await _spend_panel() + overview + await _cleanup_panel()
         return HTMLResponse(_render_page(request, body))
@@ -405,8 +410,12 @@ def make_router(
                 "so there is nobody to claim as. Set the owner label instead.</p>",
                 status_code=400,
             )
-        if not await store.claim_agent(device_id, identity.subject, identity.email):
+        agent = await store.get_agent(device_id)
+        if agent is None:
             return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        if is_named_page_agent(agent):
+            return _named_page_ownership_refusal(agent, identity, _role(request))
+        await store.claim_agent(device_id, identity.subject, identity.email)
         agent = await store.get_agent(device_id)
         return HTMLResponse(_claim_panel(agent, identity, _role(request)))
 
@@ -418,6 +427,8 @@ def make_router(
             return HTMLResponse("<p>Agent not found.</p>", status_code=404)
         identity = getattr(request.state, "operator_identity", None)
         role = _role(request)
+        if is_named_page_agent(agent):
+            return _named_page_ownership_refusal(agent, identity, role)
         mine = identity is not None and agent.owner_subject == identity.subject
         if agent.owner_subject and not mine and role != OperatorRole.ADMIN.value:
             return HTMLResponse(
@@ -433,8 +444,16 @@ def make_router(
     @router.post("/dashboard/agents/{device_id}/owner", response_class=HTMLResponse)
     async def agent_owner(device_id: str, owner: str = Form(default="")) -> HTMLResponse:
         """Set or clear the builder an agent belongs to."""
-        if not await store.set_agent_owner(device_id, owner):
+        agent = await store.get_agent(device_id)
+        if agent is None:
             return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        if is_named_page_agent(agent):
+            return HTMLResponse(
+                '<span class="msg" style="color:#d29922">A named page agent always belongs '
+                "to the person who named it.</span>",
+                status_code=409,
+            )
+        await store.set_agent_owner(device_id, owner)
         name = owner.strip()
         return HTMLResponse(
             f'<span class="msg">✓ {html.escape(name)}</span>'
@@ -539,18 +558,36 @@ def make_router(
         identity = getattr(request.state, "operator_identity", None)
         subject = identity.subject if (mine and identity is not None) else ""
         rows = await _render_agent_rows(
-            store, heartbeat_timeout_seconds, owner=owner, owner_subject=subject
+            store,
+            heartbeat_timeout_seconds,
+            owner=owner,
+            owner_subject=subject,
+            viewer_subject=identity.subject if identity is not None else "",
         )
         return HTMLResponse(_agent_table(rows, owner=owner, mine=bool(mine)))
 
-    @router.get("/dashboard/overview", response_class=HTMLResponse)
-    async def dashboard_overview_partial(request: Request) -> HTMLResponse:
+    @router.get("/dashboard/fleet", response_class=HTMLResponse)
+    async def dashboard_fleet_partial(request: Request) -> HTMLResponse:
+        """The whole fleet section; polled only while the fleet is empty."""
         return HTMLResponse(
             await _render_agent_overview(
                 store,
                 heartbeat_timeout_seconds,
                 has_identity=getattr(request.state, "operator_identity", None) is not None,
+                viewer_subject=_viewer_subject(request),
             )
+        )
+
+    @router.get("/dashboard/overview", response_class=HTMLResponse)
+    async def dashboard_overview_partial() -> HTMLResponse:
+        """The fleet health block alone; the table and filter refresh separately."""
+        try:
+            rows_data = await store.list_agents_with_personas()
+        except Exception as exc:
+            logger.error(f"Dashboard overview query failed: {exc}")
+            return HTMLResponse('<p class="audit-failure">Could not load fleet status.</p>')
+        return HTMLResponse(
+            _fleet_health_poll(render_fleet_overview(rows_data, heartbeat_timeout_seconds))
         )
 
     # ── Project docs ─────────────────────────────────────────────────────────
@@ -1478,12 +1515,19 @@ named page agent when its name is reopened.">
         tts_voice_val = html.escape(persona.tts_voice or "")
         tools_val_esc = html.escape(tools_val)
         transcription_checked = " checked" if persona.transcription else ""
+        used_by = [
+            row
+            for row in await store.list_agents_with_personas()
+            if row[1] is not None and row[1].id == persona.id
+        ]
+        used_by_html = _persona_used_by(used_by, _viewer_subject(request))
 
         body = f"""\
 <p><a href="/dashboard/personas" style="color:#58a6ff">← personas</a></p>
 <h2>Edit persona: {name}</h2>
 <p><a href="/dashboard/page-agent?persona={quote(name)}" style="color:#58a6ff">
   ▶ Launch as page agent</a> &nbsp;— talk to this persona in the browser, no hardware.</p>
+{used_by_html}
 <div id="save-result" role="status" aria-live="polite"></div>
 <form hx-post="/dashboard/personas/{name}"
       hx-target="#save-result" hx-swap="innerHTML">
@@ -1890,15 +1934,34 @@ def _render_spend_panel(totals: dict[str, Any]) -> str:
 </section>"""
 
 
-def _owner_filter(owners: list[str], current: str = "", *, has_identity: bool = False) -> str:
-    """Chips that filter the fleet table by whose agent it is."""
+def _filter_query(owner: str = "", mine: bool = False) -> str:
+    """The query string that selects one fleet filter ("" for everyone)."""
+    return "?mine=1" if mine else (f"?owner={quote(owner)}" if owner else "")
+
+
+def _owner_filter(
+    owners: list[str], current: str = "", *, has_identity: bool = False, mine: bool = False
+) -> str:
+    """Chips that filter the fleet table by whose agent it is.
+
+    The bar is rendered once and never replaced by a poll. A chip swaps only
+    the table, whose own poll then asks for the same filter, and pushes the
+    filter into the page URL so reload and back keep the choice too.
+    """
     if not owners and not has_identity:
         return ""
+    active = _filter_query(current, mine)
 
     def chip(query: str, label: str) -> str:
+        pressed = "true" if query == active else "false"
         return (
-            f'<button class="owner-chip" hx-get="/dashboard/agents{query}" '
-            f'hx-target="#agent-table" hx-swap="outerHTML">{html.escape(label)}</button>'
+            f'<button class="owner-chip" aria-pressed="{pressed}" '
+            f'hx-get="/dashboard/agents{html.escape(query)}" hx-target="#agent-table" '
+            f'hx-swap="outerHTML" hx-push-url="/dashboard/{html.escape(query)}" '
+            # Mark the choice straight away; the bar itself is never re-rendered.
+            "hx-on::before-request=\"this.parentElement.querySelectorAll('.owner-chip')"
+            ".forEach((b) => b.setAttribute('aria-pressed', b === this))\">"
+            f"{html.escape(label)}</button>"
         )
 
     chips = chip("", "everyone")
@@ -1911,7 +1974,7 @@ def _owner_filter(owners: list[str], current: str = "", *, has_identity: bool = 
 
 
 def _agent_table(rows: str, *, poll: bool = True, owner: str = "", mine: bool = False) -> str:
-    query = "?mine=1" if mine else (f"?owner={quote(owner)}" if owner else "")
+    query = _filter_query(owner, mine)
     poll_attributes = (
         f' hx-get="/dashboard/agents{query}" hx-trigger="every 5s" hx-swap="outerHTML"'
         if poll
@@ -2052,6 +2115,7 @@ async def _render_agent_rows(
     heartbeat_timeout_seconds: int,
     owner: str = "",
     owner_subject: str = "",
+    viewer_subject: str = "",
 ) -> str:
     try:
         rows_data = await store.list_agents_with_personas()
@@ -2064,7 +2128,9 @@ async def _render_agent_rows(
         logger.error(f"Dashboard agent query failed: {exc}")
         return "<tr><td colspan=10>error loading agents</td></tr>"
 
-    return _render_agent_rows_data(rows_data, heartbeat_timeout_seconds, spend_by_device)
+    return _render_grouped_rows(
+        rows_data, heartbeat_timeout_seconds, spend_by_device, viewer_subject=viewer_subject
+    )
 
 
 async def _render_agent_overview(
@@ -2072,35 +2138,173 @@ async def _render_agent_overview(
     heartbeat_timeout_seconds: int,
     *,
     has_identity: bool = False,
+    viewer_subject: str = "",
+    owner: str = "",
+    mine: bool = False,
 ) -> str:
+    """Fleet health, the owner filter, and the agent table.
+
+    Only the health block and the table refresh, each on its own 5-second
+    poll. The filter bar is never replaced, so a click can't land on a button
+    a refresh just threw away, and the table's poll carries the filter in its
+    own URL so a refresh never quietly shows everyone again.
+    """
     try:
         rows_data = await store.list_agents_with_personas()
     except Exception as exc:
         logger.error(f"Dashboard overview query failed: {exc}")
         return '<p class="audit-failure">Could not load fleet status.</p>'
-    overview = render_fleet_overview(rows_data, heartbeat_timeout_seconds)
     if not rows_data:
-        return _overview_poll_wrapper(overview)
+        # Nothing to filter yet: show the first-device guidance and check for
+        # the first agent, then swap in the full layout once.
+        return (
+            '<div id="fleet-overview" hx-get="/dashboard/fleet" hx-trigger="every 5s" '
+            'hx-swap="outerHTML">'
+            + render_fleet_overview(rows_data, heartbeat_timeout_seconds)
+            + "</div>"
+        )
+    # "mine" means nothing without a verified identity; fall back to everyone.
+    mine = mine and bool(viewer_subject)
     owners = sorted({a.owner for a, _p in rows_data if a.owner})
-    try:
-        spend_by_device = await store.llm_spend_by_device()
-    except Exception as exc:
-        logger.error(f"Dashboard spend query failed: {exc}")
-        spend_by_device = {}
-    rows = _render_agent_rows_data(rows_data, heartbeat_timeout_seconds, spend_by_device)
-    return _overview_poll_wrapper(
-        overview
+    rows = await _render_agent_rows(
+        store,
+        heartbeat_timeout_seconds,
+        owner="" if mine else owner,
+        owner_subject=viewer_subject if mine else "",
+        viewer_subject=viewer_subject,
+    )
+    return (
+        '<div id="fleet-overview">'
+        + _fleet_health_poll(render_fleet_overview(rows_data, heartbeat_timeout_seconds))
         + "<h2>All agents</h2>"
-        + _owner_filter(owners, has_identity=has_identity)
-        + _agent_table(rows, poll=False)
+        + _owner_filter(owners, owner, has_identity=has_identity, mine=mine)
+        + _agent_table(rows, owner=owner, mine=mine)
+        + "</div>"
     )
 
 
-def _overview_poll_wrapper(content: str) -> str:
+def _fleet_health_poll(content: str) -> str:
+    """Fleet health cards and attention queue, refreshed on their own."""
     return (
-        '<div id="fleet-overview" hx-get="/dashboard/overview" '
+        '<div id="fleet-health" hx-get="/dashboard/overview" '
         'hx-trigger="every 5s" hx-swap="outerHTML">'
         f"{content}</div>"
+    )
+
+
+# Boards first, then robots and other software agents, then browser pages.
+_KIND_ORDER = {AgentKind.XIAOZHI.value: 0, AgentKind.PAGE.value: 2}
+
+
+def _group_agents(
+    rows_data: list[tuple[Agent, Persona | None]],
+    viewer_subject: str = "",
+) -> list[tuple[str, list[tuple[Agent, Persona | None]]]]:
+    """Split the fleet into owner sections: yours, each owner's, then unowned.
+
+    Verified owners (an Access claim) come before owner labels an agent typed
+    about itself, which are marked unverified. Within a section agents are
+    ordered boards, robots, pages, then by name.
+    """
+    mine: list[tuple[Agent, Persona | None]] = []
+    verified: dict[str, list[tuple[Agent, Persona | None]]] = {}
+    labelled: dict[str, list[tuple[Agent, Persona | None]]] = {}
+    unowned: list[tuple[Agent, Persona | None]] = []
+    for row in rows_data:
+        agent = row[0]
+        if viewer_subject and agent.owner_subject == viewer_subject:
+            mine.append(row)
+        elif agent.owner_subject:
+            verified.setdefault(agent.owner or agent.owner_subject, []).append(row)
+        elif agent.owner:
+            labelled.setdefault(agent.owner, []).append(row)
+        else:
+            unowned.append(row)
+
+    def ordered(rows: list[tuple[Agent, Persona | None]]) -> list[tuple[Agent, Persona | None]]:
+        return sorted(
+            rows,
+            key=lambda r: (
+                _KIND_ORDER.get(r[0].kind, 1),
+                (r[0].label or r[0].device_id).casefold(),
+            ),
+        )
+
+    groups: list[tuple[str, list[tuple[Agent, Persona | None]]]] = []
+    if mine:
+        groups.append(("Mine", ordered(mine)))
+    groups += [(name, ordered(verified[name])) for name in sorted(verified, key=str.casefold)]
+    groups += [
+        (f"{name} (unverified label)", ordered(labelled[name]))
+        for name in sorted(labelled, key=str.casefold)
+    ]
+    if unowned:
+        groups.append(("Unowned", ordered(unowned)))
+    return groups
+
+
+def _render_grouped_rows(
+    rows_data: list[tuple[Agent, Persona | None]],
+    heartbeat_timeout_seconds: int,
+    spend_by_device: dict[str, dict[str, Any]] | None = None,
+    *,
+    viewer_subject: str = "",
+) -> str:
+    """Agent table rows under one header row per owner section."""
+    if not rows_data:
+        return _render_agent_rows_data(rows_data, heartbeat_timeout_seconds, spend_by_device)
+    parts: list[str] = []
+    for title, rows in _group_agents(rows_data, viewer_subject):
+        parts.append(
+            '<tr class="owner-group"><th colspan="10" scope="colgroup">'
+            f'{html.escape(title)} <span class="attention-count">{len(rows)}</span></th></tr>'
+        )
+        parts.append(_render_agent_rows_data(rows, heartbeat_timeout_seconds, spend_by_device))
+    return "".join(parts)
+
+
+def _persona_used_by(rows: list[tuple[Agent, Persona | None]], viewer_subject: str) -> str:
+    """Which agents run a persona, in the same owner sections as the fleet table.
+
+    Saving a persona changes every one of these at once, so it is shown before
+    the form rather than discovered afterwards.
+    """
+    if not rows:
+        return '<p class="doc-muted">Used by: no agents yet.</p>'
+    sections = []
+    for title, group in _group_agents(rows, viewer_subject):
+        items = "".join(
+            f'<li><a href="/dashboard/agents/{html.escape(quote(a.device_id, safe=""))}" '
+            f'style="color:#58a6ff">{html.escape(a.label or a.device_id)}</a> '
+            f'<span class="badge badge-kind">{html.escape(a.kind)}</span></li>'
+            for a, _p in group
+        )
+        sections.append(
+            f"<div><strong>{html.escape(title)}</strong>"
+            f'<ul style="margin:0.2rem 0 0.5rem 1.2rem">{items}</ul></div>'
+        )
+    return (
+        f'<section aria-label="Agents using this persona"><h3>Used by {len(rows)} '
+        f"agent{'s' if len(rows) != 1 else ''}</h3>"
+        '<p class="doc-muted">Saving changes all of them.</p>'
+        f"{''.join(sections)}</section>"
+    )
+
+
+def _named_page_ownership_refusal(
+    agent: Agent, identity: OperatorIdentity | None, role: str | None
+) -> HTMLResponse:
+    """Refuse a claim, release, or owner change on a named page agent.
+
+    Its id is derived from its owner and name, so changing the owner would
+    orphan it: the owner could no longer reopen it, and it would be swept as a
+    per-tab page. Removing it is the way to let it go.
+    """
+    return HTMLResponse(
+        _claim_panel(agent, identity, role)
+        + '<p class="msg" style="color:#d29922">A named page agent always belongs to the '
+        "person who named it. Remove it instead.</p>",
+        status_code=409,
     )
 
 
@@ -2285,6 +2489,12 @@ _MODELS_CACHE_TTL_S = 600.0
 _models_cache: tuple[float, list[dict[str, Any]]] | None = None
 
 
+def _viewer_subject(request: Request) -> str:
+    """Verified Access subject of whoever is viewing, or "" without Access."""
+    identity = getattr(request.state, "operator_identity", None)
+    return identity.subject if identity is not None else ""
+
+
 def _role(request: Request) -> str:
     """The operator role attached to this request by authentication."""
     return str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
@@ -2306,6 +2516,15 @@ def _claim_panel(
     device_id = html.escape(agent.device_id)
     claimed_by_me = identity is not None and agent.owner_subject == identity.subject
     label = html.escape(agent.owner or "")
+    if is_named_page_agent(agent):
+        # Owned by whoever named it, for as long as it exists: nothing to
+        # claim or release (see _named_page_ownership_refusal).
+        who = "you" if claimed_by_me else (label or "this hub")
+        return (
+            '<div id="claim-panel" style="display:flex;gap:0.6rem;align-items:center">'
+            f"<span><strong>Named page agent of {who}</strong> "
+            '<span class="doc-muted">(always owned by whoever named it)</span></span></div>'
+        )
 
     if agent.owner_subject and claimed_by_me:
         state = f'<strong>Claimed by you</strong> <span class="doc-muted">({label})</span>'
