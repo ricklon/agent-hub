@@ -14,27 +14,30 @@ a day later. Conversations and per-user models both need to hang off
 
 ## What happens today
 
-The hub already knows who makes a page agent. It forgets straight away.
+The hub already knows who makes a page agent. Until #86 it forgot straight
+away. #86 now records the owner and blocks takeovers, but ids are still
+random per tab.
 
 | Step | Code | What happens |
 | --- | --- | --- |
 | Open the page | `GET /dashboard/page-agent` | Requires a verified Access identity with the operator role. |
 | Register | `POST /page-agent/register` | Same auth. `request.state.operator_identity` is set. |
-| Create the row | `store.get_or_create_agent(...)` | Called with no owner. `owner` and `owner_subject` stay NULL. |
+| Create the row | `store.get_or_create_agent(...)` then `claim_agent` | Since #86 the verified operator is recorded as owner. Rows made before #86 have no owner. |
 | Identity of the agent | `_page_html.py`, `sessionStorage` | A random `page-xxxxxxxxxxxxxxxx` for each tab. A new tab or restarted browser makes a new agent. |
 | Cleanup | `cleanup.StalePolicy.page_after` (24h) | Unseen page rows are pruned. Their conversation history is keyed to a device id that never comes back. |
 
 Consequences:
 
-1. **No owner.** Page agents never show under "mine" unless claimed by hand
-   on each one, and the owner filter can't group them.
+1. **No grouping by owner.** Since #86 new page agents are owned and show
+   under "mine", but the agents list is still one flat table.
 2. **No continuity.** Reopening "my kitchen assistant" tomorrow makes a
    stranger with no memory. The old row is pruned and its history is left
    orphaned.
-3. **Any operator can take over a page agent.** Registration accepts a
-   `device_id` in the payload. If that id already exists, it re-issues the
-   token, which disconnects the tab that owned it. Any operator who can see
-   the id on the dashboard can do this.
+3. ~~**Any operator can take over a page agent.**~~ **Fixed in #86.**
+   Registration trusted the `device_id` in the payload and re-issued that
+   row's token, including for boards. It now reuses an id only for a page
+   agent that is the caller's, or unowned and not live, and otherwise issues
+   a fresh id.
 4. **Without Access there is no "who".** On basic-auth or LAN hubs, the
    identity is `None` and every request runs as a shared admin.
 
@@ -73,9 +76,10 @@ Consequences:
      and dev hubs without Access. Those agents get owner label `local` and
      no `owner_subject`.
 2. Ignore any client-supplied `device_id`. Derive it from subject + name.
+   This replaces #86's `_resolve_device_id` checks.
 3. On create, set `owner_subject` and `owner` (the email) in the same
-   transaction. Extend `get_or_create_agent` with optional owner arguments
-   rather than claiming afterwards.
+   transaction. Extend `get_or_create_agent` with optional owner arguments,
+   replacing #86's claim straight after creating.
 4. If the row exists and `owner_subject` differs from the caller (possible
    only for legacy rows or a hash collision), refuse with 409. Admins get no
    override here. They should release the agent first so the action is
@@ -112,9 +116,11 @@ Consequences:
 
 ### Migration
 
-Existing `page-*` rows have random ids and no owner. Don't try to adopt them:
+Rows from before #86 have random ids and no owner. #86 lets the next operator
+to register one adopt it while it isn't live, which covers a tab reload. No
+further adoption:
 
-- Leave them to the current 24h prune.
+- Leave the rest to the current 24h prune.
 - Add a one-off admin button, "Remove unowned page agents", on the cleanup
   panel for hubs that want the list clean now.
 - No schema change: `owner` and `owner_subject` already exist
@@ -124,7 +130,7 @@ Existing `page-*` rows have random ids and no owner. Don't try to adopt them:
 
 - **Driving rights.** "Only the owner can *ask* this agent" is step two of
   users-and-cost.md and applies to every agent kind, not just pages. This
-  plan only closes the page-registration takeover.
+  plan builds on #86, which closed the page-registration takeover.
 - **Conversations and memory** (plan 2) and **per-user model access**
   (plan 3). This plan gives them the stable owner and agent identity they
   need.
@@ -136,7 +142,8 @@ In `tests/`, alongside the existing page-agent and authorization tests:
 - register with an Access identity → row has `owner_subject`, id is stable
   across two registrations with the same name
 - same name, different subject → different id
-- register with a spoofed `device_id` in the payload → ignored
+- register with a spoofed `device_id` in the payload → ignored (the #86
+  tests for board and other-owner ids keep passing)
 - register while connected → 409; with `takeover` by the owner → ok
 - no identity, flag off → 403; flag on → owner label `local`
 - stale sweep: owned page agent survives past 24h; anonymous one doesn't
