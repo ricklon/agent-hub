@@ -218,3 +218,35 @@ async def test_page_html_lets_the_user_pick_hub_or_builtin_voice(store: Registry
     assert 'id="voiceMode"' in resp.text
     assert "/page-agent/tts" in resp.text
     assert "SpeechSynthesisUtterance" in resp.text
+
+
+async def test_register_cannot_take_over_a_board_by_its_id(store: RegistryStore) -> None:
+    # Registering re-issues the row's token; with a board's MAC that locked
+    # the board out of its voice socket and relabelled it as a page.
+    await store.get_or_create_agent(
+        device_id="aa:bb:cc:dd:ee:ff", kind=AgentKind.XIAOZHI, firmware_version="1.9.0"
+    )
+    board_token = await store.issue_websocket_token("aa:bb:cc:dd:ee:ff")
+    async with await _client(store) as client:
+        resp = await client.post(
+            "/page-agent/register", json={"device_id": "aa:bb:cc:dd:ee:ff", "tools": []}
+        )
+    data = resp.json()
+    assert resp.status_code == 200
+    assert data["device_id"].startswith("page-")
+    assert await store.validate_websocket_token("aa:bb:cc:dd:ee:ff", board_token)
+    board = await store.get_agent("aa:bb:cc:dd:ee:ff")
+    assert board is not None
+    assert board.kind == AgentKind.XIAOZHI.value
+    assert board.firmware_version == "1.9.0"
+    mcp_bridge.unregister_page_agent(data["device_id"])
+
+
+async def test_register_again_keeps_the_page_id(store: RegistryStore) -> None:
+    # A tab reload re-registers with its stored id and must keep it.
+    async with await _client(store) as client:
+        first = await client.post("/page-agent/register", json={"device_id": "page-r", "tools": []})
+        again = await client.post("/page-agent/register", json={"device_id": "page-r", "tools": []})
+    assert first.json()["device_id"] == "page-r"
+    assert again.json()["device_id"] == "page-r"
+    mcp_bridge.unregister_page_agent("page-r")

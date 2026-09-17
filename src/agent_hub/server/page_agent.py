@@ -128,6 +128,50 @@ def _new_device_id() -> str:
     return "page-" + secrets.token_hex(8)
 
 
+async def _resolve_device_id(store: RegistryStore, requested: str, identity: Any | None) -> str:
+    """Decide which registry row a registering page may use.
+
+    The id comes from the browser, and registering re-issues the row's token,
+    so honouring any id let one operator disconnect another's page, or lock a
+    board out of its voice socket by registering with its MAC. A page may
+    reuse an id only when that row is a page agent it could own:
+
+    - not a page agent (a board, a robot) -> never; a fresh id
+    - claimed by another verified operator -> a fresh id
+    - unclaimed and live on the bridge -> a fresh id (someone's open tab)
+    - unclaimed and not live, or claimed by the caller -> reuse
+
+    A hub without Access has no identities to tell apart, since every request
+    is the shared admin, so only the kind check applies there. Returning a
+    fresh id rather than refusing keeps the page working: it adopts whatever
+    id the response carries.
+    """
+    if not requested:
+        return _new_device_id()
+    existing = await store.get_agent(requested)
+    if existing is None:
+        return requested
+    if existing.kind != AgentKind.PAGE.value:
+        logger.bind(tag=_TAG).warning(
+            f"Page registration asked for {requested!r}, a {existing.kind} agent; issuing a new id"
+        )
+        return _new_device_id()
+    if identity is None:
+        return requested
+    if existing.owner_subject:
+        if existing.owner_subject == identity.subject:
+            return requested
+    else:
+        bridge = mcp_bridge.get_page_agent(requested)
+        if bridge is None or not bridge.connected:
+            return requested
+    logger.bind(tag=_TAG).warning(
+        f"Page registration by {identity.email!r} asked for {requested!r}, "
+        "which is not theirs to take; issuing a new id"
+    )
+    return _new_device_id()
+
+
 def make_router(
     store: RegistryStore,
     settings: Settings,
@@ -178,7 +222,10 @@ def make_router(
             payload = {}
         if not isinstance(payload, dict):
             return JSONResponse({"ok": False, "message": "expected object"}, status_code=400)
-        device_id = str(payload.get("device_id") or "").strip() or _new_device_id()
+        identity = getattr(request.state, "operator_identity", None)
+        device_id = await _resolve_device_id(
+            store, str(payload.get("device_id") or "").strip(), identity
+        )
         label = str(payload.get("label") or "").strip() or None
         raw_tools = payload.get("tools") or []
         tools: list[dict[str, Any]] = (
@@ -193,6 +240,12 @@ def make_router(
             ip_address=client_host,
             firmware_version="page-1.0",
         )
+        # Record the verified operator as owner so the next registration of
+        # this id can tell them from someone else. The id was resolved to a
+        # row that is new, unclaimed, or already theirs, so this never moves
+        # an agent between people.
+        if identity is not None:
+            await store.claim_agent(device_id, identity.subject, identity.email)
 
         persona = str(payload.get("persona") or "").strip()
         if persona and await store.get_persona_by_name(persona):
