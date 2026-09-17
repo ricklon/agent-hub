@@ -29,6 +29,11 @@ server:
   # "admin" is refused here: name bootstrap admins in dashboard_admin_emails.
   # Ignored entirely when Cloudflare Access is not configured.
   dashboard_default_role: "viewer"
+  # Page agents are made by known users: registering one needs a signed-in
+  # Cloudflare Access user, who becomes its owner. A hub without Access
+  # (LAN, class night, local dev) refuses page agents unless this is true,
+  # and then they all belong to the shared owner "local".
+  page_agents_allow_anonymous: false
   # Devices should heartbeat at this cadence. The dashboard marks a device
   # offline when no heartbeat or live voice session is seen before the timeout.
   heartbeat_interval_seconds: 60

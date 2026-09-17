@@ -231,6 +231,8 @@ class RegistryStore:
         label: str | None = None,
         ip_address: str | None = None,
         firmware_version: str | None = None,
+        owner: str | None = None,
+        owner_subject: str | None = None,
     ) -> Agent:
         """Return the agent row for device_id, creating it on first contact.
 
@@ -243,6 +245,10 @@ class RegistryStore:
             label: Human-readable device name reported by the firmware.
             ip_address: Reported IP address from the check-in request.
             firmware_version: Reported firmware version string.
+            owner: Owner label to record when the row is created.
+            owner_subject: Verified Access subject to record when the row is
+                created. Neither owner field changes on an existing row, so a
+                later registration cannot move an agent between people.
 
         Returns:
             The Agent row, newly created or with last_seen updated.
@@ -268,6 +274,8 @@ class RegistryStore:
                     last_heartbeat=now,
                     reported_activity="idle",
                     last_seen=now,
+                    owner=(owner or "").strip()[:64] or None,
+                    owner_subject=owner_subject or None,
                 )
                 session.add(agent)
                 logger.info(f"Registered new agent {device_id!r} → '{_DEFAULT_PERSONA_NAME}'")

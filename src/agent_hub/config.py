@@ -16,6 +16,18 @@ from loguru import logger
 _ENV_PREFIX = "AGENT_HUB_"
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    """Read a config boolean that may arrive as a YAML bool or an env string.
+
+    ``bool("false")`` is True, so env overrides are parsed by word.
+    """
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
@@ -47,6 +59,11 @@ class ServerConfig:
     # "operator" suits an event where everyone admitted is a builder.
     # "admin" is refused here — name bootstrap admins explicitly instead.
     dashboard_default_role: str = "viewer"
+    # Page agents are made by known users: registration needs a verified
+    # Cloudflare Access identity. A hub without Access has no users to tell
+    # apart, so its page agents are refused unless this is on, in which case
+    # they all belong to a shared "local" owner.
+    page_agents_allow_anonymous: bool = False
     dashboard_image_root: str = "data/images"
     dashboard_allowed_origins: str = ""
     allowed_hosts: str = ""
@@ -164,6 +181,7 @@ class Settings:
                 dashboard_admin_emails=str(srv.get("dashboard_admin_emails", "")),
                 enrollment_token=str(srv.get("enrollment_token", "")),
                 dashboard_default_role=str(srv.get("dashboard_default_role", "viewer")),
+                page_agents_allow_anonymous=_as_bool(srv.get("page_agents_allow_anonymous")),
                 dashboard_image_root=str(srv.get("dashboard_image_root", "data/images")),
                 dashboard_allowed_origins=str(srv.get("dashboard_allowed_origins", "")),
                 allowed_hosts=str(srv.get("allowed_hosts", "")),

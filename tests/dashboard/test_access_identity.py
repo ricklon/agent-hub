@@ -394,3 +394,63 @@ async def test_unclaimed_page_agent_is_adopted_only_when_not_live(
     assert await store.validate_websocket_token("page-live", live_token)
     for device_id in ("page-idle", "page-live", live.json()["device_id"]):
         mcp_bridge.unregister_page_agent(device_id)
+
+
+async def test_named_page_agent_is_scoped_to_its_owner(
+    store: RegistryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub.server import mcp_bridge
+
+    monkeypatch.setattr(dashboard_auth_module, "AccessIdentityVerifier", _FakeVerifier)
+    async with AsyncClient(
+        transport=ASGITransport(app=_page_app(store)), base_url="http://test"
+    ) as client:
+        alice = await client.post(
+            "/page-agent/register", headers=_ALICE, json={"name": "kitchen", "tools": []}
+        )
+        bob = await client.post(
+            "/page-agent/register", headers=_BOB, json={"name": "kitchen", "tools": []}
+        )
+
+    alice_id = alice.json()["device_id"]
+    bob_id = bob.json()["device_id"]
+    assert alice.status_code == 200 and bob.status_code == 200
+    assert alice_id != bob_id
+    alice_agent = await store.get_agent(alice_id)
+    bob_agent = await store.get_agent(bob_id)
+    assert alice_agent is not None and alice_agent.owner_subject == "operator-123"
+    assert alice_agent.label == "kitchen"
+    assert bob_agent is not None and bob_agent.owner_subject == "viewer-123"
+    mcp_bridge.unregister_page_agent(alice_id)
+    mcp_bridge.unregister_page_agent(bob_id)
+
+
+async def test_named_page_agent_refuses_a_row_owned_by_someone_else(
+    store: RegistryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub.registry.models import AgentKind
+    from agent_hub.server import page_agent
+
+    monkeypatch.setattr(dashboard_auth_module, "AccessIdentityVerifier", _FakeVerifier)
+    # The row Bob's "kitchen" maps to already belongs to Alice (a collision,
+    # or an admin reassigning it). Bob must not get its token.
+    bob_kitchen = page_agent._named_device_id("viewer-123", "kitchen")
+    await store.get_or_create_agent(
+        device_id=bob_kitchen,
+        kind=AgentKind.PAGE,
+        owner="operator@example.com",
+        owner_subject="operator-123",
+    )
+    alice_token = await store.issue_websocket_token(bob_kitchen)
+    async with AsyncClient(
+        transport=ASGITransport(app=_page_app(store)), base_url="http://test"
+    ) as client:
+        bob = await client.post(
+            "/page-agent/register", headers=_BOB, json={"name": "kitchen", "tools": []}
+        )
+
+    assert bob.status_code == 409
+    assert "someone else" in bob.json()["message"]
+    assert await store.validate_websocket_token(bob_kitchen, alice_token)

@@ -16,6 +16,7 @@ providers as xiaozhi devices rather than browser-only speech APIs.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import secrets
 import time
@@ -172,6 +173,62 @@ async def _resolve_device_id(store: RegistryStore, requested: str, identity: Any
     return _new_device_id()
 
 
+_LOCAL_OWNER = "local"
+_MAX_NAME_LEN = 64
+
+
+def _clean_page_name(raw: Any) -> str | None:
+    """Normalise a page agent name: trimmed, single-spaced, printable.
+
+    Returns:
+        The name, "" when none was given, or None when it is unusable.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        return None
+    name = " ".join(raw.split())
+    if len(name) > _MAX_NAME_LEN or not name.isprintable():
+        return None
+    return name
+
+
+def _named_device_id(owner_key: str, name: str) -> str:
+    """Stable page agent id for one owner's named agent.
+
+    Deterministic, so reopening a name finds the same row and its history;
+    scoped to the owner, so two people can each have a "kitchen". Names match
+    case-insensitively: "Kitchen" and "kitchen" are the same agent.
+    """
+    digest = hashlib.sha256(f"{owner_key}\n{name.casefold()}".encode()).hexdigest()
+    return "page-" + digest[:16]
+
+
+async def _check_named_registration(
+    store: RegistryStore,
+    device_id: str,
+    name: str,
+    owner_subject: str | None,
+    takeover: bool,
+) -> str | None:
+    """Return why a named registration must be refused, or None to proceed.
+
+    Registering re-issues the row's token, which disconnects whoever holds it,
+    so an existing row is only re-registered by its owner, and only while it
+    is not open in another tab unless the owner asks to take it over (a tab
+    that crashed stays "connected" until the stream notices).
+    """
+    existing = await store.get_agent(device_id)
+    if existing is None:
+        return None
+    if existing.kind != AgentKind.PAGE.value or existing.owner_subject != owner_subject:
+        return f"{name!r} belongs to someone else."
+    bridge = mcp_bridge.get_page_agent(device_id)
+    if bridge is not None and bridge.connected and not takeover:
+        return f"{name!r} is already open in another tab."
+    return None
+
+
 def make_router(
     store: RegistryStore,
     settings: Settings,
@@ -223,10 +280,49 @@ def make_router(
         if not isinstance(payload, dict):
             return JSONResponse({"ok": False, "message": "expected object"}, status_code=400)
         identity = getattr(request.state, "operator_identity", None)
-        device_id = await _resolve_device_id(
-            store, str(payload.get("device_id") or "").strip(), identity
-        )
-        label = str(payload.get("label") or "").strip() or None
+        if identity is None and not settings.server.page_agents_allow_anonymous:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": "Page agents need a signed-in user. This hub has no "
+                    "Cloudflare Access; set server.page_agents_allow_anonymous "
+                    "to allow them anyway.",
+                },
+                status_code=403,
+                headers=_CORS,
+            )
+        owner_subject = identity.subject if identity is not None else None
+        owner = identity.email if identity is not None else _LOCAL_OWNER
+
+        name = _clean_page_name(payload.get("name"))
+        if name is None:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": f"name must be printable text, at most {_MAX_NAME_LEN} characters.",
+                },
+                status_code=400,
+                headers=_CORS,
+            )
+        if name:
+            # A named agent: the id comes from who you are and what you called
+            # it, never from the browser.
+            device_id = _named_device_id(owner_subject or _LOCAL_OWNER, name)
+            refusal = await _check_named_registration(
+                store, device_id, name, owner_subject, payload.get("takeover") is True
+            )
+            if refusal:
+                return JSONResponse(
+                    {"ok": False, "message": refusal}, status_code=409, headers=_CORS
+                )
+            label: str | None = name
+        else:
+            # An unnamed page (the page before it asks for a name): a per-tab
+            # id, reusable only when it is safe to take.
+            device_id = await _resolve_device_id(
+                store, str(payload.get("device_id") or "").strip(), identity
+            )
+            label = str(payload.get("label") or "").strip() or None
         raw_tools = payload.get("tools") or []
         tools: list[dict[str, Any]] = (
             [t for t in raw_tools if isinstance(t, dict)] if isinstance(raw_tools, list) else []
@@ -239,12 +335,14 @@ def make_router(
             label=label,
             ip_address=client_host,
             firmware_version="page-1.0",
+            owner=owner,
+            owner_subject=owner_subject,
         )
-        # Record the verified operator as owner so the next registration of
-        # this id can tell them from someone else. The id was resolved to a
-        # row that is new, unclaimed, or already theirs, so this never moves
-        # an agent between people.
-        if identity is not None:
+        # An unnamed id may be a pre-ownership row being adopted, which
+        # get_or_create_agent leaves unowned. It was resolved to a row that is
+        # new, unclaimed, or already theirs, so this never moves an agent
+        # between people.
+        if identity is not None and not name:
             await store.claim_agent(device_id, identity.subject, identity.email)
 
         persona = str(payload.get("persona") or "").strip()
@@ -261,6 +359,7 @@ def make_router(
             {
                 "ok": True,
                 "device_id": device_id,
+                "name": name or None,
                 "token": token,
                 "mcp_event_url": f"{base}/mcp/v1/events",
                 "mcp_respond_url": f"{base}/mcp/v1/respond",

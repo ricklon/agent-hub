@@ -104,3 +104,14 @@ def test_to_local_treats_naive_input_as_utc():
     local = to_local(datetime(2026, 9, 1, 23, 48, 0), ny)  # 23:48 UTC
     assert (local.hour, local.minute) == (19, 48)  # EDT = UTC-4
     assert local.tzinfo is ny
+
+
+def test_page_agents_allow_anonymous_reads_env_words(monkeypatch, tmp_path):
+    # bool("false") is True; the env string has to be read as a word.
+    config_path = tmp_path / ".config.yaml"
+    config_path.write_text("{}\n")
+    assert Settings.from_dict(load_config(config_path)).server.page_agents_allow_anonymous is False
+    monkeypatch.setenv("AGENT_HUB_SERVER_PAGE_AGENTS_ALLOW_ANONYMOUS", "false")
+    assert Settings.from_dict(load_config(config_path)).server.page_agents_allow_anonymous is False
+    monkeypatch.setenv("AGENT_HUB_SERVER_PAGE_AGENTS_ALLOW_ANONYMOUS", "true")
+    assert Settings.from_dict(load_config(config_path)).server.page_agents_allow_anonymous is True

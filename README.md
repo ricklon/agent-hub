@@ -246,6 +246,7 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_DASHBOARD_ACCESS_AUDIENCE` | — | Cloudflare Access application AUD tag; set with the team domain |
 | `AGENT_HUB_SERVER_DASHBOARD_ADMIN_EMAILS` | — | Comma-separated verified emails promoted to dashboard admin; required with Access identity |
 | `AGENT_HUB_SERVER_DASHBOARD_DEFAULT_ROLE` | `viewer` | Role for a Cloudflare Access identity the hub has not seen before. `operator` suits an event where everyone admitted is a builder; `admin` is refused |
+| `AGENT_HUB_SERVER_PAGE_AGENTS_ALLOW_ANONYMOUS` | `false` | Page agents need a signed-in Cloudflare Access user. On a hub without Access (LAN, class night, local dev) set `true` to allow them; they all belong to owner `local` |
 | `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` | — | Optional shared check-in secret; empty allows LAN/classroom auto-registration; also gates robot registration on `/agent/register` |
 | `AGENT_HUB_LLM_FREE_ONLY` | `false` | Free mode: only free OpenRouter models may be selected or saved |
 | `AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT` | `data/images` | Directory the dashboard may serve captured images from |
@@ -281,6 +282,13 @@ talking + seeing MCP agent: it registers as `AgentKind.PAGE`, exposes
 tools, and is driven by the hub over the MCP bridge the same way a xiaozhi
 device's tools are. The `page_speak` / `page_see` server skills route LLM
 tool calls to a connected page agent. See `skills/mcp-bridge/SKILL.md`.
+
+Page agents are made by known users: registering one needs a signed-in
+Cloudflare Access user, who becomes its owner. A page that registers with a
+`name` gets a stable agent (the same owner and name is the same agent, with
+its history). A hub without Access refuses page agents unless
+`server.page_agents_allow_anonymous` is on. See
+`docs/page-agent-ownership-plan.md`.
 
 ## Architecture (target)
 

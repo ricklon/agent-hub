@@ -39,7 +39,7 @@ from typing import Any
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from agent_hub.config import Settings
+from agent_hub.config import ServerConfig, Settings
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge
 from agent_hub.server.mcp_bridge import make_router as make_mcp_bridge_router
@@ -118,7 +118,9 @@ class PageAgentClient:
         then call :meth:`register`. The page agent's bridge handle is dropped on
         exit.
         """
-        settings = settings or Settings()
+        # The harness runs without Cloudflare Access, where page agents are
+        # refused unless the hub opts in to anonymous ones.
+        settings = settings or Settings(server=ServerConfig(page_agents_allow_anonymous=True))
         app = FastAPI()
         app.include_router(make_page_agent_router(store, settings, config or {}))
         app.include_router(make_mcp_bridge_router(store, settings))
