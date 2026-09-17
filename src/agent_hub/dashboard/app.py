@@ -370,8 +370,9 @@ def make_router(
   <div class="section-heading"><div>
     <h2 id="cleanup-heading">Cleanup <span class="attention-count">{len(stale)}</span></h2>
     <p class="doc-muted">Stale: {stale_policy.describe()}. Removing deletes the row and
-    its conversation history; spend records are kept. Page agents past their threshold
-    are also removed automatically once an hour.</p>
+    its conversation history; spend records are kept. Per-tab page agents past their
+    threshold are also removed automatically once an hour; named page agents and
+    devices only ever by a person.</p>
   </div>
   <form hx-post="/dashboard/agents/prune" hx-target="#cleanup-panel" hx-swap="outerHTML"
         hx-confirm="Remove {len(stale)} stale agent(s) and their history?">
