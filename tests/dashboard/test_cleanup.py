@@ -58,7 +58,7 @@ async def test_prune_skips_live_agents_and_can_be_limited_to_pages(store: Regist
     # A page with its bridge stream open is live no matter how old the row is.
     mcp_bridge.register_page_agent("page-live", "tok", []).connected = True
     try:
-        removed = await cleanup.prune(store, cleanup.StalePolicy(), kinds=cleanup.PAGE_ONLY)
+        removed = await cleanup.prune(store, cleanup.StalePolicy(), select=cleanup.is_per_tab_page)
     finally:
         mcp_bridge.unregister_page_agent("page-live")
     assert removed == ["page-old"]
@@ -146,3 +146,79 @@ async def test_pin_route_toggles_and_shows_in_the_table(store: RegistryStore) ->
     assert missing.status_code == 404
     agent = await store.get_agent("dev-1")
     assert agent is not None and agent.pinned is False
+
+
+async def _named_page(store: RegistryStore, name: str, *, subject: str | None = None) -> str:
+    from agent_hub.registry.page_identity import LOCAL_OWNER, named_page_device_id
+
+    device_id = named_page_device_id(subject or LOCAL_OWNER, name)
+    await store.get_or_create_agent(
+        device_id,
+        kind=AgentKind.PAGE,
+        label=name,
+        owner=LOCAL_OWNER if subject is None else "someone@example.com",
+        owner_subject=subject,
+    )
+    return device_id
+
+
+async def test_named_page_agents_are_recognised(store: RegistryStore) -> None:
+    from agent_hub.registry.page_identity import is_named_page_agent
+
+    local = await _named_page(store, "kitchen")
+    owned = await _named_page(store, "Garage", subject="sub-1")
+    await store.get_or_create_agent("page-tab", kind=AgentKind.PAGE, label="kitchen")
+    await store.get_or_create_agent("dev-1", kind=AgentKind.XIAOZHI, label="kitchen")
+    agents = {d: await store.get_agent(d) for d in (local, owned, "page-tab", "dev-1")}
+
+    assert is_named_page_agent(agents[local])  # type: ignore[arg-type]
+    assert is_named_page_agent(agents[owned])  # type: ignore[arg-type]
+    # A random per-tab id, or any other kind, is not named whatever its label.
+    assert not is_named_page_agent(agents["page-tab"])  # type: ignore[arg-type]
+    assert not is_named_page_agent(agents["dev-1"])  # type: ignore[arg-type]
+
+
+async def test_named_page_agents_go_stale_like_devices(store: RegistryStore) -> None:
+    named = await _named_page(store, "kitchen")
+    old_named = await _named_page(store, "desk")
+    await store.get_or_create_agent("page-tab", kind=AgentKind.PAGE)
+    await _backdate(store, named, timedelta(days=2))
+    await _backdate(store, "page-tab", timedelta(days=2))
+    await _backdate(store, old_named, timedelta(days=30))
+
+    stale = {a.device_id for a in await cleanup.find_stale(store, cleanup.StalePolicy())}
+    assert stale == {"page-tab", old_named}
+
+
+async def test_the_automatic_sweep_never_removes_a_named_page_agent(store: RegistryStore) -> None:
+    named = await _named_page(store, "kitchen")
+    await store.get_or_create_agent("page-tab", kind=AgentKind.PAGE)
+    await _backdate(store, named, timedelta(days=30))
+    await _backdate(store, "page-tab", timedelta(days=30))
+
+    removed = await cleanup.prune(store, cleanup.StalePolicy(), select=cleanup.is_per_tab_page)
+    assert removed == ["page-tab"]
+    assert await store.get_agent(named) is not None
+
+
+async def test_removing_can_keep_history_for_when_the_agent_returns(store: RegistryStore) -> None:
+    named = await _named_page(store, "kitchen")
+    await store.append_history(named, "user", "remember the eggs")
+    await store.get_or_create_agent("dev-1", kind=AgentKind.XIAOZHI)
+    await store.append_history("dev-1", "user", "hello")
+
+    async with await _client(store) as c:
+        detail = await c.get(f"/dashboard/agents/{named}")
+        device_detail = await c.get("/dashboard/agents/dev-1")
+        kept = await c.post(f"/dashboard/agents/{named}/remove", data={"keep_history": "1"})
+        dropped = await c.post("/dashboard/agents/dev-1/remove")
+
+    # Keeping history is the default for a named page agent, not for a device.
+    assert 'name="keep_history"\n    value="1" checked>' in detail.text
+    assert 'name="keep_history"\n    value="1">' in device_detail.text
+    assert kept.status_code == 204 and dropped.status_code == 204
+    assert await store.get_agent(named) is None
+    # Reopening the name recreates the row under the same id, history intact.
+    await _named_page(store, "kitchen")
+    assert [t["content"] for t in await store.load_history(named)] == ["remember the eggs"]
+    assert await store.load_history("dev-1") == []

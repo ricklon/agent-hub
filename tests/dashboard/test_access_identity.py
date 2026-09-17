@@ -431,12 +431,12 @@ async def test_named_page_agent_refuses_a_row_owned_by_someone_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agent_hub.registry.models import AgentKind
-    from agent_hub.server import page_agent
+    from agent_hub.registry.page_identity import named_page_device_id
 
     monkeypatch.setattr(dashboard_auth_module, "AccessIdentityVerifier", _FakeVerifier)
     # The row Bob's "kitchen" maps to already belongs to Alice (a collision,
     # or an admin reassigning it). Bob must not get its token.
-    bob_kitchen = page_agent._named_device_id("viewer-123", "kitchen")
+    bob_kitchen = named_page_device_id("viewer-123", "kitchen")
     await store.get_or_create_agent(
         device_id=bob_kitchen,
         kind=AgentKind.PAGE,
