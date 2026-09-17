@@ -67,7 +67,7 @@ HUB_TOOLS: dict[str, dict[str, Any]] = {
             "Talk to the device's persona as if it heard this text: runs a full voice "
             "turn, speaks the reply aloud and returns it. The persona's LLM may call "
             "the device's own tools, including motion, if its persona allows them. "
-            "Can take up to 90 seconds."
+            "Can take up to 90 seconds, and fails if the device is already mid-turn."
         ),
         "inputSchema": _TEXT_SCHEMA,
     },
@@ -133,7 +133,13 @@ class Hub:
     def ask(self, text: str) -> tuple[bool, str]:
         _code, body = self._request("POST", "inject.json", {"text": text})
         if isinstance(body, dict) and body.get("ok"):
-            return True, str(body.get("reply") or "(no reply)")
+            reply = str(body.get("reply") or "")
+            if not reply:
+                # The hub drops an injected turn while the device is mid-turn
+                # (someone talking to it, or a reply still playing) and
+                # answers with an empty reply rather than an error.
+                return False, "no reply: the device was probably busy with another turn; try again"
+            return True, reply
         return False, _error(body)
 
 
