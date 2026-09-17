@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 import time
+from contextlib import suppress
 from datetime import UTC
 from typing import Any
 from urllib.parse import urlsplit
@@ -54,6 +56,8 @@ from agent_hub.server.agent_turn import (
     run_turn,
 )
 from agent_hub.server.history import history_for_llm
+from agent_hub.server.wake_word import load_detector
+from agent_hub.server.ws_session import _take_speakable_chunks as take_speakable_chunks
 
 __all__ = [
     "call_linked_tool",
@@ -72,6 +76,30 @@ _CORS = {
 }
 
 _VALID_ACTIVITIES = {"idle", "listening", "thinking", "speaking", "paused"}
+# A wake word heard this recently belongs to the utterance now being transcribed.
+_WAKE_SEGMENT_S = 8.0
+# Markdown a model writes but a voice should not read out ("**4**" as "star star").
+_MARKDOWN_RE = re.compile(r"(\*\*|__|\*|`+|^#+\s*)", re.MULTILINE)
+
+
+def strip_markdown(text: str) -> str:
+    """Drop markdown emphasis so TTS doesn't pronounce it."""
+    return _MARKDOWN_RE.sub("", text).strip()
+
+
+def strip_wake_prefix(transcript: str, model_name: str) -> str:
+    """Remove the wake phrase from the front of what was heard.
+
+    The detector already matched the sound, so the transcript's spelling of it
+    ("hey computer", "a computer", "hey, computer,") only gets in the way. What
+    follows is the request; a bare wake word leaves the text as it is.
+    """
+    words = [w for w in re.split(r"[_\s]+", model_name.lower()) if w]
+    if not words:
+        return transcript.strip()
+    pattern = r"^\W*(?:hey|ok|okay|hi|a|the)?\W*" + r"\W+".join(map(re.escape, words)) + r"\W*"
+    stripped = re.sub(pattern, "", transcript.strip(), count=1, flags=re.IGNORECASE)
+    return stripped.strip() or transcript.strip()
 
 
 def _bridge_base(request: Request, settings: Settings) -> str:
@@ -767,21 +795,56 @@ def make_router(
             return f"unknown tool: {name!r}"
 
         asr_ms = 0
+        # Wake word: a model that listens for the sound of the phrase. Without
+        # one (no model installed), fall back to matching the transcript.
+        detector = load_detector(config, wake_word or None)
+        follow_up_seconds = float((config.get("wake_word") or {}).get("follow_up_seconds", 30))
+        follow_up_until = 0.0
+        woke_at = -1e9
+        active_turn: asyncio.Task[None] | None = None
+        interrupt = asyncio.Event()
         session_state.set_pipeline_status(device_id, "listening")
 
-        async def _run_turn(transcript: str) -> None:
-            async with pipeline_lock:
+        async def _speak_chunk(text: str, *, first: bool, interrupt: asyncio.Event) -> int:
+            """Voice one sentence. Returns ms spent synthesizing (0 if the page voices it)."""
+            if first:
                 await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "stt",
-                            "text": transcript,
-                        }
-                    )
+                    json.dumps({"type": "tts", "state": "start", "text": text})
                 )
+            else:
+                await websocket.send_text(
+                    json.dumps({"type": "tts", "state": "more", "text": text})
+                )
+            if voice_mode != "hub":
+                return 0  # the page speaks it, or stays silent
+            started = time.monotonic()
+            try:
+                pcm_bytes, tts_rate = await get_tts(persona.tts_provider, config).synthesize_pcm(
+                    text, voice=persona.tts_voice
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad sentence must not end the turn
+                logger.bind(tag=_TAG).error(f"Page voice TTS error: {exc}")
+                await websocket.send_text(
+                    json.dumps({"type": "tts_error", "message": str(exc)[:200]})
+                )
+                return 0
+            if tts_rate != 16000:
+                from agent_hub.server.audio import pcm_resample
+
+                pcm_bytes = await pcm_resample(pcm_bytes, tts_rate, 16000)
+            for i in range(0, len(pcm_bytes), 1920):  # ~60 ms per frame
+                if interrupt.is_set():
+                    break
+                await websocket.send_bytes(pcm_bytes[i : i + 1920])
+            return int((time.monotonic() - started) * 1000)
+
+        async def _run_turn(transcript: str, interrupt: asyncio.Event) -> None:
+            """One turn, spoken sentence by sentence so the reply starts sooner."""
+            nonlocal conversation_id, follow_up_until
+            async with pipeline_lock:
+                await websocket.send_text(json.dumps({"type": "stt", "text": transcript}))
                 await websocket.send_text(json.dumps({"type": "thinking"}))
                 session_state.set_pipeline_status(device_id, "thinking", transcript)
-                nonlocal conversation_id
                 current = await conversation_for_turn(store, device_id, persona, settings)
                 if current.id != conversation_id:
                     conversation_id = current.id
@@ -791,35 +854,82 @@ def make_router(
                 llm = get_llm(
                     persona.llm_provider, config, model_override=persona.llm_model or None
                 )
+                system_prompt_now = with_memory(
+                    system_prompt,
+                    await memory_note_for_turn(store, config, device_id, current.id, settings),
+                )
                 llm_started = time.monotonic()
+                llm_ms = 0
+                tts_ms = 0
+                spoken: list[str] = []
+                buffer = ""
                 try:
-                    reply = await llm.complete_with_tools(
+                    deltas = llm.stream_with_tools(
                         voice_turn_messages(conversation, window, transcript),
                         tools,
                         _exec_tool,
-                        system_prompt=with_memory(
-                            system_prompt,
-                            await memory_note_for_turn(
-                                store, config, device_id, current.id, settings
-                            ),
-                        ),
+                        system_prompt=system_prompt_now,
                     )
-                except Exception as exc:
-                    session_state.set_pipeline_status(device_id, "listening")
-                    logger.bind(tag=_TAG).error(f"Page voice LLM error: {exc}")
+                    async for delta in deltas:
+                        if interrupt.is_set():
+                            break
+                        if not llm_ms:
+                            llm_ms = int((time.monotonic() - llm_started) * 1000)
+                        buffer += delta
+                        chunks, buffer = take_speakable_chunks(buffer)
+                        for chunk in chunks:
+                            if interrupt.is_set():
+                                break
+                            session_state.set_pipeline_status(device_id, "speaking", chunk)
+                            tts_ms += await _speak_chunk(
+                                strip_markdown(chunk), first=not spoken, interrupt=interrupt
+                            )
+                            spoken.append(chunk)
+                    if buffer.strip() and not interrupt.is_set():
+                        tts_ms += await _speak_chunk(
+                            strip_markdown(buffer), first=not spoken, interrupt=interrupt
+                        )
+                        spoken.append(buffer)
+                except Exception as exc:  # noqa: BLE001 - one retry, then report
+                    if spoken or interrupt.is_set():
+                        logger.bind(tag=_TAG).error(f"Page voice stream failed mid-reply: {exc}")
+                    else:
+                        # Some models (free reasoning ones especially) fail a
+                        # streaming tool call with "reasoning without a final
+                        # answer". One non-streaming attempt usually works.
+                        logger.bind(tag=_TAG).warning(
+                            f"Page voice stream failed ({exc}); retrying without streaming"
+                        )
+                        try:
+                            reply_text = await llm.complete_with_tools(
+                                voice_turn_messages(conversation, window, transcript),
+                                tools,
+                                _exec_tool,
+                                system_prompt=system_prompt_now,
+                            )
+                        except Exception as retry_exc:  # noqa: BLE001 - report and keep listening
+                            session_state.set_pipeline_status(device_id, "listening")
+                            logger.bind(tag=_TAG).error(f"Page voice LLM error: {retry_exc}")
+                            await websocket.send_text(
+                                json.dumps({"type": "error", "message": str(retry_exc)})
+                            )
+                            return
+                        llm_ms = llm_ms or int((time.monotonic() - llm_started) * 1000)
+                        if (reply_text or "").strip() and not interrupt.is_set():
+                            tts_ms += await _speak_chunk(
+                                strip_markdown(reply_text), first=True, interrupt=interrupt
+                            )
+                            spoken.append(reply_text)
+                finally:
                     await websocket.send_text(
                         json.dumps(
-                            {
-                                "type": "error",
-                                "message": str(exc),
-                            }
+                            {"type": "tts", "state": "stop", "interrupted": interrupt.is_set()}
                         )
                     )
-                    return
-                llm_ms = int((time.monotonic() - llm_started) * 1000)
-                reply = (reply or "").strip()
-                if not reply:
                     session_state.set_pipeline_status(device_id, "listening")
+
+                reply = " ".join(part.strip() for part in spoken).strip()
+                if not reply:
                     return
                 conversation.append({"role": "user", "content": transcript})
                 conversation.append({"role": "assistant", "content": reply})
@@ -830,56 +940,14 @@ def make_router(
                 await store.append_history(
                     device_id, "assistant", reply, conversation_id=current.id
                 )
-
-                if voice_mode != "hub":
-                    # The page voices (or silences) the reply itself.
-                    await websocket.send_text(
-                        json.dumps({"type": "tts", "state": "start", "text": reply})
-                    )
-                    await websocket.send_text(json.dumps({"type": "tts", "state": "stop"}))
-                    session_state.record_turn(device_id, asr_ms, llm_ms, 0)
-                    session_state.set_pipeline_status(device_id, "listening")
-                    logger.bind(tag=_TAG).info(
-                        f"Page voice {device_id!r}: {transcript!r} → {reply[:60]!r} "
-                        f"(voice: {voice_mode})"
-                    )
-                    return
-
-                # TTS: synthesize and stream PCM back
-                session_state.set_pipeline_status(device_id, "speaking", reply)
-                tts = get_tts(persona.tts_provider, config)
-                tts_started = time.monotonic()
-                try:
-                    pcm_bytes, tts_rate = await tts.synthesize_pcm(reply, voice=persona.tts_voice)
-                except Exception as exc:
-                    session_state.set_pipeline_status(device_id, "listening")
-                    logger.bind(tag=_TAG).error(f"Page voice TTS error: {exc}")
-                    return
-                tts_ms = int((time.monotonic() - tts_started) * 1000)
                 session_state.record_turn(device_id, asr_ms, llm_ms, tts_ms)
-                # Resample if needed (browser plays 24kHz or we send 16kHz raw)
-                if tts_rate != 16000:
-                    from agent_hub.server.audio import pcm_resample
-
-                    pcm_bytes = await pcm_resample(pcm_bytes, tts_rate, 16000)
-
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "tts",
-                            "state": "start",
-                            "text": reply,
-                        }
-                    )
-                )
-                # Send PCM in ~60ms chunks (1920 bytes = 960 samples * 2)
-                chunk_size = 1920
-                for i in range(0, len(pcm_bytes), chunk_size):
-                    await websocket.send_bytes(pcm_bytes[i : i + chunk_size])
-                await websocket.send_text(json.dumps({"type": "tts", "state": "stop"}))
-                session_state.set_pipeline_status(device_id, "listening")
+                # Follow-ups need no wake word for a while: this is what makes it
+                # a conversation rather than a series of commands.
+                follow_up_until = time.monotonic() + follow_up_seconds
                 logger.bind(tag=_TAG).info(
-                    f"Page voice {device_id!r}: {transcript!r} → {reply[:60]!r}"
+                    f"Page voice {device_id!r}: {transcript!r} → {reply[:60]!r} "
+                    f"(llm {llm_ms}ms, tts {tts_ms}ms, voice {voice_mode}"
+                    f"{', interrupted' if interrupt.is_set() else ''})"
                 )
 
         try:
@@ -892,8 +960,22 @@ def make_router(
                     report = audio.add(pcm)
                     if report:
                         logger.bind(tag=_TAG).info(f"Page voice {device_id!r}: {report}")
-                    if pipeline_lock.locked():
-                        continue  # drop audio while thinking/speaking
+                    # The detector and the VAD keep listening while the agent
+                    # speaks: that is what makes interrupting it possible. The
+                    # browser's echo cancellation keeps its own voice out.
+                    if detector is not None and detector.push(pcm) and detector.heard():
+                        woke_at = time.monotonic()
+                        logger.bind(tag=_TAG).info(
+                            f"Page voice {device_id!r}: wake word {detector.name!r} heard "
+                            f"(score {detector.last_score:.2f})"
+                        )
+                        # Stop talking as soon as it hears its name, not once
+                        # the whole sentence has been transcribed.
+                        if active_turn is not None and not active_turn.done():
+                            interrupt.set()
+                        await websocket.send_text(
+                            json.dumps({"type": "wake", "word": detector.name, "command": ""})
+                        )
                     if vad.push(pcm):
                         segment_ms = vad.segment_ms
                         pcm_all = vad.take_pcm()
@@ -912,11 +994,24 @@ def make_router(
                                 json.dumps({"type": "heard", "text": "", "reason": "no words"})
                             )
                             continue
-                        kind, text = classify_utterance(heard, wake_word)
+                        now = time.monotonic()
+                        if detector is not None:
+                            # The model heard the phrase; the transcript only
+                            # has to carry the request, and may not spell the
+                            # wake word the way the model heard it.
+                            in_window = now < follow_up_until
+                            woke = now - woke_at < _WAKE_SEGMENT_S
+                            kind = "command" if (woke or in_window) else "transcript"
+                            text = strip_wake_prefix(heard, detector.name) if woke else heard
+                            if kind == "command" and len(text.split()) < 1:
+                                text = heard
+                            reason = "wake word" if woke else ("follow-up" if in_window else "")
+                        else:
+                            kind, text = classify_utterance(heard, wake_word)
+                            reason = f"wake word {wake_word!r}" if wake_word else "open mic"
                         logger.bind(tag=_TAG).info(
                             f"Page voice {device_id!r}: {segment_ms} ms, ASR {asr_ms} ms "
-                            f"heard {heard!r} → {kind}"
-                            + (f" (wake word {wake_word!r})" if wake_word else " (open mic)")
+                            f"heard {heard!r} → {kind} ({reason or 'no wake word'})"
                         )
                         if kind == "ignore":
                             await websocket.send_text(
@@ -924,32 +1019,44 @@ def make_router(
                             )
                             continue
                         if kind == "command":
+                            if active_turn is not None and not active_turn.done():
+                                # Barge-in: stop the reply in progress and answer this.
+                                interrupt.set()
+                                with suppress(Exception):
+                                    await active_turn
+                                logger.bind(tag=_TAG).info(
+                                    f"Page voice {device_id!r}: interrupted by {text[:40]!r}"
+                                )
+                            # Always a fresh flag: the old one may already be set
+                            # from stopping the previous reply, which would cut
+                            # this answer off before it started.
+                            interrupt = asyncio.Event()
                             await websocket.send_text(
                                 json.dumps(
                                     {
                                         "type": "wake",
-                                        "word": wake_word,
+                                        "word": detector.name if detector else wake_word,
                                         "command": text,
                                     }
                                 )
                             )
-                            await _run_turn(text)
+                            active_turn = asyncio.create_task(_run_turn(text, interrupt))
                         else:
                             await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        "type": "transcript",
-                                        "text": text,
-                                    }
-                                )
+                                json.dumps({"type": "transcript", "text": text})
                             )
                 elif "text" in msg:
                     ctrl = json.loads(msg["text"])
                     if ctrl.get("type") == "wake_word":
-                        # Browser can set/clear the wake word at runtime
+                        # Browser can set/clear the wake word at runtime. A name
+                        # with a model installed is detected by sound; anything
+                        # else is matched in the transcript as before.
                         wake_word = str(ctrl.get("word", "")).strip().lower()
+                        detector = load_detector(config, wake_word or None)
                         logger.bind(tag=_TAG).info(
-                            f"Page voice {device_id!r}: wake word {wake_word or '(open mic)'!r}"
+                            f"Page voice {device_id!r}: wake word "
+                            f"{wake_word or '(open mic)'!r}"
+                            + (" (model)" if detector else " (transcript)")
                         )
                     elif ctrl.get("type") == "voice_mode":
                         requested = str(ctrl.get("mode", "hub"))

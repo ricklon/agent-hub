@@ -152,6 +152,14 @@ asr:
     model_arch: "tiny"
     cache_root: "models/moonshine"
 
+# Wake word: a model that listens for the sound of the phrase, so a small ASR
+# mishearing "computer" no longer keeps the agent asleep. Models live in
+# models/wake_word (just download-models, or scripts/download_wake_word.py).
+wake_word:
+  model: "computer"        # models/wake_word/<model>.onnx; blank = match the transcript
+  threshold: 0.5           # 0..1; lower hears more, and more false wakes
+  follow_up_seconds: 30    # after a reply, follow-ups need no wake word
+
 vad:
   silero:
     model_path: "models/silero_vad.onnx"
