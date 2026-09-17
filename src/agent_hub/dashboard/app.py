@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,8 @@ from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.overview import render_fleet_overview
+from agent_hub.providers.llm import get_provider as get_llm
+from agent_hub.providers.llm.model_check import ModelCheck, check_model
 from agent_hub.registry.models import Agent, AgentKind, OperatorRole, Persona
 from agent_hub.registry.page_identity import is_named_page_agent
 from agent_hub.registry.store import RegistryStore
@@ -190,6 +193,19 @@ _PAGE = """\
 <title>agent-hub</title>
 <style>{css}</style>
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+<script>
+// htmx drops 4xx responses by default, so every refusal the dashboard explains
+// (free mode, claims, named page agents) looked like a button that did nothing.
+// Show 4xx replies that carry HTML; JSON errors from the auth layer stay out.
+document.addEventListener("htmx:beforeSwap", (event) => {{
+  const xhr = event.detail.xhr;
+  const type = xhr.getResponseHeader("Content-Type") || "";
+  if (xhr.status >= 400 && xhr.status < 500 && type.startsWith("text/html") && xhr.responseText) {{
+    event.detail.shouldSwap = true;
+    event.detail.isError = false;
+  }}
+}});
+</script>
 </head><body hx-headers='{{"X-Requested-With":"XMLHttpRequest"}}'
   hx-indicator="#global-progress">
 <div id="global-progress" class="htmx-indicator" role="status" aria-live="polite">
@@ -274,6 +290,8 @@ def make_router(
         ]
     )
     api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
+    # The model a persona with no model of its own runs.
+    default_model: str = str(config.get("llm", {}).get("openai", {}).get("model", "") or "")
     # Free mode: the model picker only lists free OpenRouter models and paid
     # ids are refused on select/save. For hubs running on a $0 budget.
     free_only: bool = bool(config.get("llm", {}).get("free_only", False))
@@ -849,6 +867,15 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             mcp_html = '<span style="color:#6e7681">○ —</span>'
 
         health_color = {"healthy": "#3fb950", "degraded": "#d29922", "offline": "#6e7681"}[health]
+        llm_error = session_state.get_llm_error(device_id)
+        llm_error_row = (
+            '<tr><th>Model</th><td><span style="color:#f85149">✗ last turn got no reply</span> '
+            f"<code>{html.escape(str(llm_error['model']))}</code>: "
+            f"{html.escape(str(llm_error['error']))} "
+            f'<span class="doc-muted">({_ago(llm_error["at"])})</span></td></tr>'
+            if llm_error
+            else ""
+        )
         return HTMLResponse(f"""\
 <table style="width:auto;margin-bottom:0.5rem">
   <tr><th style="width:7rem">Health</th>
@@ -857,6 +884,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
   <tr><th>{transport_label}</th><td>{ws_html}</td></tr>
   <tr><th>MCP</th><td>{mcp_html}</td></tr>
   <tr><th>Registration</th><td>{db_status}</td></tr>
+  {llm_error_row}
 </table>""")
 
     @router.get("/dashboard/spend.json")
@@ -1451,11 +1479,20 @@ named page agent when its name is reopened.">
         voice_datalist = _voice_datalist(persona.tts_provider, persona.tts_voice or "")
         # Models the hub can actually use, offered in-form so nobody has to
         # copy ids from the Models page. Same gates as the picker.
-        usable_models = [
-            m
-            for m in await _fetch_openrouter_models(api_key)
-            if m["tools"] and (not free_only or m["free"])
-        ]
+        catalogue = await _fetch_openrouter_models(api_key)
+        usable_models = [m for m in catalogue if m["tools"] and (not free_only or m["free"])]
+        effective_model = persona.llm_model or default_model
+        model_warning = (
+            '<p class="msg" style="color:#f85149">⚠ '
+            f"<code>{html.escape(effective_model)}</code> is not in OpenRouter's model list any "
+            "more. It was probably removed, and every turn on it will fail. Pick another "
+            "model and test it.</p>"
+            if catalogue
+            and effective_model
+            and _uses_openrouter(config, persona.llm_provider)
+            and all(m["id"] != effective_model for m in catalogue)
+            else ""
+        )
         model_datalist = "".join(
             f'<option value="{html.escape(m["id"])}">{html.escape(m["name"])}</option>'
             for m in usable_models
@@ -1564,8 +1601,15 @@ named page agent when its name is reopened.">
       <div><label>LLM model (blank = config default){free_hint}</label>
         <input type="text" name="llm_model" value="{llm_model_val}" list="llm-models"
           style="width:300px" placeholder="type to search tool-capable models">
-        <datalist id="llm-models">{model_datalist}</datalist></div>
+        <datalist id="llm-models">{model_datalist}</datalist>
+        <button type="button" style="background:#1a4a6e"
+          hx-post="/dashboard/models/test" hx-include="[name=llm_model],[name=llm_provider]"
+          hx-target="#persona-model-test" hx-swap="innerHTML"
+          title="Ask the model a few voice-style questions, including one that needs a tool"
+          >Test model</button></div>
     </div>
+    <div id="persona-model-test" role="status" aria-live="polite" data-assistant-only>
+      {model_warning}</div>
     <div class="field-row" data-assistant-only>
       <div><label>TTS system</label>{tts_select}</div>
       <div><label>TTS voice (blank = system default)</label>
@@ -1729,7 +1773,14 @@ named page agent when its name is reopened.">
         )
         body = f"""\
 <h2>Model Picker</h2>
-<p>Current: <strong id="current-model">{current or "not set"}</strong></p>
+<p>Current: <strong id="current-model">{html.escape(current or "not set")}</strong>
+  <button type="button" style="background:#1a4a6e" hx-post="/dashboard/models/test"
+    hx-vals='{{"model_id": ""}}' hx-target="#model-test" hx-swap="innerHTML"
+    >Test current model</button></p>
+<p class="doc-muted">A test asks the model a greeting and, twice, a question that needs a
+tool, the way a voice turn does. Tool use is required: a model that answers without the
+tool is not usable here.</p>
+<div id="model-test" role="status" aria-live="polite"></div>
 <div class="controls">
   <input id="search" type="text" placeholder="Search models..."
     hx-get="/dashboard/models/list"
@@ -1815,6 +1866,13 @@ named page agent when its name is reopened.">
   <td>{m["context_k"]}k</td>
   <td>{m["price_in"]}</td>
   <td>
+    <button type="button" style="background:#1a4a6e"
+      hx-post="/dashboard/models/test"
+      hx-vals='{{"model_id":"{m["id"]}"}}'
+      hx-target="#model-test"
+      hx-swap="innerHTML"
+      hx-on::before-request="document.getElementById('model-test').scrollIntoView()"
+    >test</button>
     <button class="{btn_class}"
       hx-post="/dashboard/models/select"
       hx-vals='{{"model_id":"{m["id"]}","persona":"hub-default"}}'
@@ -1833,6 +1891,46 @@ named page agent when its name is reopened.">
 <tbody>{"".join(rows)}</tbody>
 </table>"""
         return HTMLResponse(hidden_note + table)
+
+    @router.post("/dashboard/models/test", response_class=HTMLResponse)
+    async def models_test(
+        model_id: str = Form(default=""),
+        llm_model: str = Form(default=""),
+        llm_provider: str = Form(default="openai"),
+    ) -> HTMLResponse:
+        """Check a model the way a voice turn would use it (blank = hub default).
+
+        The picker sends ``model_id``; the persona form sends its own
+        ``llm_model`` field, so both are accepted.
+        """
+        provider = llm_provider.strip() or "openai"
+        model = model_id.strip() or llm_model.strip() or default_model
+        if not model:
+            return HTMLResponse('<p class="msg">No model set to test.</p>', status_code=400)
+        # Free mode is a cost control, so a paid model is not called even to test it.
+        # A model the catalogue no longer lists is not refused: calling it costs
+        # nothing, and "it's gone" is exactly what the test should report.
+        if (
+            free_only
+            and _uses_openrouter(config, provider)
+            and await _is_known_paid(model, api_key)
+        ):
+            return HTMLResponse(
+                f'<p class="msg" style="color:#f85149">Free mode is on: not testing the paid '
+                f"model <code>{html.escape(model)}</code>.</p>",
+                status_code=403,
+            )
+        try:
+            llm = get_llm(provider, config, model_override=model)
+        except Exception as exc:  # noqa: BLE001 - a bad provider is a result to show
+            return HTMLResponse(
+                f'<p class="msg" style="color:#f85149">Could not set up {html.escape(provider)}: '
+                f"{html.escape(str(exc))}</p>",
+                status_code=400,
+            )
+        result = await check_model(llm, model)
+        logger.info(f"Model check {model!r}: {result.verdict} ({result.reason})")
+        return HTMLResponse(_render_model_check(result))
 
     @router.post("/dashboard/models/select", response_class=HTMLResponse)
     async def models_select(
@@ -2585,6 +2683,69 @@ def _voice_datalist(tts_provider: str, current: str) -> str:
     voices = list(dict.fromkeys([*persona_options.voices_for(tts_provider), current.strip()]))
     opts = "".join(f'<option value="{html.escape(v)}"></option>' for v in voices if v)
     return f'<datalist id="tts-voices">{opts}</datalist>'
+
+
+_VERDICT_STYLE = {
+    "usable": ("#3fb950", "✓ Usable for voice"),
+    "slow": ("#d29922", "⚠ Slow"),
+    "unreliable": ("#d29922", "⚠ Unreliable"),
+    "unusable": ("#f85149", "✗ Not usable"),
+}
+
+
+def _render_model_check(result: ModelCheck) -> str:
+    """The verdict on a model, with each test turn that led to it."""
+    color, label = _VERDICT_STYLE[result.verdict]
+    rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(p.prompt)}</td>"
+        + (
+            '<td style="color:#3fb950">✓</td>'
+            if p.ok
+            else f'<td style="color:#f85149">✗ {html.escape(p.problem or "failed")}</td>'
+        )
+        + f"<td>{'—' if p.first_text_s is None else f'{p.first_text_s:.1f}s'}</td>"
+        f"<td>{p.total_s:.1f}s</td>"
+        f"<td>{'yes' if p.tool_called else ('no' if p.expects_tool else '—')}</td>"
+        f'<td style="white-space:pre-wrap;max-width:28rem">{html.escape(p.reply[:200])}</td>'
+        "</tr>"
+        for p in result.probes
+    )
+    return f"""\
+<div class="model-check" style="border:1px solid {color};border-radius:6px;padding:.6rem .8rem;
+  margin:.5rem 0">
+  <strong style="color:{color}">{label}</strong> <code>{html.escape(result.model)}</code>
+  <div>{html.escape(result.reason)}</div>
+  <table style="width:auto;margin-top:.4rem">
+    <thead><tr><th>asked</th><th>result</th><th>first words</th><th>total</th>
+      <th>tool called</th><th>reply</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+</div>"""
+
+
+def _uses_openrouter(config: dict[str, Any], provider: str | None) -> bool:
+    """Whether a provider's models come from OpenRouter's catalogue."""
+    base_url = ((config.get("llm") or {}).get(provider or "openai") or {}).get("base_url", "")
+    return "openrouter.ai" in str(base_url)
+
+
+def _ago(epoch_s: float) -> str:
+    """How long ago, roughly, for status panels."""
+    secs = max(0, int(time.time() - epoch_s))
+    if secs < 90:
+        return "just now"
+    if secs < 5400:
+        return f"{secs // 60} min ago"
+    return f"{secs // 3600} h ago"
+
+
+async def _is_known_paid(model_id: str, api_key: str) -> bool:
+    """True when the catalogue lists ``model_id`` as paid (offline: no ``:free`` suffix)."""
+    models = await _fetch_openrouter_models(api_key)
+    if not models:
+        return not model_id.endswith(":free")
+    return any(m["id"] == model_id and not m["free"] for m in models)
 
 
 async def supports_tools(model_id: str, api_key: str) -> bool:
