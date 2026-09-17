@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from loguru import logger
 
 from agent_hub import spend
@@ -478,6 +478,31 @@ def make_router(
                 f'<img src="{html.escape(result)}" style="max-width:320px;border-radius:4px">'
             )
         return HTMLResponse(f'<div class="tool-result">{html.escape(result)}</div>')
+
+    @router.post("/dashboard/agents/{device_id}/call_tool.json")
+    async def agent_call_tool_json(device_id: str, request: Request) -> JSONResponse:
+        """Call one tool and return the result as JSON, for scripts and MCP proxies.
+
+        Body: ``{"tool": "<name>", "arguments": {...}}``. The result is the
+        tool's text, or a ``data:`` URL for an image.
+        """
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "body must be JSON"}, status_code=400)
+        tool = body.get("tool") if isinstance(body, dict) else None
+        args = body.get("arguments", {}) if isinstance(body, dict) else None
+        if not isinstance(tool, str) or not tool:
+            return JSONResponse({"ok": False, "error": "tool is required"}, status_code=400)
+        if not isinstance(args, dict):
+            return JSONResponse(
+                {"ok": False, "error": "arguments must be a JSON object"}, status_code=400
+            )
+        try:
+            result = await call_one_tool(device_id, tool, args)
+        except TurnError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "result": result})
 
     @router.post("/dashboard/agents/{device_id}/ask", response_class=HTMLResponse)
     async def agent_ask(device_id: str, text: str = Form(default="")) -> HTMLResponse:
@@ -1297,6 +1322,55 @@ re-register on its next check-in.">
             return HTMLResponse(f'<p class="msg">✓ sent: "{text.strip()}"</p>')
         except Exception as exc:
             return HTMLResponse(f'<p style="color:#f85149">Error: {exc}</p>')
+
+    async def _json_text(request: Request) -> str | JSONResponse:
+        """The non-empty ``text`` field of a JSON body, or the 400 to return."""
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "body must be JSON"}, status_code=400)
+        text = body.get("text") if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            return JSONResponse({"ok": False, "error": "text is required"}, status_code=400)
+        return text.strip()
+
+    @router.post("/dashboard/agents/{device_id}/speak.json")
+    async def agent_speak_json(device_id: str, request: Request) -> JSONResponse:
+        """Have a connected device say ``text`` verbatim. Body: ``{"text": "..."}``."""
+        text = await _json_text(request)
+        if isinstance(text, JSONResponse):
+            return text
+        speak = session_state.get_speak(device_id)
+        if speak is None:
+            return JSONResponse({"ok": False, "error": "device not connected"}, status_code=409)
+        try:
+            await speak(text)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": True})
+
+    @router.post("/dashboard/agents/{device_id}/inject.json")
+    async def agent_inject_json(device_id: str, request: Request) -> JSONResponse:
+        """Run one voice turn as if the device heard ``text``; the reply is spoken.
+
+        Body: ``{"text": "..."}``. Returns ``{"ok": true, "reply", "image"}``,
+        where ``image`` is the path of a photo captured during this turn or null.
+        """
+        text = await _json_text(request)
+        if isinstance(text, JSONResponse):
+            return text
+        injector = session_state.get_injector(device_id)
+        if injector is None:
+            return JSONResponse({"ok": False, "error": "device not connected"}, status_code=409)
+        try:
+            reply, img_path = await asyncio.wait_for(injector(text), timeout=90.0)
+        except TimeoutError:
+            return JSONResponse(
+                {"ok": False, "error": "timed out waiting for a reply (>90s)"}, status_code=504
+            )
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": True, "reply": reply or "", "image": img_path})
 
     # ── Personas ──────────────────────────────────────────────────────────────
 

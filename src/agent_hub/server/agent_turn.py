@@ -226,12 +226,15 @@ async def call_one_tool(
     see what it does, without spending a model call or hoping the model picks
     the tool they meant.
 
+    A xiaozhi device is not on the bridge: its MCP server rides inside the
+    WebSocket voice session, so the call goes to that session's MCP client.
+
     Raises:
         TurnError: The agent is not connected, or the tool reported an error.
     """
     handle = mcp_bridge.get_page_agent(device_id)
     if handle is None:
-        raise TurnError(f"{device_id} has never registered its tools")
+        return await _call_device_tool(device_id, name, args)
     if not handle.connected:
         raise TurnError(f"{device_id} is not connected right now")
     if name not in handle.tools:
@@ -240,3 +243,19 @@ async def call_one_tool(
         return await mcp_bridge.call_page_tool(device_id, name, args, timeout=tool_timeout(name))
     except Exception as exc:
         raise TurnError(str(exc)) from exc
+
+
+async def _call_device_tool(device_id: str, name: str, args: dict[str, Any]) -> str:
+    """Call one tool on a xiaozhi device through its live session's MCP client."""
+    client = session_state.get_mcp_client(device_id)
+    if client is None:
+        raise TurnError(f"{device_id} has never registered its tools")
+    if not client.ready:
+        raise TurnError(f"{device_id} is connected but has not listed its tools yet")
+    if name not in client.tools:
+        raise TurnError(f"{device_id} does not expose a tool called {name!r}")
+    try:
+        result: str = await client.call_tool(name, args, timeout=tool_timeout(name))
+    except Exception as exc:
+        raise TurnError(str(exc)) from exc
+    return result
