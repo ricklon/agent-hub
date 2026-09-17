@@ -151,15 +151,18 @@ titles and summaries costs one call per conversation, not two.
   user turns. A single "what time is it?" isn't worth a call.
 - Goes through the spend guard. Free mode is respected automatically: the
   persona's model is already one free mode allowed.
-- On failure: fallback title, `wrapped_up_at` left empty, retried once by the
-  next sweep, then left for a manual **Title this**.
+- On failure (an error, or a reply with no readable JSON): fallback title,
+  `wrap_up_attempts` counted, retried by the next sweep; after 2 attempts it's
+  marked done and left for a manual **Title this**.
 - `title_source = manual` titles are never replaced.
 
 ## Remembered conversations
 
-At the start of a conversation (its first turn), if `remember_conversations >
-0`, the context gets a system note built from this agent's last *K* ended
-conversations that have summaries:
+On every turn, if `remember_conversations > 0` and summaries are on, the
+system prompt ends with a note built from this agent's last *K* ended
+conversations that have summaries. It's every turn, not just the first,
+because the system prompt is sent with each turn; a note sent once would be
+forgotten on the next.
 
 ```
 Earlier conversations with you (most recent first):

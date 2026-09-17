@@ -145,6 +145,7 @@ class RegistryStore:
             "ALTER TABLE agents ADD COLUMN auto_title BOOLEAN",
             "ALTER TABLE agents ADD COLUMN summarize_conversations BOOLEAN",
             "ALTER TABLE agents ADD COLUMN remember_conversations INTEGER",
+            "ALTER TABLE conversations ADD COLUMN wrap_up_attempts INTEGER DEFAULT 0 NOT NULL",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
@@ -1018,6 +1019,12 @@ class RegistryStore:
             await session.commit()
             return True
 
+    async def get_persona_by_id(self, persona_id: int) -> Persona | None:
+        """A persona by primary key, or None if it was deleted."""
+        async with self._sessions() as session:
+            persona: Persona | None = await session.get(Persona, persona_id)
+            return persona
+
     async def get_persona_by_name(self, name: str) -> Persona | None:
         """Return a persona by name, or None."""
         async with self._sessions() as session:
@@ -1122,6 +1129,10 @@ class RegistryStore:
         linked_agents: str | None = None,
         memory_window: int | None = None,
         transcription: bool | None = None,
+        conversation_idle_minutes: int | None = None,
+        auto_title: bool | None = None,
+        summarize_conversations: bool | None = None,
+        remember_conversations: int | None = None,
     ) -> bool:
         """Update editable fields on a persona. Returns False if not found."""
         async with self._sessions() as session:
@@ -1151,6 +1162,37 @@ class RegistryStore:
                 persona.memory_window = memory_window
             if transcription is not None:
                 persona.transcription = transcription
+            if conversation_idle_minutes is not None:
+                persona.conversation_idle_minutes = conversation_idle_minutes
+            if auto_title is not None:
+                persona.auto_title = auto_title
+            if summarize_conversations is not None:
+                persona.summarize_conversations = summarize_conversations
+            if remember_conversations is not None:
+                persona.remember_conversations = remember_conversations
+            await session.commit()
+            return True
+
+    async def set_agent_conversation_settings(self, device_id: str, values: dict[str, Any]) -> bool:
+        """Set an agent's conversation overrides; None means use the persona's.
+
+        Only the conversation setting names are accepted. Returns False when the
+        agent does not exist.
+        """
+        allowed = {
+            "conversation_idle_minutes",
+            "memory_window",
+            "auto_title",
+            "summarize_conversations",
+            "remember_conversations",
+        }
+        async with self._sessions() as session:
+            agent = await session.scalar(select(Agent).where(Agent.device_id == device_id))
+            if agent is None:
+                return False
+            for name, value in values.items():
+                if name in allowed:
+                    setattr(agent, name, value)
             await session.commit()
             return True
 
@@ -1399,6 +1441,93 @@ class RegistryStore:
             if conversation is not None and conversation.ended_at is None:
                 conversation.ended_at = conversation.last_turn_at or _utcnow()
                 await session.commit()
+
+    async def open_chat_conversations(self) -> list[Conversation]:
+        """Every chat conversation not yet ended, for the idle sweep."""
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(Conversation)
+                .where(Conversation.ended_at.is_(None))
+                .where(Conversation.kind == ConversationKind.CHAT.value)
+            )
+            return list(result.scalars().all())
+
+    async def end_conversation(self, conversation_id: int) -> None:
+        """End one conversation at its last turn (or now, if it never had one)."""
+        async with self._sessions() as session:
+            conversation = await session.get(Conversation, conversation_id)
+            if conversation is not None and conversation.ended_at is None:
+                conversation.ended_at = conversation.last_turn_at or _utcnow()
+                await session.commit()
+
+    async def conversations_to_wrap_up(
+        self, *, max_attempts: int, limit: int = 20
+    ) -> list[Conversation]:
+        """Ended conversations with messages whose wrap-up isn't done, oldest first."""
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(Conversation)
+                .where(Conversation.ended_at.is_not(None))
+                .where(Conversation.last_turn_at.is_not(None))
+                .where(Conversation.wrapped_up_at.is_(None))
+                .where(Conversation.wrap_up_attempts < max_attempts)
+                .order_by(Conversation.id.asc())
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+
+    async def save_wrap_up(
+        self,
+        conversation_id: int,
+        *,
+        title: str | None,
+        title_source: str | None,
+        summary: str | None,
+        done: bool,
+        max_attempts: int,
+    ) -> None:
+        """Record a wrap-up result. A manual title is never replaced.
+
+        ``done=False`` counts a failed attempt; once ``max_attempts`` is reached
+        the conversation is marked wrapped up anyway so the sweep stops trying.
+        A title (fallback or model) is kept either way.
+        """
+        async with self._sessions() as session:
+            conversation = await session.get(Conversation, conversation_id)
+            if conversation is None:
+                return
+            if title and conversation.title_source != "manual":
+                conversation.title = title[:160]
+                conversation.title_source = title_source
+            if summary is not None:
+                conversation.summary = summary
+            if done:
+                conversation.wrapped_up_at = _utcnow()
+            else:
+                conversation.wrap_up_attempts = (conversation.wrap_up_attempts or 0) + 1
+                if conversation.wrap_up_attempts >= max_attempts:
+                    conversation.wrapped_up_at = _utcnow()
+            await session.commit()
+
+    async def remembered_conversations(
+        self, device_id: str, *, exclude_id: int | None, limit: int
+    ) -> list[Conversation]:
+        """This agent's most recent ended conversations that have a summary."""
+        if limit <= 0:
+            return []
+        async with self._sessions() as session:
+            query = (
+                select(Conversation)
+                .where(Conversation.device_id == device_id)
+                .where(Conversation.ended_at.is_not(None))
+                .where(Conversation.summary.is_not(None))
+            )
+            if exclude_id is not None:
+                query = query.where(Conversation.id != exclude_id)
+            result = await session.execute(
+                query.order_by(Conversation.ended_at.desc(), Conversation.id.desc()).limit(limit)
+            )
+            return list(result.scalars().all())
 
     async def list_conversations(
         self, device_id: str, *, before_id: int | None = None, limit: int = 20
