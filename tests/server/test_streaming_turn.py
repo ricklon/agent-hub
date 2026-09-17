@@ -9,12 +9,12 @@ from types import SimpleNamespace
 
 from agent_hub.providers.asr import Transcript
 from agent_hub.providers.llm import LLMProvider
+from agent_hub.server.history import history_for_llm as _history_for_llm
+from agent_hub.server.history import strip_history_markers as _strip_history_markers
 from agent_hub.server.ws_session import (
     _asr_realtime_factor,
     _DelayedTurnCue,
-    _history_for_llm,
     _run_transcription_turn,
-    _strip_history_markers,
     _take_speakable_chunks,
 )
 

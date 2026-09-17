@@ -47,6 +47,7 @@ from agent_hub.server.agent_turn import (
     resolve_linked_call,
     run_turn,
 )
+from agent_hub.server.history import history_for_llm
 
 __all__ = [
     "call_linked_tool",
@@ -681,7 +682,11 @@ def make_router(
                 llm_started = time.monotonic()
                 try:
                     reply = await llm.complete_with_tools(
-                        conversation, tools, _exec_tool, system_prompt=system_prompt
+                        # Only chat turns: photo and transcript rows are rejected.
+                        history_for_llm(conversation),
+                        tools,
+                        _exec_tool,
+                        system_prompt=system_prompt,
                     )
                 except Exception as exc:
                     session_state.set_pipeline_status(device_id, "listening")

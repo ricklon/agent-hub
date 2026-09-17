@@ -29,6 +29,7 @@ from agent_hub.providers.llm import get_provider
 from agent_hub.registry.models import Persona
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge, session_state
+from agent_hub.server.history import history_for_llm
 from agent_hub.server.tool_policy import is_risky_tool
 
 _TAG = "agent_turn"
@@ -163,7 +164,9 @@ async def run_turn(
         d["function"]["name"] for d in mcp_bridge.list_page_tool_definitions(device_id)
     }
 
-    history = await store.load_history(device_id, limit=persona.memory_window * 2)
+    # Persisted history also holds photo and transcript rows, which a model
+    # rejects; only chat turns go in.
+    history = history_for_llm(await store.load_history(device_id, limit=persona.memory_window * 2))
     history.append({"role": "user", "content": text})
     system_prompt = build_system_prompt(persona, tools)
 
