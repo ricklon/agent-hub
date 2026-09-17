@@ -11,6 +11,7 @@ PAGE_HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>agent-hub · page agent</title>
+<link rel="icon" href="data:,">
 <style>
 body{font-family:monospace;background:#0d1117;color:#c9d1d9;padding:1.5rem;margin:0}
 h1{color:#58a6ff;margin:0 0 .25rem}
@@ -86,7 +87,7 @@ button.secondary:hover{background:#30363d}
 
 <h2>Discussion</h2>
 <div class="row"><input id="discuss" placeholder="ask the agent — e.g. 'what do you see?'"
-  style="flex:1;min-width:12rem" autofocus>
+  style="flex:1;min-width:12rem">
 <button id="post">Send</button>
 <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.8rem">
 voice: <select id="voiceMode" title="How replies and page.audio_speaker.speak are voiced">
@@ -337,6 +338,11 @@ function imageResult(dataUrl, mime) {
 // speak tool honours the same choice, so other agents driving this page
 // sound consistent with it.
 function voiceMode() { return document.getElementById("voiceMode").value; }
+document.getElementById("voiceMode").addEventListener("change", () => {
+  if (voiceWs && voiceWs.readyState === WebSocket.OPEN) {
+    voiceWs.send(JSON.stringify({type: "voice_mode", mode: voiceMode()}));
+  }
+});
 
 function speakBuiltin(text) {
   const u = new SpeechSynthesisUtterance(text || "");
@@ -463,14 +469,29 @@ function setActivity(a) {
 }
 
 // Optional WebMCP: expose the same tools to browser agents (Chrome flag/origin-trial).
-function registerWebMcp() {
-  const mc = document.modelContext;
-  if (!mc) return;
+// Chrome's WebMCP takes one tool object per call and returns a promise. The
+// old four-argument call was rejected asynchronously, so try/catch never saw it
+// and every load logged "not of type 'ModelContextTool'".
+async function registerWebMcp() {
+  const mc = document.modelContext || navigator.modelContext;
+  if (!mc || typeof mc.registerTool !== "function") return;
+  let registered = 0;
   for (const t of TOOLS) {
-    try { mc.registerTool(t.name, t.description, t.inputSchema, async (args) => dispatch(t.name, args || {})); }
-    catch (e) {}
+    try {
+      await mc.registerTool({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        execute: async (args) => dispatch(t.name, args || {}),
+      });
+      registered++;
+    } catch (e) {
+      console.warn("WebMCP registerTool failed for " + t.name + ": " + e);
+    }
   }
-  setStatus((document.getElementById("status").textContent || "") + " · webmcp native");
+  if (registered) {
+    setStatus((document.getElementById("status").textContent || "") + " · webmcp native");
+  }
 }
 
 document.getElementById("speak").onclick = () => speak(document.getElementById("say").value);
@@ -639,11 +660,18 @@ function setVoiceState(name, revertAfterMs) {
 
 // Keep the hint honest while the wake word is edited mid-session.
 document.getElementById("wakeWord").addEventListener("input", () => {
+  if (voiceWs && voiceWs.readyState === WebSocket.OPEN) {
+    const word = document.getElementById("wakeWord").value.trim().toLowerCase();
+    voiceWs.send(JSON.stringify({type: "wake_word", word: word}));
+  }
   if (listening) setVoiceState("listening");
 });
 
 // ── Voice WebSocket: hands-free with wake word ──────────────────────────
 let voiceWs = null;
+// How the current hands-free reply is voiced ("hub", "browser", "off"),
+// captured when the reply starts so switching mid-reply doesn't mix voices.
+let handsFreeVoice = "hub";
 let audioCtx = null;
 let micStream = null;
 let micSource = null;
@@ -692,7 +720,10 @@ async function startListening() {
   voiceWs = new WebSocket(wsUrl);
   voiceWs.binaryType = "arraybuffer";
   voiceWs.onopen = async () => {
-    if (wakeWord) voiceWs.send(JSON.stringify({type: "wake_word", word: wakeWord}));
+    // Always sent, even empty: an empty wake word means open mic, and not
+    // sending it left the hub on its default "computer".
+    voiceWs.send(JSON.stringify({type: "wake_word", word: wakeWord}));
+    voiceWs.send(JSON.stringify({type: "voice_mode", mode: voiceMode()}));
     try {
       // Ask for the mic with the browser's own cleanup on. autoGainControl in
       // particular is what makes a laptop mic loud enough for the wake word.
@@ -769,8 +800,15 @@ async function startListening() {
         logEl.appendChild(line);
       } else if (msg.type === "thinking") {
         setVoiceState("thinking");
+      } else if (msg.type === "heard") {
+        // Something was picked up but not acted on: say so instead of nothing.
+        voiceLog(msg.text ? "(" + msg.reason + ") " + msg.text : "heard sound, but no words", "#6e7681");
       } else if (msg.type === "tts" && msg.state === "start") {
         setVoiceState("speaking");
+        // The voice option applies here too: the hub streams audio only in
+        // "hub" mode; "browser" speaks the text; "off" stays quiet.
+        handsFreeVoice = voiceMode();
+        if (handsFreeVoice === "browser") speakBuiltin(msg.text || "");
         const logEl = document.getElementById("log");
         const line = document.createElement("div");
         line.textContent = "agent: " + msg.text;
@@ -786,8 +824,8 @@ async function startListening() {
         voiceLog("error: " + msg.message, "#f85149");
       }
     } else {
-      // Binary PCM audio — play it through WebAudio
-      if (!audioCtx) return;
+      // Binary PCM audio — play it through WebAudio (hub voice only)
+      if (!audioCtx || handsFreeVoice !== "hub") return;
       const pcm16 = new Int16Array(ev.data);
       const float32 = new Float32Array(pcm16.length);
       for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
