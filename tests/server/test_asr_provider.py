@@ -58,3 +58,22 @@ def test_get_provider_funasr_onnx_defaults(monkeypatch) -> None:
         "quantize": True,
     }
     asr._cache.clear()
+
+
+def test_get_provider_funasr_onnx_quantize_string_false_is_off(monkeypatch) -> None:
+    """An env override delivers "false" as a string, which bool() read as on."""
+    asr._cache.clear()
+    captured = {}
+
+    class FakeONNXProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import agent_hub.providers.asr.funasr_onnx_provider as onnx_provider
+
+    monkeypatch.setattr(onnx_provider, "FunASRONNXProvider", FakeONNXProvider)
+
+    asr.get_provider("funasr_onnx", {"asr": {"funasr_onnx": {"quantize": "false"}}})
+
+    assert captured["quantize"] is False
+    asr._cache.clear()

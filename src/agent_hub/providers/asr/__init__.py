@@ -6,6 +6,8 @@ import abc
 from dataclasses import dataclass
 from typing import Any
 
+from agent_hub.config import config_bool
+
 
 @dataclass
 class Transcript:
@@ -113,7 +115,7 @@ def get_provider(name: str, config: dict[str, Any]) -> ASRProvider:
             model_dir=str(cfg.get("model_dir", "models/SenseVoiceSmall-onnx")),
             language=str(cfg.get("language", "en")),
             intra_op_num_threads=int(cfg.get("intra_op_num_threads", 4)),
-            quantize=bool(cfg.get("quantize", True)),
+            quantize=config_bool(cfg.get("quantize"), True, key="asr.funasr_onnx.quantize"),
         )
     elif name in ("funasr", "fun_local"):
         from agent_hub.providers.asr.funasr_provider import FunASRProvider

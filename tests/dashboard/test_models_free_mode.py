@@ -107,3 +107,27 @@ async def test_is_free_model_falls_back_to_suffix_when_catalogue_is_empty(
     monkeypatch.setattr(dashboard_app, "_fetch_openrouter_models", _none)
     assert await dashboard_app.is_free_model("x/y:free", "") is True
     assert await dashboard_app.is_free_model("x/y", "") is False
+
+
+@pytest.mark.parametrize("off", ["false", "0", "no", "off", ""])
+async def test_env_style_off_values_turn_free_mode_off(store: RegistryStore, off: str) -> None:
+    """Env overrides reach the config as strings. "false" used to mean on."""
+    async with await _client(store, {"llm": {"free_only": off}}) as c:
+        page = await c.get("/dashboard/models")
+        resp = await c.post("/dashboard/models/select", data={"model_id": "openai/gpt-4o-mini"})
+    assert "llm.free_only is on" not in page.text
+    assert "checked disabled" not in page.text
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("on", ["true", "1", "yes", "on"])
+async def test_env_style_on_values_turn_free_mode_on(store: RegistryStore, on: str) -> None:
+    async with await _client(store, {"llm": {"free_only": on}}) as c:
+        resp = await c.post("/dashboard/models/select", data={"model_id": "openai/gpt-4o-mini"})
+    assert resp.status_code == 403
+
+
+def test_unreadable_free_only_value_refuses_to_start(store: RegistryStore) -> None:
+    """A typo must not quietly decide whether paid models are allowed."""
+    with pytest.raises(ValueError, match="llm.free_only"):
+        dashboard_app.make_router(store, {"llm": {"free_only": "ture"}})
