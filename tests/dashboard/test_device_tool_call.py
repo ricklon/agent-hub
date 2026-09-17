@@ -111,6 +111,49 @@ async def test_a_device_that_has_not_listed_tools_yet_says_so(store: RegistrySto
     assert "has not listed its tools" in resp.json()["error"]
 
 
+async def test_speak_json_and_inject_json_reach_a_device_session(store: RegistryStore) -> None:
+    spoken: list[str] = []
+    heard: list[str] = []
+
+    async def speak(text: str) -> None:
+        spoken.append(text)
+
+    async def send_json(_msg: dict[str, Any]) -> None:
+        return None
+
+    async def inject(text: str) -> tuple[str, str | None]:
+        heard.append(text)
+        return "doing well", None
+
+    await store.get_or_create_agent(DEVICE, kind=AgentKind.XIAOZHI)
+    session_state.register_session(DEVICE, speak, send_json)
+    session_state.register_injector(DEVICE, inject)
+    try:
+        async with await _client(store) as c:
+            said = await c.post(f"/dashboard/agents/{DEVICE}/speak.json", json={"text": " hi "})
+            asked = await c.post(
+                f"/dashboard/agents/{DEVICE}/inject.json", json={"text": "how are you?"}
+            )
+            empty = await c.post(f"/dashboard/agents/{DEVICE}/speak.json", json={"text": "  "})
+    finally:
+        session_state.unregister_session(DEVICE)
+    assert said.json() == {"ok": True} and spoken == ["hi"]
+    assert asked.json() == {"ok": True, "reply": "doing well", "image": None}
+    assert heard == ["how are you?"]
+    assert empty.status_code == 400 and empty.json()["error"] == "text is required"
+
+
+async def test_speak_json_and_inject_json_say_when_the_device_is_offline(
+    store: RegistryStore,
+) -> None:
+    await store.get_or_create_agent(DEVICE, kind=AgentKind.XIAOZHI)
+    async with await _client(store) as c:
+        said = await c.post(f"/dashboard/agents/{DEVICE}/speak.json", json={"text": "hi"})
+        asked = await c.post(f"/dashboard/agents/{DEVICE}/inject.json", json={"text": "hi"})
+    assert said.status_code == 409 and asked.status_code == 409
+    assert "not connected" in said.json()["error"]
+
+
 # ── scripts/device_mcp_proxy.py ──────────────────────────────────────────────
 
 
@@ -142,6 +185,14 @@ class FakeHub:
         self.calls.append(tool)
         return True, "ok"
 
+    def speak(self, text: str) -> tuple[bool, str]:
+        self.calls.append(f"speak:{text}")
+        return True, "spoken"
+
+    def ask(self, text: str) -> tuple[bool, str]:
+        self.calls.append(f"ask:{text}")
+        return True, "fine, thanks"
+
 
 def test_proxy_exposes_only_non_moving_tools_by_default() -> None:
     mod = _load_proxy_module()
@@ -150,6 +201,8 @@ def test_proxy_exposes_only_non_moving_tools_by_default() -> None:
     listed = proxy.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     names = {t["name"] for t in listed["result"]["tools"]}
     assert names == {
+        "hub_speak",
+        "hub_ask",
         "self_get_device_status",
         "self_coglet_state",
         "self_coglet_stop",
@@ -175,7 +228,7 @@ def test_proxy_all_tools_and_initialize() -> None:
     assert init["result"]["capabilities"] == {"tools": {}}
     assert proxy.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     listed = proxy.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-    assert len(listed["result"]["tools"]) == 6
+    assert len(listed["result"]["tools"]) == 8
     called = proxy.handle(
         {
             "jsonrpc": "2.0",
@@ -185,3 +238,26 @@ def test_proxy_all_tools_and_initialize() -> None:
         }
     )
     assert json.dumps(called["result"]) == json.dumps({"content": [{"type": "text", "text": "ok"}]})
+
+
+def test_proxy_speak_and_ask_go_to_the_hub_not_the_device() -> None:
+    mod = _load_proxy_module()
+    hub = FakeHub()
+    proxy = mod.Proxy(hub, set())
+
+    def call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        msg = {"jsonrpc": "2.0", "id": 1, "method": "tools/call"}
+        msg["params"] = {"name": name, "arguments": arguments}
+        return proxy.handle(msg)["result"]
+
+    assert call("hub_speak", {"text": "hello"})["content"][0]["text"] == "spoken"
+    assert call("hub_ask", {"text": "how are you?"})["content"][0]["text"] == "fine, thanks"
+    assert call("hub_ask", {"text": " "})["isError"] is True
+    assert hub.calls == ["speak:hello", "ask:how are you?"]
+
+
+def test_an_explicit_tool_list_can_leave_out_the_conversation_tools() -> None:
+    mod = _load_proxy_module()
+    proxy = mod.Proxy(FakeHub(), {"self_coglet_state"})
+    listed = proxy.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert [t["name"] for t in listed["result"]["tools"]] == ["self_coglet_state"]

@@ -12,10 +12,17 @@ Standard library only, so it runs under any ``python3``:
     claude mcp add coglet-c3 -- python3 scripts/device_mcp_proxy.py \\
         --device 9c:9e:6e:f7:16:0c
 
-By default only tools that cannot move anything are exposed: status reads,
-state, stop and release. Pass ``--tools a,b`` for an explicit list or
-``--all-tools`` to expose everything the device offers. The allowlist is
-enforced on calls as well as on the listing.
+Two conversation tools come from the hub rather than the device, which has no
+speech tool of its own: ``hub_speak`` says a line verbatim, and ``hub_ask`` runs
+a full voice turn as if the device heard the text and returns the reply.
+
+By default the device tools exposed are the ones that cannot start motion:
+status reads, state, stop and release. ``hub_speak`` and ``hub_ask`` are also on
+by default. Note that ``hub_ask`` hands the text to the persona's LLM, which
+calls whatever device tools the *persona* allows, motion included; this proxy's
+allowlist cannot filter those. Pass ``--tools a,b`` for an explicit list or
+``--all-tools`` to expose everything. The allowlist is enforced on calls as well
+as on the listing.
 
 If the dashboard has a password, set AGENT_HUB_SERVER_DASHBOARD_USERNAME
 (default ``admin``) and AGENT_HUB_SERVER_DASHBOARD_PASSWORD.
@@ -37,6 +44,34 @@ PROTOCOL_VERSION = "2024-11-05"
 
 # Name suffixes of tools that read state or stop motion, never start it.
 SAFE_SUFFIXES = ("get_device_status", "_state", "_stop", "_release")
+
+_TEXT_SCHEMA = {
+    "type": "object",
+    "properties": {"text": {"type": "string", "minLength": 1}},
+    "required": ["text"],
+}
+
+# Served by the hub, not the device. Device tools are named ``self_*``.
+HUB_TOOLS: dict[str, dict[str, Any]] = {
+    "hub_speak": {
+        "name": "hub_speak",
+        "description": (
+            "Make the device say this text aloud, verbatim, through its speaker. "
+            "No LLM is involved and nothing moves."
+        ),
+        "inputSchema": _TEXT_SCHEMA,
+    },
+    "hub_ask": {
+        "name": "hub_ask",
+        "description": (
+            "Talk to the device's persona as if it heard this text: runs a full voice "
+            "turn, speaks the reply aloud and returns it. The persona's LLM may call "
+            "the device's own tools, including motion, if its persona allows them. "
+            "Can take up to 90 seconds."
+        ),
+        "inputSchema": _TEXT_SCHEMA,
+    },
+}
 
 
 def log(message: str) -> None:
@@ -87,8 +122,25 @@ class Hub:
         )
         if isinstance(body, dict) and body.get("ok"):
             return True, str(body.get("result", ""))
-        error = body.get("error") or body.get("detail") if isinstance(body, dict) else body
-        return False, str(error)
+        return False, _error(body)
+
+    def speak(self, text: str) -> tuple[bool, str]:
+        _code, body = self._request("POST", "speak.json", {"text": text})
+        if isinstance(body, dict) and body.get("ok"):
+            return True, "spoken"
+        return False, _error(body)
+
+    def ask(self, text: str) -> tuple[bool, str]:
+        _code, body = self._request("POST", "inject.json", {"text": text})
+        if isinstance(body, dict) and body.get("ok"):
+            return True, str(body.get("reply") or "(no reply)")
+        return False, _error(body)
+
+
+def _error(body: Any) -> str:
+    if isinstance(body, dict):
+        return str(body.get("error") or body.get("detail") or body)
+    return str(body)
 
 
 class Proxy:
@@ -101,18 +153,18 @@ class Proxy:
             return True
         if self.allow:
             return name in self.allow
-        return name.endswith(SAFE_SUFFIXES)
+        return name in HUB_TOOLS or name.endswith(SAFE_SUFFIXES)
 
     def list_tools(self) -> list[dict[str, Any]]:
         try:
             status = self.hub.status()
         except (OSError, RuntimeError) as exc:
             log(f"cannot reach the hub: {exc}")
-            return []
+            return [tool for name, tool in HUB_TOOLS.items() if self.allowed(name)]
         mcp = status.get("mcp") or {}
         if not mcp.get("ready"):
             log("device MCP is not ready; listing the tools the hub last saw")
-        tools = []
+        tools = [tool for name, tool in HUB_TOOLS.items() if self.allowed(name)]
         for tool in mcp.get("tools") or []:
             name = tool.get("name", "")
             if not name or not self.allowed(name):
@@ -131,7 +183,13 @@ class Proxy:
         if not self.allowed(name):
             return _tool_error(f"{name!r} is not exposed by this proxy")
         try:
-            ok, result = self.hub.call(name, arguments)
+            if name in HUB_TOOLS:
+                text = arguments.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    return _tool_error("text is required")
+                ok, result = (self.hub.speak if name == "hub_speak" else self.hub.ask)(text)
+            else:
+                ok, result = self.hub.call(name, arguments)
         except OSError as exc:
             return _tool_error(f"cannot reach the hub: {exc}")
         if not ok:
@@ -178,7 +236,7 @@ def main() -> None:
     parser.add_argument(
         "--hub", default="http://127.0.0.1:8001", help="dashboard base URL (default %(default)s)"
     )
-    parser.add_argument("--timeout", type=float, default=70.0, help="seconds per hub request")
+    parser.add_argument("--timeout", type=float, default=100.0, help="seconds per hub request")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--tools", help="comma-separated tool names to expose")
     group.add_argument("--all-tools", action="store_true", help="expose every device tool")
