@@ -135,7 +135,10 @@ class Conversation(Base):
     title: Mapped[str | None] = mapped_column(String(160), nullable=True)
     title_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set once wrap-up (title and summary) is finished or has been given up on.
     wrapped_up_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Failed wrap-up calls; the sweeper retries until the limit, then gives up.
+    wrap_up_attempts: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime] = mapped_column(server_default=func.now())
     last_turn_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
     # Null while in progress.

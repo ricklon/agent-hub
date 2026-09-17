@@ -25,7 +25,12 @@ from loguru import logger
 
 from agent_hub import skills as server_skills
 from agent_hub import spend
-from agent_hub.conversations import conversation_for_turn, effective_settings
+from agent_hub.conversations import (
+    conversation_for_turn,
+    effective_settings,
+    memory_note_for_turn,
+    with_memory,
+)
 from agent_hub.providers.llm import get_provider
 from agent_hub.registry.models import Persona
 from agent_hub.registry.store import RegistryStore
@@ -175,7 +180,10 @@ async def run_turn(
         )
     )
     history.append({"role": "user", "content": text})
-    system_prompt = build_system_prompt(persona, tools)
+    system_prompt = with_memory(
+        build_system_prompt(persona, tools),
+        await memory_note_for_turn(store, config, device_id, conversation.id, settings),
+    )
 
     images: list[str] = []
     called: list[str] = []

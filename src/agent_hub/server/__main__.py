@@ -34,6 +34,7 @@ from agent_hub.server.ws_session import make_router as make_ws_router
 
 _prewarmed = False
 _pruning = False
+_sweeping_conversations = False
 
 
 async def _prewarm_providers(config: dict[str, Any]) -> None:
@@ -121,6 +122,7 @@ def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any
         )
         app.state.prewarm_task = asyncio.create_task(_prewarm_providers(raw_config))
         app.state.prune_task = asyncio.create_task(_prune_page_agents(store, raw_config))
+        app.state.conversation_task = asyncio.create_task(_sweep_conversations(store, raw_config))
 
     return app
 
@@ -148,6 +150,29 @@ async def _prune_page_agents(store: RegistryStore, config: dict[str, Any]) -> No
         except Exception as exc:  # noqa: BLE001 - a sweep failure must not kill the loop
             logger.warning(f"page-agent prune failed: {exc}")
         await asyncio.sleep(3600)
+
+
+async def _sweep_conversations(store: RegistryStore, config: dict[str, Any]) -> None:
+    """Every few minutes: end idle conversations, title and summarize ended ones.
+
+    One sweeper for the process, guarded like the prune loop, since startup
+    fires once per port.
+    """
+    global _sweeping_conversations
+    if _sweeping_conversations:
+        return
+    _sweeping_conversations = True
+
+    from agent_hub.conversation_wrapup import SWEEP_INTERVAL_S, sweep
+
+    while True:
+        try:
+            counts = await sweep(store, config)
+            if any(counts.values()):
+                logger.info(f"Conversation sweep: {counts}")
+        except Exception as exc:  # noqa: BLE001 - a sweep failure must not kill the loop
+            logger.warning(f"conversation sweep failed: {exc}")
+        await asyncio.sleep(SWEEP_INTERVAL_S)
 
 
 def _add_dashboard_root(app: FastAPI) -> None:

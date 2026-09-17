@@ -30,7 +30,12 @@ from loguru import logger
 from agent_hub import skills as server_skills
 from agent_hub import spend
 from agent_hub.config import Settings
-from agent_hub.conversations import conversation_for_turn, effective_settings
+from agent_hub.conversations import (
+    conversation_for_turn,
+    effective_settings,
+    memory_note_for_turn,
+    with_memory,
+)
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.registry.models import AgentKind
 from agent_hub.registry.page_identity import (
@@ -767,7 +772,12 @@ def make_router(
                         voice_turn_messages(conversation, window, transcript),
                         tools,
                         _exec_tool,
-                        system_prompt=system_prompt,
+                        system_prompt=with_memory(
+                            system_prompt,
+                            await memory_note_for_turn(
+                                store, config, device_id, current.id, settings
+                            ),
+                        ),
                     )
                 except Exception as exc:
                     session_state.set_pipeline_status(device_id, "listening")
