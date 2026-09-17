@@ -48,6 +48,7 @@ from agent_hub.server.audio import (
     pcm_resample,
     pcm_to_wav,
 )
+from agent_hub.server.history import history_for_llm as _history_for_llm
 from agent_hub.server.mcp_client import MCPClient
 from agent_hub.server.protocol import SERVER_TTS_AUDIO_PARAMS, ClientHello, ServerWelcome
 from agent_hub.spend import SpendLimitExceeded
@@ -58,7 +59,6 @@ _GREETING = "Agent hub connected. Ready."
 _SLOW_TURN_CUE_SECONDS = 4.0
 _SLOW_TURN_CUE_TEXT = "I'm still working on that."
 _VOLATILE_TOOLS = frozenset({"get_current_time", "get_weather", "web_search"})
-_VOLATILE_HISTORY_RE = _re.compile(r"\n?\[volatile-tools:[^\]]+\]")
 _MAX_ASR_REALTIME_FACTOR = 1.0
 
 
@@ -261,21 +261,6 @@ def _take_speakable_chunks(buffer: str) -> tuple[list[str], str]:
             chunks.append(chunk)
         start = end
     return chunks, buffer[start:]
-
-
-def _history_for_llm(history: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Return conversation messages safe to pass back to the LLM."""
-    return [
-        msg
-        for msg in history
-        if msg.get("role") in {"user", "assistant"}
-        and not (msg.get("role") == "assistant" and _VOLATILE_HISTORY_RE.search(msg["content"]))
-    ]
-
-
-def _strip_history_markers(content: str) -> str:
-    """Remove internal metadata markers from persisted conversation text."""
-    return _VOLATILE_HISTORY_RE.sub("", content).strip()
 
 
 def _asr_realtime_factor(asr_ms: int, frame_count: int, frame_duration_ms: int) -> float:
