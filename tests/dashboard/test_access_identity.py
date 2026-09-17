@@ -291,3 +291,106 @@ async def test_viewer_cannot_register_browser_page_agent(
     assert register.status_code == 403
     assert ask.status_code == 403
     assert admin_page.status_code == 200
+
+
+def _page_app(store: RegistryStore) -> FastAPI:
+    # operator@example.com is the bootstrap admin; viewer-123 becomes an
+    # operator on first sight, so there are two people who may register pages.
+    config = _access_config()
+    config["server"]["dashboard_default_role"] = "operator"  # type: ignore[index]
+    app = FastAPI()
+    app.include_router(make_page_agent_router(store, Settings(), config))
+    return app
+
+
+_ALICE = {"Cf-Access-Jwt-Assertion": "valid-assertion"}
+_BOB = {"Cf-Access-Jwt-Assertion": "viewer-assertion"}
+
+
+async def test_page_agent_is_owned_by_the_operator_who_registers_it(
+    store: RegistryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub.server import mcp_bridge
+
+    monkeypatch.setattr(dashboard_auth_module, "AccessIdentityVerifier", _FakeVerifier)
+    async with AsyncClient(
+        transport=ASGITransport(app=_page_app(store)), base_url="http://test"
+    ) as client:
+        first = await client.post(
+            "/page-agent/register", headers=_ALICE, json={"device_id": "page-a", "tools": []}
+        )
+        reload = await client.post(
+            "/page-agent/register", headers=_ALICE, json={"device_id": "page-a", "tools": []}
+        )
+
+    assert first.json()["device_id"] == "page-a"
+    assert reload.json()["device_id"] == "page-a"
+    agent = await store.get_agent("page-a")
+    assert agent is not None
+    assert agent.owner_subject == "operator-123"
+    assert agent.owner == "operator@example.com"
+    mcp_bridge.unregister_page_agent("page-a")
+
+
+async def test_operator_cannot_take_over_another_operators_page_agent(
+    store: RegistryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub.server import mcp_bridge
+
+    monkeypatch.setattr(dashboard_auth_module, "AccessIdentityVerifier", _FakeVerifier)
+    async with AsyncClient(
+        transport=ASGITransport(app=_page_app(store)), base_url="http://test"
+    ) as client:
+        alice = await client.post(
+            "/page-agent/register", headers=_ALICE, json={"device_id": "page-a", "tools": []}
+        )
+        bob = await client.post(
+            "/page-agent/register", headers=_BOB, json={"device_id": "page-a", "tools": []}
+        )
+
+    alice_token = alice.json()["token"]
+    bob_id = bob.json()["device_id"]
+    assert bob.status_code == 200
+    assert bob_id != "page-a"
+    assert await store.validate_websocket_token("page-a", alice_token)
+    handle = mcp_bridge.get_page_agent("page-a")
+    assert handle is not None and handle.token == alice_token
+    agent = await store.get_agent("page-a")
+    assert agent is not None and agent.owner_subject == "operator-123"
+    mcp_bridge.unregister_page_agent("page-a")
+    mcp_bridge.unregister_page_agent(bob_id)
+
+
+async def test_unclaimed_page_agent_is_adopted_only_when_not_live(
+    store: RegistryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub.registry.models import AgentKind
+    from agent_hub.server import mcp_bridge
+
+    monkeypatch.setattr(dashboard_auth_module, "AccessIdentityVerifier", _FakeVerifier)
+    # Rows registered before ownership was recorded have no owner.
+    await store.get_or_create_agent(device_id="page-idle", kind=AgentKind.PAGE)
+    await store.get_or_create_agent(device_id="page-live", kind=AgentKind.PAGE)
+    live_token = await store.issue_websocket_token("page-live")
+    mcp_bridge.register_page_agent("page-live", live_token, []).connected = True
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_page_app(store)), base_url="http://test"
+    ) as client:
+        idle = await client.post(
+            "/page-agent/register", headers=_BOB, json={"device_id": "page-idle", "tools": []}
+        )
+        live = await client.post(
+            "/page-agent/register", headers=_BOB, json={"device_id": "page-live", "tools": []}
+        )
+
+    assert idle.json()["device_id"] == "page-idle"
+    adopted = await store.get_agent("page-idle")
+    assert adopted is not None and adopted.owner_subject == "viewer-123"
+    assert live.json()["device_id"] != "page-live"
+    assert await store.validate_websocket_token("page-live", live_token)
+    for device_id in ("page-idle", "page-live", live.json()["device_id"]):
+        mcp_bridge.unregister_page_agent(device_id)
