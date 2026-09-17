@@ -36,6 +36,9 @@ class TurnLatency:
 class DeviceState:
     mcp_tools: list[str] = field(default_factory=list)
     last_tool_results: list[JsonDict] = field(default_factory=list)
+    # The most recent failed model call on a voice or text turn, cleared by
+    # the next turn that completes: {"model", "error", "at"}.
+    last_llm_error: JsonDict | None = None
     last: TurnLatency = field(default_factory=TurnLatency)
     avg: TurnLatency = field(default_factory=TurnLatency)
     turns: int = 0
@@ -221,8 +224,23 @@ def record_tool_result(
     )
 
 
+def record_llm_error(device_id: str, model: str, error: str) -> None:
+    """Remember why the last turn got no reply, for the dashboard."""
+    _get(device_id).last_llm_error = {
+        "model": model,
+        "error": error,
+        "at": _time.time(),
+    }
+
+
+def get_llm_error(device_id: str) -> JsonDict | None:
+    """The last failed model call for this device, if no turn has worked since."""
+    return _get(device_id).last_llm_error
+
+
 def record_turn(device_id: str, asr_ms: int, llm_ms: int, tts_ms: int) -> None:
     s = _get(device_id)
+    s.last_llm_error = None
     s.last = TurnLatency(asr_ms, llm_ms, tts_ms)
     s.turns += 1
     if s.turns == 1:

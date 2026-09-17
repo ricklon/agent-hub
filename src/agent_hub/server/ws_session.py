@@ -25,6 +25,7 @@ from contextlib import suppress
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
+import openai
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
@@ -32,6 +33,7 @@ import agent_hub.skills as server_skills
 from agent_hub import spend
 from agent_hub.providers.asr import get_provider as get_asr
 from agent_hub.providers.llm import get_provider as get_llm
+from agent_hub.providers.llm.model_check import describe_error as describe_model_error
 from agent_hub.providers.tts import get_provider as get_tts
 from agent_hub.registry.models import AgentStatus, Persona
 from agent_hub.registry.store import RegistryStore
@@ -369,6 +371,23 @@ _DEFAULT_SPEND_NOTICE = (
     "I've reached my spending limit, so I can't answer right now. "
     "Ask my operator to raise the limit."
 )
+_DEFAULT_MODEL_ERROR_NOTICE = (
+    "Sorry, my language model isn't answering right now. "
+    "Ask my operator to check which model I'm using."
+)
+
+
+def _model_error_notice(config: dict[str, Any]) -> str:
+    """What the device says when its model call fails (llm.model_error_message)."""
+    configured = (config.get("llm") or {}).get("model_error_message")
+    return str(configured) if configured else _DEFAULT_MODEL_ERROR_NOTICE
+
+
+def _persona_model(persona: Persona, config: dict[str, Any]) -> str:
+    """The model a persona actually runs: its own, or the provider default."""
+    provider = persona.llm_provider or "openai"
+    default = ((config.get("llm") or {}).get(provider) or {}).get("model", "")
+    return persona.llm_model or str(default) or provider
 
 
 def _spend_limit_notice(config: dict[str, Any], exc: SpendLimitExceeded) -> str:
@@ -578,6 +597,20 @@ async def _run_llm_turn(
         logger.bind(tag=_TAG).error(f"turn blocked by spend limit: {exc}")
         notice = _spend_limit_notice(config, exc)
         await _speak(websocket, notice, persona, config, session_id)
+        session_state.set_pipeline_status(device_id, "idle", transcript)
+        history.pop()
+        return 0, 0, 0, ""
+    except openai.OpenAIError as exc:
+        # A model that errors (removed, rate-limited, timed out) used to end
+        # the turn silently: the utterance was saved, nothing came back, and
+        # nothing said why. Say so out loud, and record why for the dashboard.
+        await slow_cue.close()
+        model = _persona_model(persona, config)
+        reason = describe_model_error(exc)
+        logger.bind(tag=_TAG).error(f"LLM call failed for {device_id!r} on {model!r}: {reason}")
+        if device_id:
+            session_state.record_llm_error(device_id, model, reason)
+        await _speak(websocket, _model_error_notice(config), persona, config, session_id)
         session_state.set_pipeline_status(device_id, "idle", transcript)
         history.pop()
         return 0, 0, 0, ""
