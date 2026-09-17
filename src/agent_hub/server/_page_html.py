@@ -45,12 +45,37 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
   border-radius:3px;overflow:hidden;flex:none}
 #meterbar{height:100%;width:0%;background:#3fb950;transition:width .08s linear}
 #meterlabel{font-size:.75rem;color:#8b949e}
+[hidden]{display:none!important}
+/* Choosing which agent this tab is. Shown until the tab has registered. */
+#connect{border:1px solid #30363d;border-radius:6px;background:#161b22;padding:.8rem 1rem;
+  margin:.8rem 0;max-width:40rem}
+#connect p{margin:.2rem 0 .5rem;font-size:.8rem;color:#8b949e}
+#connecterr{font-size:.85rem;color:#f85149;margin:.4rem 0}
+#myagents{list-style:none;padding:0;margin:.6rem 0 0}
+#myagents li{display:flex;gap:.6rem;align-items:center;padding:.25rem 0;font-size:.85rem}
+#myagents .meta{color:#8b949e;font-size:.75rem}
+button.secondary{background:#21262d;border:1px solid #30363d}
+button.secondary:hover{background:#30363d}
 </style></head><body>
 <h1>Page Agent</h1>
 <div class="row"><a href="/dashboard/" style="color:#58a6ff">← Dashboard</a></div>
 <div id="status">initialising…</div>
 <div id="personaline" style="font-size:.8rem;color:#8b949e"></div>
+<div id="agentline" class="row" hidden><span id="agentname"></span>
+<button id="switchagent" class="secondary" title="Close this agent and pick another">Switch agent</button></div>
 
+<form id="connect" hidden>
+  <strong>Which agent is this tab?</strong>
+  <p>Pick a name. Opening the same name again, in any tab on any day, is the same agent with its history.</p>
+  <div class="row"><label for="agentName">Name</label>
+  <input id="agentName" maxlength="64" required autocomplete="off" data-1p-ignore data-lpignore="true" style="flex:1;min-width:12rem">
+  <button id="openagent" type="submit">Open</button></div>
+  <div id="connecterr" role="alert" hidden></div>
+  <button id="takeover" type="button" class="secondary" hidden>Take over</button>
+  <ul id="myagents"></ul>
+</form>
+
+<div id="agentui" hidden>
 <h2>Camera (seeing)</h2>
 <div class="row"><button id="cam">Start camera</button><span id="camstate">off</span></div>
 <video id="video" autoplay playsinline muted style="display:none"></video>
@@ -85,27 +110,24 @@ Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
 </div>
 <div id="meter" title="microphone input level"><div id="meterbar"></div></div>
 <span id="meterlabel">mic</span></div>
+</div>
 
 <script>
-const ID_KEY = "agenthub.pageAgent.deviceId";
-// crypto.randomUUID only exists in secure contexts (https or localhost). Over
-// plain http on a LAN address — the class-night laptop setup — it is undefined,
-// which used to throw here and leave the page on "initialising…" forever.
-function newDeviceId() {
-  if (crypto.randomUUID) return "page-" + crypto.randomUUID();
-  const b = new Uint8Array(8);
-  crypto.getRandomValues(b);
-  return "page-" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-}
-// One identity per tab (sessionStorage), not per browser (localStorage): two
-// tabs are two agents. With a shared id the second tab's registration
-// re-issued the token and silently broke the first tab, so you could never
-// run two personas side by side.
-let deviceId = sessionStorage.getItem(ID_KEY);
-if (!deviceId) {
-  deviceId = newDeviceId();
-  sessionStorage.setItem(ID_KEY, deviceId);
-}
+// The hub derives the agent id from who is signed in and the name picked
+// here, so the page never makes one up. Two storage keys, two jobs:
+// - TAB_NAME_KEY (sessionStorage): the agent this tab has open, so a reload
+//   reopens it. Per tab, so two tabs can run two agents side by side.
+// - LAST_NAME_KEY (localStorage): a convenience to prefill the name field.
+// Storage can be unavailable (private windows, blocked site data); the page
+// then just asks for the name again.
+const TAB_NAME_KEY = "agenthub.pageAgent.name";
+const LAST_NAME_KEY = "agenthub.pageAgent.lastName";
+function storeGet(store, key) { try { return store.getItem(key) || ""; } catch (e) { return ""; } }
+function storeSet(store, key, value) { try { store.setItem(key, value); } catch (e) {} }
+function storeDel(store, key) { try { store.removeItem(key); } catch (e) {} }
+let deviceId = "";
+let agentName = "";
+let es = null, hbTimer = null;
 let token = "", respondUrl = "", eventUrl = "", hbUrl = "", hbInterval = 30;
 let volume = 1.0;
 let stream = null;
@@ -141,27 +163,122 @@ const TOOLS = [
 
 function setStatus(s) { document.getElementById("status").textContent = s; }
 
-async function register() {
-  const kind = navigator.userAgent.includes("Mobile") ? "page-mobile" : "page";
-  const label = PERSONA ? kind + " · " + PERSONA : kind;
-  const resp = await fetch("/page-agent/register", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({device_id: deviceId, label: label, tools: TOOLS, persona: PERSONA})
-  });
-  const data = await resp.json();
-  if (!data.ok) { setStatus("register failed: " + JSON.stringify(data)); return; }
+// Returns {ok, status, message}. Only a successful registration starts the
+// stream and heartbeat, so a refused one can be retried without leaking them.
+async function register(name, takeover) {
+  let resp, data;
+  try {
+    resp = await fetch("/page-agent/register", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: name, takeover: !!takeover, tools: TOOLS, persona: PERSONA})
+    });
+    data = await resp.json();
+  } catch (e) {
+    return {ok: false, status: 0, message: "could not reach the hub: " + e};
+  }
+  if (!data.ok) return {ok: false, status: resp.status, message: data.message || ("HTTP " + resp.status)};
   token = data.token;
   respondUrl = data.mcp_respond_url;
   eventUrl = data.mcp_event_url;
   hbUrl = data.heartbeat_url;
   hbInterval = data.heartbeat_interval_seconds || 30;
   deviceId = data.device_id;
-  sessionStorage.setItem(ID_KEY, deviceId);
-  setStatus("registered " + deviceId + " · " + TOOLS.length + " tools");
+  agentName = data.name || name;
+  storeSet(sessionStorage, TAB_NAME_KEY, agentName);
+  storeSet(localStorage, LAST_NAME_KEY, agentName);
+  document.title = agentName + " · page agent";
+  document.getElementById("agentname").textContent = "agent: " + agentName;
+  document.getElementById("connect").hidden = true;
+  document.getElementById("agentline").hidden = false;
+  document.getElementById("agentui").hidden = false;
+  setStatus("registered " + agentName + " (" + deviceId + ") · " + TOOLS.length + " tools");
   openStream();
   startHeartbeat();
   registerWebMcp();
+  return {ok: true};
+}
+
+function showConnectError(message, canTakeOver) {
+  const err = document.getElementById("connecterr");
+  err.textContent = message;
+  err.hidden = !message;
+  document.getElementById("takeover").hidden = !canTakeOver;
+}
+
+async function openAgent(takeover) {
+  const name = document.getElementById("agentName").value.trim();
+  if (!name) return;
+  const btn = document.getElementById("openagent");
+  btn.disabled = true;
+  showConnectError("", false);
+  const result = await register(name, takeover);
+  btn.disabled = false;
+  if (result.ok) return;
+  // 409 covers "open in another tab" (which the owner may take over) and
+  // "belongs to someone else" (which nobody may).
+  document.getElementById("takeover").textContent = "Take over";
+  showConnectError(result.message, result.status === 409 && /already open/.test(result.message));
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const secs = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (secs < 90) return "just now";
+  if (secs < 5400) return Math.round(secs / 60) + " min ago";
+  if (secs < 129600) return Math.round(secs / 3600) + " h ago";
+  return Math.round(secs / 86400) + " days ago";
+}
+
+async function loadMyAgents() {
+  const list = document.getElementById("myagents");
+  let data;
+  try {
+    data = await (await fetch("/page-agent/mine")).json();
+  } catch (e) { return; }
+  if (!data.ok) { showConnectError(data.message || "could not list your agents", false); return; }
+  list.replaceChildren();
+  for (const a of data.agents) {
+    const li = document.createElement("li");
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "secondary";
+    pick.textContent = a.name;
+    pick.onclick = () => { document.getElementById("agentName").value = a.name; openAgent(false); };
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = [a.persona, a.open ? "open in another tab" : "last seen " + ago(a.last_seen)]
+      .filter(Boolean).join(" · ");
+    li.append(pick, meta);
+    list.appendChild(li);
+  }
+}
+
+document.getElementById("connect").addEventListener("submit", (ev) => { ev.preventDefault(); openAgent(false); });
+document.getElementById("takeover").onclick = () => openAgent(true);
+document.getElementById("switchagent").onclick = () => {
+  storeDel(sessionStorage, TAB_NAME_KEY);
+  // Reloading closes the stream, voice socket, and timers in one go; the
+  // pagehide beacon marks this agent offline on the way out.
+  location.reload();
+};
+
+async function start() {
+  // A tab reopening its own agent after a reload: the stream it is replacing
+  // was this tab's, so taking it over is always right.
+  const tabName = storeGet(sessionStorage, TAB_NAME_KEY);
+  if (tabName) {
+    setStatus("reopening " + tabName + "…");
+    const result = await register(tabName, true);
+    if (result.ok) return;
+    storeDel(sessionStorage, TAB_NAME_KEY);
+    showConnectError(result.message, false);
+  }
+  document.getElementById("agentName").value = tabName || storeGet(localStorage, LAST_NAME_KEY) || PERSONA || "";
+  document.getElementById("connect").hidden = false;
+  setStatus("choose an agent to open");
+  document.getElementById("agentName").focus();
+  loadMyAgents();
 }
 
 // Tell the hub the page is going away so the dashboard shows it offline now
@@ -175,12 +292,15 @@ window.addEventListener("pagehide", () => {
 
 function openStream() {
   const u = eventUrl + "?device_id=" + encodeURIComponent(deviceId) + "&token=" + encodeURIComponent(token);
-  const es = new EventSource(u);
+  es = new EventSource(u);
   es.onopen = () => setStatus("MCP stream open: " + deviceId);
   es.onerror = () => setStatus("MCP stream error (reconnecting…) — " + deviceId);
   es.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    // The hub ends the stream when this tab no longer holds the agent.
+    if (msg.error === "replaced") { agentLost(agentName + " was opened in another tab."); return; }
+    if (msg.error === "unregistered") { agentLost(agentName + " was closed by the hub."); return; }
     if (msg.error) { setStatus("stream error: " + msg.error); return; }
     handleRequest(msg);
   };
@@ -296,7 +416,7 @@ async function dispatch(name, args) {
 
 async function sendHeartbeat() {
   try {
-    await fetch(hbUrl, {
+    const resp = await fetch(hbUrl, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
@@ -304,12 +424,34 @@ async function sendHeartbeat() {
         activity: activity, mcp_tools: TOOLS.map(t => t.name)
       })
     });
+    if (resp.status === 401) agentLost("This tab lost " + agentName + " (it was opened elsewhere).");
   } catch (e) {}
 }
 
 function startHeartbeat() {
   sendHeartbeat();
-  setInterval(sendHeartbeat, hbInterval * 1000);
+  hbTimer = setInterval(sendHeartbeat, hbInterval * 1000);
+}
+
+// This tab no longer holds its agent (another tab took it over, or the hub
+// dropped it). Stop everything that uses the dead token and say so, rather
+// than leaving a page that looks connected and silently does nothing.
+function agentLost(reason) {
+  if (!token) return;
+  token = "";
+  if (es) { es.close(); es = null; }
+  if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
+  if (listening) stopListening();
+  storeDel(sessionStorage, TAB_NAME_KEY);
+  document.title = "agent-hub · page agent";
+  document.getElementById("agentui").hidden = true;
+  document.getElementById("agentline").hidden = true;
+  document.getElementById("connect").hidden = false;
+  document.getElementById("agentName").value = agentName;
+  document.getElementById("takeover").textContent = "Reopen here";
+  showConnectError(reason, true);
+  setStatus("not connected");
+  loadMyAgents();
 }
 
 // Activity changes are pushed straight away so the dashboard does not wait a
@@ -356,6 +498,13 @@ async function askAgent() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({device_id: deviceId, token: token, text: text})
     });
+    if (resp.status === 401) {
+      asking = false;
+      btn.disabled = false;
+      btn.textContent = "Send";
+      agentLost("This tab lost " + agentName + " (it was opened elsewhere).");
+      return;
+    }
     const data = await resp.json();
     if (data.ok && data.reply) {
       if (data.images && data.images.length) {
@@ -528,7 +677,7 @@ function downsampleTo16k(buf, inRate) {
 }
 
 async function startListening() {
-  if (listening) return;
+  if (listening || !token) return;
   if (!MEDIA_OK) {
     voiceLog("microphone unavailable: the page needs https or localhost", "#f85149");
     return;
@@ -670,7 +819,7 @@ document.getElementById("listen").onclick = () => {
   if (listening) stopListening(); else startListening();
 };
 
-register();
+start();
 </script>
 </body></html>
 """

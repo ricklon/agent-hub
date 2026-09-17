@@ -454,3 +454,28 @@ async def test_named_page_agent_refuses_a_row_owned_by_someone_else(
     assert bob.status_code == 409
     assert "someone else" in bob.json()["message"]
     assert await store.validate_websocket_token(bob_kitchen, alice_token)
+
+
+async def test_mine_lists_only_the_callers_page_agents(
+    store: RegistryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub.server import mcp_bridge
+
+    monkeypatch.setattr(dashboard_auth_module, "AccessIdentityVerifier", _FakeVerifier)
+    async with AsyncClient(
+        transport=ASGITransport(app=_page_app(store)), base_url="http://test"
+    ) as client:
+        alice = await client.post(
+            "/page-agent/register", headers=_ALICE, json={"name": "kitchen", "tools": []}
+        )
+        bob = await client.post(
+            "/page-agent/register", headers=_BOB, json={"name": "garage", "tools": []}
+        )
+        alice_mine = await client.get("/page-agent/mine", headers=_ALICE)
+        bob_mine = await client.get("/page-agent/mine", headers=_BOB)
+
+    assert [a["name"] for a in alice_mine.json()["agents"]] == ["kitchen"]
+    assert [a["name"] for a in bob_mine.json()["agents"]] == ["garage"]
+    mcp_bridge.unregister_page_agent(alice.json()["device_id"])
+    mcp_bridge.unregister_page_agent(bob.json()["device_id"])

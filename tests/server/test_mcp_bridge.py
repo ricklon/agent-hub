@@ -188,3 +188,29 @@ async def test_event_generator_emits_tools_call_and_ping(store: RegistryStore) -
     await gen.aclose()
     assert handle.connected is False
     mcp_bridge.unregister_page_agent(device_id)
+
+
+async def test_re_registering_ends_the_old_handles_stream() -> None:
+    # The tab that lost its agent to another tab must hear about it, not keep
+    # a live-looking stream that can never receive a call.
+    old = mcp_bridge.register_page_agent("page-swap", "old-token", [])
+    gen = mcp_bridge.events_generator(old)
+    mcp_bridge.register_page_agent("page-swap", "new-token", [])
+
+    last = await asyncio.wait_for(gen.__anext__(), timeout=2.0)
+    assert json.loads(last[len("data: ") :]) == {"error": "replaced"}
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(gen.__anext__(), timeout=2.0)
+    assert old.connected is False
+    mcp_bridge.unregister_page_agent("page-swap")
+
+
+async def test_unregistering_ends_the_stream() -> None:
+    handle = mcp_bridge.register_page_agent("page-gone", "tok", [])
+    gen = mcp_bridge.events_generator(handle)
+    mcp_bridge.unregister_page_agent("page-gone")
+
+    last = await asyncio.wait_for(gen.__anext__(), timeout=2.0)
+    assert json.loads(last[len("data: ") :]) == {"error": "unregistered"}
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(gen.__anext__(), timeout=2.0)

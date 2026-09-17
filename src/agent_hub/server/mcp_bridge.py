@@ -64,6 +64,20 @@ class PageAgent:
 
 _page_agents: dict[str, PageAgent] = {}
 
+# Reasons a handle's SSE stream is ended by the hub rather than the page.
+_STREAM_REPLACED = "replaced"
+_STREAM_UNREGISTERED = "unregistered"
+
+
+def _end_stream(handle: PageAgent, reason: str) -> None:
+    """Tell a handle's open SSE stream, if any, that it is finished.
+
+    Without this a stream outlived its handle: the old tab of a page agent
+    that was re-registered elsewhere kept a live-looking stream that could
+    never receive a call, so it had no way to know it had lost the agent.
+    """
+    handle.outbound.put_nowait({"error": reason})
+
 
 def register_page_agent(
     device_id: str,
@@ -89,6 +103,7 @@ def register_page_agent(
         for fut in old.pending.values():
             if not fut.done():
                 fut.cancel()
+        _end_stream(old, _STREAM_REPLACED)
     handle = PageAgent(device_id=device_id, token=token)
     for tool in tools:
         if not isinstance(tool, dict):
@@ -124,6 +139,7 @@ def unregister_page_agent(device_id: str) -> None:
         for fut in handle.pending.values():
             if not fut.done():
                 fut.cancel()
+        _end_stream(handle, _STREAM_UNREGISTERED)
 
 
 def get_page_agent(device_id: str) -> PageAgent | None:
@@ -262,13 +278,17 @@ async def events_generator(handle: PageAgent) -> Any:
 
     Yields:
         ``"data: <json>\\n\\n"`` for each queued JSON-RPC request, and
-        ``": ping\\n\\n"`` keep-alives when the queue is idle.
+        ``": ping\\n\\n"`` keep-alives when the queue is idle. Ends after
+        yielding ``{"error": "replaced"|"unregistered"}`` when the hub drops
+        the handle, so the page learns it no longer holds the agent.
     """
     try:
         while True:
             try:
                 msg = await asyncio.wait_for(handle.outbound.get(), timeout=15.0)
                 yield "data: " + json.dumps(msg) + "\n\n"
+                if msg.get("error") in (_STREAM_REPLACED, _STREAM_UNREGISTERED):
+                    return
             except TimeoutError:
                 yield ": ping\n\n"
     except BaseException:

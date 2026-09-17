@@ -175,15 +175,34 @@ async def test_page_html_works_outside_secure_contexts(store: RegistryStore) -> 
     async with await _client(store) as client:
         resp = await client.get("/dashboard/page-agent")
     html = resp.text
-    # Identity must not depend on randomUUID being present …
-    assert "crypto.getRandomValues" in html
-    assert "if (crypto.randomUUID)" in html
-    # … and must be per tab so two personas can run side by side.
-    assert "sessionStorage.getItem" in html
-    assert "localStorage." not in html
+    # The hub makes the id, so nothing depends on randomUUID …
+    assert "randomUUID" not in html
+    # … and storage is never assumed to work (private windows, blocked data).
+    assert "function storeGet(store, key) { try {" in html
     # Media is only gated, never assumed.
     assert "needs https or localhost" in html
     assert "/page-agent/goodbye" in html
+
+
+async def test_page_html_asks_for_a_name_and_reopens_its_own_agent(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        resp = await client.get("/dashboard/page-agent")
+    html = resp.text
+    # Registration sends a name, never a browser-made id.
+    assert "JSON.stringify({name: name, takeover: !!takeover" in html
+    assert "device_id: deviceId, label" not in html
+    # The tab's own agent is per tab; the last name is a per-browser prefill.
+    assert "sessionStorage, TAB_NAME_KEY" in html
+    assert "localStorage, LAST_NAME_KEY" in html
+    # A reload takes over the tab's own agent; a fresh pick does not.
+    assert "register(tabName, true)" in html
+    assert "openAgent(false)" in html
+    assert "/page-agent/mine" in html
+    # Names are user text: rendered with textContent, never as markup.
+    assert "innerHTML" not in html
+    # A tab that loses its agent stops using the dead token and says so.
+    assert 'msg.error === "replaced"' in html
+    assert "if (resp.status === 401) agentLost(" in html
 
 
 async def test_tts_speaks_with_the_persona_voice(store: RegistryStore, monkeypatch) -> None:
@@ -314,3 +333,37 @@ async def test_register_rejects_an_unusable_name(store: RegistryStore) -> None:
     assert long_name.status_code == 400
     assert control.status_code == 400
     assert not_text.status_code == 400
+
+
+async def test_mine_is_refused_without_a_user_unless_allowed(store: RegistryStore) -> None:
+    app = FastAPI()
+    app.include_router(make_page_agent_router(store, Settings(), {}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/page-agent/mine")
+    assert resp.status_code == 403
+
+
+async def test_mine_lists_named_local_agents_and_whether_they_are_open(
+    store: RegistryStore,
+) -> None:
+    async with await _client(store) as client:
+        kitchen = await client.post("/page-agent/register", json={"name": "kitchen", "tools": []})
+        desk = await client.post("/page-agent/register", json={"name": "desk", "tools": []})
+        # Unnamed per-tab agents cannot be reopened by name, so are not listed.
+        await client.post("/page-agent/register", json={"device_id": "page-tab", "tools": []})
+        handle = mcp_bridge.get_page_agent(desk.json()["device_id"])
+        assert handle is not None
+        handle.connected = True
+        resp = await client.get("/page-agent/mine")
+
+    data = resp.json()
+    assert resp.status_code == 200
+    by_name = {a["name"]: a for a in data["agents"]}
+    assert set(by_name) == {"kitchen", "desk"}
+    assert by_name["desk"]["open"] is True
+    assert by_name["kitchen"]["open"] is False
+    assert by_name["kitchen"]["device_id"] == kitchen.json()["device_id"]
+    assert by_name["kitchen"]["persona"] == "hub-default"
+    assert by_name["kitchen"]["last_seen"].endswith("+00:00")
+    for device_id in (kitchen.json()["device_id"], desk.json()["device_id"], "page-tab"):
+        mcp_bridge.unregister_page_agent(device_id)
