@@ -20,6 +20,7 @@ import hashlib
 import json
 import secrets
 import time
+from datetime import UTC
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -260,6 +261,61 @@ def make_router(
         persona = request.query_params.get("persona", "").strip()
         return HTMLResponse(_PAGE_AGENT_HTML.replace("%%PERSONA%%", json.dumps(persona)))
 
+    def _anonymous_refusal() -> JSONResponse:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "Page agents need a signed-in user. This hub has no "
+                "Cloudflare Access; set server.page_agents_allow_anonymous "
+                "to allow them anyway.",
+            },
+            status_code=403,
+            headers=_CORS,
+        )
+
+    @router.get(
+        "/page-agent/mine",
+        dependencies=[Depends(auth.authenticate), Depends(auth.require_operator)],
+    )
+    async def my_page_agents(request: Request) -> JSONResponse:
+        """List the caller's named page agents, most recently seen first.
+
+        The page offers these to reopen, so a name is picked rather than
+        retyped. Unnamed (per-tab) agents are left out: they cannot be
+        reopened by name. A hub without Access lists the shared "local" ones.
+        """
+        identity = getattr(request.state, "operator_identity", None)
+        if identity is None and not settings.server.page_agents_allow_anonymous:
+            return _anonymous_refusal()
+        owner_subject = identity.subject if identity is not None else None
+        owner_key = owner_subject or _LOCAL_OWNER
+        agents = []
+        for agent, persona in await store.list_agents_with_personas():
+            if agent.kind != AgentKind.PAGE.value or agent.owner_subject != owner_subject:
+                continue
+            if owner_subject is None and agent.owner != _LOCAL_OWNER:
+                continue
+            name = agent.label or ""
+            # Only rows whose id is the named id for this owner are reopenable.
+            if not name or _named_device_id(owner_key, name) != agent.device_id:
+                continue
+            bridge = mcp_bridge.get_page_agent(agent.device_id)
+            agents.append(
+                {
+                    "name": name,
+                    "device_id": agent.device_id,
+                    "persona": persona.name if persona else None,
+                    "open": bool(bridge is not None and bridge.connected),
+                    # SQLite hands back naive datetimes; they are stored as UTC.
+                    "last_seen": (
+                        agent.last_seen.replace(tzinfo=agent.last_seen.tzinfo or UTC).isoformat()
+                        if agent.last_seen
+                        else None
+                    ),
+                }
+            )
+        return JSONResponse({"ok": True, "agents": agents}, headers=_CORS)
+
     @router.options("/page-agent/register")
     async def register_preflight() -> JSONResponse:
         return JSONResponse({}, headers=_CORS)
@@ -281,16 +337,7 @@ def make_router(
             return JSONResponse({"ok": False, "message": "expected object"}, status_code=400)
         identity = getattr(request.state, "operator_identity", None)
         if identity is None and not settings.server.page_agents_allow_anonymous:
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "message": "Page agents need a signed-in user. This hub has no "
-                    "Cloudflare Access; set server.page_agents_allow_anonymous "
-                    "to allow them anyway.",
-                },
-                status_code=403,
-                headers=_CORS,
-            )
+            return _anonymous_refusal()
         owner_subject = identity.subject if identity is not None else None
         owner = identity.email if identity is not None else _LOCAL_OWNER
 
