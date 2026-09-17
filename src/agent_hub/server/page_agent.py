@@ -30,6 +30,7 @@ from loguru import logger
 from agent_hub import skills as server_skills
 from agent_hub import spend
 from agent_hub.config import Settings
+from agent_hub.conversations import conversation_for_turn, effective_settings
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.registry.models import AgentKind
 from agent_hub.registry.page_identity import (
@@ -684,12 +685,21 @@ def make_router(
             await websocket.close(code=1011, reason="VAD model unavailable")
             return
 
-        conversation: list[dict[str, str]] = await store.load_history(
-            device_id, limit=(persona.memory_window or 20) * 2
+        # Resume the open conversation, if the idle gap hasn't closed it; a
+        # connection alone doesn't start one.
+        settings = effective_settings(persona, await store.get_agent(device_id))
+        window = settings.memory_window * 2
+        open_conversation = await store.open_conversation(
+            device_id, persona=persona, idle_minutes=settings.idle_minutes, create=False
+        )
+        conversation_id: int | None = open_conversation.id if open_conversation else None
+        conversation: list[dict[str, str]] = (
+            await store.load_history(device_id, limit=window, conversation_id=conversation_id)
+            if conversation_id is not None
+            else []
         )
         pipeline_lock = asyncio.Lock()
         wake_word = "computer"
-        window = (persona.memory_window or 20) * 2
         # "hub" streams the persona's TTS; "browser" and "off" skip synthesis
         # (the page speaks the text itself, or stays silent).
         voice_mode = "hub"
@@ -746,6 +756,13 @@ def make_router(
                 )
                 await websocket.send_text(json.dumps({"type": "thinking"}))
                 session_state.set_pipeline_status(device_id, "thinking", transcript)
+                nonlocal conversation_id
+                current = await conversation_for_turn(store, device_id, persona, settings)
+                if current.id != conversation_id:
+                    conversation_id = current.id
+                    conversation[:] = await store.load_history(
+                        device_id, limit=window, conversation_id=current.id
+                    )
                 llm = get_llm(
                     persona.llm_provider, config, model_override=persona.llm_model or None
                 )
@@ -780,8 +797,12 @@ def make_router(
                 conversation.append({"role": "user", "content": transcript})
                 conversation.append({"role": "assistant", "content": reply})
                 del conversation[:-window]
-                await store.append_history(device_id, "user", transcript)
-                await store.append_history(device_id, "assistant", reply)
+                await store.append_history(
+                    device_id, "user", transcript, conversation_id=current.id
+                )
+                await store.append_history(
+                    device_id, "assistant", reply, conversation_id=current.id
+                )
 
                 if voice_mode != "hub":
                     # The page voices (or silences) the reply itself.

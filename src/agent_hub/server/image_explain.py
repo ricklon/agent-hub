@@ -142,7 +142,18 @@ async def _complete_transcript_photo(
         caption = ""
     session_id = _session_state.current_transcription_session(device_id)
     entry = f"[image:{path}] {caption}".rstrip()
-    await store.append_history(device_id, "image", entry, session_id=session_id)
+    conversation_id = (
+        (
+            await store.transcript_conversation(
+                device_id, session_id, await store.get_persona_for_device(device_id)
+            )
+        ).id
+        if session_id
+        else None
+    )
+    await store.append_history(
+        device_id, "image", entry, session_id=session_id, conversation_id=conversation_id
+    )
     logger.bind(tag=_TAG).info(f"Captioned transcript photo for {device_id!r}: {caption[:120]!r}")
 
     # Push the caption to the device over its voice WS, if connected. The
