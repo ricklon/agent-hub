@@ -499,6 +499,31 @@ def make_router(
             return JSONResponse({"ok": False, "message": "invalid token"}, status_code=401)
         return JSONResponse({"ok": True, "server_time": int(time.time() * 1000)}, headers=_CORS)
 
+    @router.post("/page-agent/conversation/new")
+    async def new_conversation(request: Request) -> JSONResponse:
+        """End this page's open conversation; the next turn starts a fresh one.
+
+        Token-authenticated like the heartbeat, so one page cannot reset
+        another's conversation.
+        """
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            return JSONResponse({"ok": False, "message": "expected object"}, status_code=400)
+        device_id = str(payload.get("device_id") or "").strip()
+        token = str(payload.get("token") or "").strip()
+        if not device_id or not await store.validate_websocket_token(device_id, token):
+            return JSONResponse({"ok": False, "message": "invalid token"}, status_code=401)
+        ended = await store.end_open_conversations(device_id)
+        logger.bind(tag=_TAG).info(f"Page agent {device_id!r} started a new conversation")
+        return JSONResponse({"ok": True, "ended": ended}, headers=_CORS)
+
+    @router.options("/page-agent/conversation/new")
+    async def new_conversation_preflight() -> JSONResponse:
+        return JSONResponse({}, headers=_CORS)
+
     @router.options("/page-agent/heartbeat")
     async def heartbeat_preflight() -> JSONResponse:
         return JSONResponse({}, headers=_CORS)

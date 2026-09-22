@@ -25,8 +25,8 @@ async def test_transcriber_device_detail_relabels_and_hides_assistant_actions(
         resp = await c.get("/dashboard/agents/AA:BB:CC:DD:EE:01")
 
     assert resp.status_code == 200
-    assert "<h3>Transcript" in resp.text
-    assert "transcript.txt" in resp.text
+    assert "<h3>Recordings" in resp.text
+    assert "New recording" in resp.text
     assert "Send message to device" not in resp.text
     assert "Inject utterance" not in resp.text
 
@@ -38,9 +38,10 @@ async def test_normal_device_detail_is_unchanged(store: RegistryStore) -> None:
         resp = await c.get("/dashboard/agents/AA:BB:CC:DD:EE:02")
 
     assert resp.status_code == 200
-    assert "Conversation history" in resp.text
+    assert "<h3>Conversations" in resp.text
+    assert "New conversation" in resp.text
     assert "Send message to device" in resp.text
-    assert "transcript.txt" not in resp.text
+    assert "recording" not in resp.text
 
 
 async def test_transcript_download_is_plain_text_with_the_logged_lines(
