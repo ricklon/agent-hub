@@ -303,9 +303,23 @@ document.getElementById("switchagent").onclick = () => {
 };
 
 async function start() {
+  const tabName = storeGet(sessionStorage, TAB_NAME_KEY);
+  // Launch links from the dashboard name the agent (?name=), so the tab opens
+  // it straight away. Not a takeover: if it is already open elsewhere, the
+  // form says so and offers Take over.
+  const launchName = (new URLSearchParams(location.search).get("name") || "").trim();
+  if (launchName && launchName !== tabName) {
+    document.getElementById("agentName").value = launchName;
+    document.getElementById("connect").hidden = false;
+    setStatus("opening " + launchName + "…");
+    await openAgent(false);
+    if (token) return;
+    setStatus("choose an agent to open");
+    loadMyAgents();
+    return;
+  }
   // A tab reopening its own agent after a reload: the stream it is replacing
   // was this tab's, so taking it over is always right.
-  const tabName = storeGet(sessionStorage, TAB_NAME_KEY);
   if (tabName) {
     setStatus("reopening " + tabName + "…");
     const result = await register(tabName, true);

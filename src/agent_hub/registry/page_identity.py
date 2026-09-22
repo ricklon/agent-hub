@@ -9,6 +9,7 @@ compares, rather than trusting a flag the browser could have set.
 from __future__ import annotations
 
 import hashlib
+from urllib.parse import quote
 
 from agent_hub.registry.models import Agent, AgentKind
 
@@ -47,3 +48,21 @@ def is_named_page_agent(agent: Agent) -> bool:
     else:
         return False
     return agent.device_id == named_page_device_id(owner_key, agent.label)
+
+
+def page_agent_launch_url(agent: Agent, viewer_subject: str) -> str | None:
+    """Where the viewer can open this named page agent in a tab, or None.
+
+    Opening a name registers it as whoever is signed in, so only the owner
+    gets this agent back; anyone else would make their own agent of that name.
+
+    Args:
+        agent: The agent to open.
+        viewer_subject: The viewer's verified Access subject, or "" without Access.
+    """
+    if not is_named_page_agent(agent):
+        return None
+    owner_key = agent.owner_subject or LOCAL_OWNER
+    if owner_key != (viewer_subject or LOCAL_OWNER):
+        return None
+    return "/dashboard/page-agent?name=" + quote(agent.label or "", safe="")
