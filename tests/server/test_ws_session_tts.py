@@ -82,3 +82,43 @@ async def test_speak_falls_back_to_default_voice_on_invalid_persona_voice(monkey
     assert websocket.binary_messages == [b"opus-packet"]
     assert '"state": "start"' in websocket.text_messages[0]
     assert '"state": "stop"' in websocket.text_messages[-1]
+
+
+async def test_speak_resolves_updated_persona_voice_without_reconnect(monkeypatch) -> None:
+    """An established device session uses the same current voice as a page preview."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from agent_hub.server import session_state
+    from agent_hub.server.persona_voice import VOICE_TEST_TEXT
+
+    tts = _FakeTTS()
+    monkeypatch.setattr(ws_session, "get_tts", lambda provider, config: tts)
+    monkeypatch.setattr(ws_session, "OpusEncoder", _FakeOpusEncoder)
+    monkeypatch.setattr(ws_session, "AudioRateController", _FakeRateController)
+    old = Persona(name="voice", tts_provider="edge", tts_voice="old")
+    current = Persona(name="voice", tts_provider="edge", tts_voice="en-US-JennyNeural")
+    websocket = _FakeWebSocket()
+    websocket.state = SimpleNamespace(voice_persona=AsyncMock(return_value=current))
+    websocket.headers = {"device-id": "voice-parity-test"}
+    session_state.begin_response("voice-parity-test")
+    await ws_session._speak(websocket, VOICE_TEST_TEXT, old, {}, "test-session")
+    assert tts.voices == ["en-US-JennyNeural"]
+    assert session_state.get_state("voice-parity-test").first_audio_ms is not None
+    assert session_state.get_state("voice-parity-test").voice_notice == ""
+
+
+async def test_invalid_voice_fallback_is_visible_for_device_and_page(monkeypatch) -> None:
+    """Both consumers share the same fallback and a human-readable notice."""
+    from agent_hub.server import session_state
+    from agent_hub.server.persona_voice import synthesize_persona
+
+    persona = Persona(name="voice", tts_provider="edge", tts_voice="en-GB-RyanNeutral")
+    tts = _FakeTTS()
+    pcm, _ = await synthesize_persona(tts, "Hello", persona, "fallback-test")
+    assert pcm
+    assert tts.voices == ["en-GB-RyanNeutral", None]
+    assert "provider default" in session_state.get_state("fallback-test").voice_notice
+    persona.tts_voice = "en-US-JennyNeural"
+    await synthesize_persona(tts, "Hello", persona, "fallback-test")
+    assert session_state.get_state("fallback-test").voice_notice == ""

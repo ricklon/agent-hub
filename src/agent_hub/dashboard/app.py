@@ -27,7 +27,10 @@ from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.agent_cards import AGENT_CARD_CSS, render_agent_cards
 from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
+from agent_hub.dashboard.conversation import make_conversation_router
+from agent_hub.dashboard.conversation_ui import CONVERSATION_CSS, CONVERSATION_SCRIPT
 from agent_hub.dashboard.overview import render_fleet_overview
+from agent_hub.dashboard.styles import DASHBOARD_CSS
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import ModelCheck, check_model
 from agent_hub.registry.models import Agent, AgentKind, OperatorRole, Persona
@@ -38,157 +41,8 @@ from agent_hub.server.agent_turn import TurnError, call_one_tool, run_turn
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
-_CSS = """\
-body{font-family:monospace;padding:2rem;background:#0d1117;color:#c9d1d9;margin:0}
-h1{color:#58a6ff;margin-bottom:0.25rem}
-header{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}
-.operator{display:flex;align-items:center;gap:0.6rem;color:#8b949e;font-size:0.8rem}
-.operator-email{color:#c9d1d9}
-.operator-role{border:1px solid #30363d;border-radius:999px;padding:0.15rem 0.45rem}
-.operator a{color:#58a6ff;text-decoration:none}
-.operator a:hover{text-decoration:underline}
-nav{display:flex;flex-wrap:wrap;gap:0.5rem 1.5rem;margin-bottom:2rem}
-nav a{color:#58a6ff;text-decoration:none}
-nav a:hover{text-decoration:underline}
-section{margin-bottom:2rem}
-table{border-collapse:collapse;width:100%}
-th,td{border:1px solid #30363d;padding:0.5rem 0.75rem;text-align:left;vertical-align:top}
-th{background:#161b22;white-space:nowrap}
-tr:hover td{background:#161b22}
-.badge{font-size:0.68rem;padding:0.1rem 0.35rem;border-radius:3px;
-  margin:0.1rem 0.1rem 0 0;display:inline-block}
-.badge-multi{background:#1f4a2e;color:#3fb950}
-.badge-free{background:#2d1f6e;color:#a5a0ff}
-.owner-filter{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.5rem 0;
-  font-size:.85rem;color:#8b949e}
-.owner-chip{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:999px;
-  padding:.15rem .7rem;font-size:.8rem;cursor:pointer}
-.owner-chip:hover{background:#30363d}
-.owner-chip[aria-pressed="true"]{background:#1f6feb;border-color:#1f6feb;color:#fff}
-.owner-group th{text-align:left;background:#161b22;color:#58a6ff;padding-top:.7rem}
-.owner-chip.selected{background:#1f6feb;border-color:#1f6feb;color:#fff}
-.tool-console{border:1px solid #30363d;border-radius:6px;padding:.6rem;margin:.4rem 0;
-  background:#0d1117}
-.tool-console summary{cursor:pointer;color:#58a6ff}
-.tool-console input[type=text]{width:100%;box-sizing:border-box;margin:.35rem 0}
-.tool-result{white-space:pre-wrap;background:#010409;border:1px solid #30363d;border-radius:4px;
-  padding:.4rem;margin-top:.35rem;font-size:.85rem;max-height:14rem;overflow:auto}
-.badge-tool{background:#1a2a3a;color:#79c0ff}
-.badge-skill{background:#2a1a3a;color:#d2a8ff}
-.badge-kind{background:#3a2a1a;color:#f0883e}
-.status-active{color:#3fb950}
-.status-idle{color:#d29922}
-.status-degraded{color:#d29922}
-.status-offline{color:#6e7681}
-.status-discovered{color:#58a6ff}
-.lat{font-size:0.75rem;color:#8b949e}
-.lat span{color:#c9d1d9}
-.model{font-size:0.75rem;color:#8b949e;display:block;margin-top:0.15rem}
-input,select{background:#161b22;color:#c9d1d9;border:1px solid #30363d;
-  padding:0.4rem 0.6rem;border-radius:4px;margin-right:0.5rem}
-button{background:#238636;color:#fff;border:none;padding:0.4rem 0.9rem;
-  border-radius:4px;cursor:pointer}
-button:hover{background:#2ea043}
-button:disabled{cursor:wait;opacity:0.65}
-button.selected{background:#1f4a2e;color:#3fb950;border:1px solid #3fb950}
-.msg{color:#3fb950;margin-top:0.5rem}
-.controls{display:flex;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem}
-:where(a,button,input,select,textarea):focus-visible{outline:3px solid #58a6ff;
-  outline-offset:2px}
-.htmx-indicator{opacity:0}
-#global-progress{position:fixed;z-index:100;top:0;left:0;right:0;padding:0.35rem 1rem;
-  text-align:center;background:#1f6feb;color:#fff;pointer-events:none;
-  opacity:0;transition:opacity 120ms linear}
-/* Show-delay: the dashboard polls a few regions every 1-5s, and each poll
-   toggles this global indicator. A 600ms delay before it fades in means those
-   quick requests finish first and never flash the banner, while a real
-   navigation or a slow action still surfaces it. */
-.htmx-request#global-progress{opacity:1;transition-delay:600ms}
-@media (prefers-reduced-motion:reduce){#global-progress{transition:none}}
-#global-feedback{position:fixed;z-index:101;right:1rem;bottom:1rem;max-width:28rem;
-  border:1px solid #f85149;border-radius:6px;padding:0.75rem 1rem;background:#2d1117;
-  color:#ff7b72;box-shadow:0 4px 20px #010409}
-#global-feedback:empty{display:none}
-form.htmx-request{opacity:0.78}
-"""
-
-_CSS_EXTRA = """\
-textarea{background:#161b22;color:#c9d1d9;border:1px solid #30363d;padding:0.4rem 0.6rem;
-  border-radius:4px;width:100%;box-sizing:border-box;font-family:monospace;resize:vertical}
-label{display:block;color:#8b949e;font-size:0.8rem;margin-top:0.75rem;
-  margin-bottom:0.2rem}
-.field-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-.form-section{background:#161b22;border:1px solid #30363d;border-radius:6px;
-  padding:1.25rem;margin-bottom:1.5rem}
-.form-section h3{margin:0 0 1rem;color:#58a6ff}
-input[type=number]{width:6rem}
-.doc-page{max-width:980px;line-height:1.55}
-.doc-page h2{color:#58a6ff;margin-bottom:0.35rem}
-.doc-page h3{color:#c9d1d9;margin:1.25rem 0 0.4rem}
-.doc-page p{color:#c9d1d9}
-.doc-page ul{padding-left:1.4rem}
-.doc-page li{margin:0.35rem 0}
-.doc-muted{color:#8b949e}
-.doc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem}
-.doc-card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem}
-.doc-card h3{margin-top:0;color:#58a6ff}
-.doc-flow{background:#010409;border:1px solid #30363d;border-radius:6px;
-  padding:1rem;white-space:pre-wrap;overflow:auto}
-.spend-ok{color:#3fb950}
-.spend-warn{color:#d29922}
-.spend-over{color:#f85149}
-.audit-success{color:#3fb950}
-.audit-failure{color:#f85149}
-.section-heading{display:flex;justify-content:space-between;align-items:center;gap:1rem}
-.section-heading h2,.section-heading p{margin:0 0 0.35rem}
-.action-link{display:inline-block;color:#58a6ff;border:1px solid #30363d;border-radius:4px;
-  padding:0.4rem 0.7rem;text-decoration:none;white-space:nowrap}
-.action-link:hover{border-color:#58a6ff;background:#161b22;text-decoration:none}
-.action-link.primary{color:#fff;background:#238636;border-color:#238636}
-.overview-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:0.75rem;
-  margin-top:0.75rem}
-.overview-card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem}
-.overview-value{font-size:1.8rem;display:block;color:#c9d1d9}
-.overview-label{font-size:0.75rem;color:#8b949e}
-.overview-good .overview-value{color:#3fb950}
-.overview-warn .overview-value{color:#d29922}
-.overview-muted .overview-value{color:#8b949e}
-.attention-panel{border:1px solid #5a4217;background:#17130b;border-radius:6px;padding:1rem}
-.attention-count{font-size:0.75rem;background:#5a4217;color:#f2cc60;border-radius:999px;
-  padding:0.15rem 0.45rem;vertical-align:middle}
-.attention-list{display:grid;gap:0.6rem;margin-top:0.75rem}
-.attention-item{display:flex;justify-content:space-between;align-items:center;gap:1rem;
-  background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:0.75rem}
-.attention-status{font-size:0.72rem;margin-left:0.5rem}
-.attention-detail{font-size:0.75rem;color:#8b949e;margin-top:0.25rem}
-.attention-clear{display:flex;gap:0.75rem;align-items:center;border:1px solid #1f4a2e;
-  background:#0e1711;border-radius:6px;padding:0.8rem 1rem;color:#3fb950}
-.attention-clear span{color:#8b949e;font-size:0.8rem}
-.empty-state{text-align:center;max-width:650px;margin:4rem auto;padding:2rem;
-  border:1px dashed #30363d;border-radius:8px;background:#161b22}
-.empty-state h2{color:#58a6ff}.empty-state p{line-height:1.6;color:#8b949e}
-.empty-icon{font-size:2.5rem;color:#58a6ff}.empty-actions{display:flex;gap:0.75rem;
-  justify-content:center;margin-top:1.25rem}
-@media (max-width:760px){
-  body{padding:1rem}
-  header{align-items:flex-start;flex-direction:column}
-  .operator{align-items:flex-start;flex-wrap:wrap}
-  nav{gap:0.75rem 1.25rem;margin:1rem 0 1.5rem}
-  .overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .field-row{grid-template-columns:1fr}
-  .attention-item,.section-heading{align-items:flex-start;flex-direction:column}
-  .empty-actions{align-items:stretch;flex-direction:column}
-  table{display:block;max-width:100%;overflow-x:auto}
-  input:not([type=checkbox]),select,textarea{box-sizing:border-box;max-width:100%;width:100%}
-  form[style*="display:flex"],form[style*="display:inline-flex"]{align-items:stretch!important;
-    flex-direction:column}
-  button,.action-link{min-height:44px}
-}
-@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
-"""
-
 _PAGE = """\
-<!doctype html><html><head>
+<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent-hub</title>
@@ -214,7 +68,7 @@ document.addEventListener("htmx:beforeSwap", (event) => {{
   Working…
 </div>
 <div id="global-feedback" role="alert" aria-live="assertive"></div>
-<header><h1>agent-hub</h1>{operator}</header>
+<header><h1>Agent Hub</h1>{operator}</header>
 <nav>
   <a href="/dashboard/">Agents</a>
   <a href="/dashboard/personas">Personas</a>
@@ -224,7 +78,9 @@ document.addEventListener("htmx:beforeSwap", (event) => {{
   <a href="/dashboard/docs">Docs</a>
 </nav>
 {body}
+<div id="conversation-host"></div>
 <script>
+{conversation_script}
 document.body.addEventListener("htmx:beforeRequest", function(event) {{
   const source = event.detail.elt;
   source.setAttribute("aria-busy", "true");
@@ -291,6 +147,7 @@ def make_router(
             Depends(auth.require_write),
         ]
     )
+    router.include_router(make_conversation_router(store, config))
     api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
     # The model a persona with no model of its own runs.
     default_model: str = str(config.get("llm", {}).get("openai", {}).get("model", "") or "")
@@ -332,7 +189,7 @@ def make_router(
 
     # ── Agents ───────────────────────────────────────────────────────────────
 
-    _full_css = _CSS + _CSS_EXTRA + AGENT_CARD_CSS
+    _full_css = DASHBOARD_CSS + AGENT_CARD_CSS + CONVERSATION_CSS
 
     def _render_page(request: Request, body: str) -> str:
         identity = getattr(request.state, "operator_identity", None)
@@ -344,7 +201,7 @@ def make_router(
             else ""
         )
         operator_nav = (
-            '<a href="/dashboard/page-agent">Page Agent</a>'
+            '<a href="/dashboard/page-agent">Launch agent</a>'
             if role in {OperatorRole.ADMIN.value, OperatorRole.OPERATOR.value}
             else ""
         )
@@ -361,6 +218,7 @@ def make_router(
             operator_nav=operator_nav,
             free_badge=free_badge,
             body=body,
+            conversation_script=CONVERSATION_SCRIPT,
         )
 
     @router.get("/dashboard/", response_class=HTMLResponse)
@@ -376,7 +234,19 @@ def make_router(
             mine=bool(mine),
             view=view,
         )
-        body = await _spend_panel() + overview + await _cleanup_panel()
+        role = str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
+        launch = (
+            '<a class="action-link primary" href="/dashboard/page-agent" '
+            'target="_blank" rel="noopener">+ Launch browser agent</a>'
+            if role != OperatorRole.VIEWER.value
+            else ""
+        )
+        intro = (
+            '<section class="workspace-intro"><div><h2>Your agent workspace</h2>'
+            "<p>One fleet for devices, browser agents, and connected services. "
+            "Each agent runs with its own persona.</p></div>" + launch + "</section>"
+        )
+        body = intro + overview + await _spend_panel() + await _cleanup_panel()
         return HTMLResponse(_render_page(request, body))
 
     async def _cleanup_panel() -> str:

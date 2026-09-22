@@ -50,6 +50,7 @@ from agent_hub.server.audio import (
 )
 from agent_hub.server.history import history_for_llm as _history_for_llm
 from agent_hub.server.mcp_client import MCPClient
+from agent_hub.server.persona_voice import synthesize_persona
 from agent_hub.server.protocol import SERVER_TTS_AUDIO_PARAMS, ClientHello, ServerWelcome
 from agent_hub.spend import SpendLimitExceeded
 
@@ -180,17 +181,17 @@ async def _speak_segment(
     text = text.strip()
     if not text:
         return
+    resolver = getattr(getattr(websocket, "state", None), "voice_persona", None)
+    if resolver is not None:
+        current = await resolver()
+        if current is not None:
+            persona = current
     tts = get_tts(persona.tts_provider, config)
-    try:
-        pcm_bytes, tts_rate = await tts.synthesize_pcm(text, voice=persona.tts_voice)
-    except ValueError as exc:
-        if not persona.tts_voice:
-            raise
-        logger.warning(
-            f"Invalid TTS voice {persona.tts_voice!r} for persona {persona.name!r}; "
-            f"falling back to provider default: {exc}"
-        )
-        pcm_bytes, tts_rate = await tts.synthesize_pcm(text, voice=None)
+    device_id = str(
+        getattr(websocket, "headers", {}).get("device-id")
+        or getattr(websocket, "query_params", {}).get("device-id", "")
+    )
+    pcm_bytes, tts_rate = await synthesize_persona(tts, text, persona, device_id)
     target_rate = SERVER_TTS_AUDIO_PARAMS.sample_rate
     if tts_rate != target_rate:
         pcm_bytes = await pcm_resample(pcm_bytes, tts_rate, target_rate)
@@ -230,6 +231,7 @@ async def _speak_segment(
     for i, packet in enumerate(packets):
         if i < AudioRateController.PRE_BUFFER_COUNT:
             await websocket.send_bytes(packet)
+            session_state.mark_first_audio(device_id)
         else:
             rate_ctrl.add_audio(packet)
 
@@ -656,6 +658,7 @@ async def _run_voice_turn(
     supports_emoji: bool = False,
 ) -> None:
     """Run one ASR → LLM → TTS cycle."""
+    session_state.begin_response(device_id)
     # 1 — decode Opus frames to WAV for Whisper
     decoder = OpusDecoder(audio_params_sample_rate, audio_params_frame_duration)
     pcm_chunks = [decoder.decode(f) for f in opus_frames]
@@ -820,6 +823,7 @@ async def _run_text_turn(
     """Run one LLM → TTS cycle from an injected text utterance, bypassing ASR.
     Returns the LLM reply text (empty string if no reply).
     """
+    session_state.begin_response(device_id)
     logger.bind(tag=_TAG).info(f"{device_id!r} injected utterance: {transcript!r}")
     await websocket.send_text(
         json.dumps(
@@ -984,6 +988,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             if mcp_client and mcp_client.ready and mcp_client.tools:
                 persona = await store.find_best_persona_for_tools(list(mcp_client.tools.keys()))
                 if persona:
+                    await store.assign_persona(device_id, persona.name)
                     logger.bind(tag=_TAG).info(
                         f"{device_id!r} matched persona {persona.name!r} "
                         f"via tools {list(mcp_client.tools.keys())}"
@@ -997,6 +1002,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 await websocket.close(code=1008, reason="device not registered")
                 return
 
+            websocket.state.voice_persona = lambda: store.get_persona_for_device(device_id)
             await store.set_agent_status(device_id, AgentStatus.ACTIVE)
 
             # Transcription mode: ASR-only, no LLM/TTS. Turned on either by the
@@ -1100,9 +1106,20 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     return
                 active_pipeline = asyncio.create_task(_dispatch_pipeline(frames))
 
+            async def _speak_direct(text: str) -> None:
+                if pipeline_lock.locked():
+                    raise RuntimeError("Agent is busy. Wait for the current reply.")
+                async with pipeline_lock:
+                    session_state.begin_response(device_id)
+                    session_state.set_pipeline_status(device_id, "speaking", text)
+                    try:
+                        await _speak(websocket, text, persona, config, session_id)
+                    finally:
+                        session_state.set_pipeline_status(device_id, "listening")
+
             session_state.register_session(
                 device_id,
-                speak=lambda text: _speak(websocket, text, persona, config, session_id),
+                speak=_speak_direct,
                 send_json=lambda payload: websocket.send_text(json.dumps(payload)),
             )
 

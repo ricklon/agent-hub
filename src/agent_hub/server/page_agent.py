@@ -48,6 +48,7 @@ from agent_hub.server.agent_turn import (
     run_turn,
 )
 from agent_hub.server.history import history_for_llm
+from agent_hub.server.persona_voice import synthesize_persona
 
 __all__ = [
     "call_linked_tool",
@@ -617,13 +618,17 @@ def make_router(
         session_state.set_pipeline_status(device_id, "speaking", text)
         try:
             provider = get_tts(persona.tts_provider, config)
-            pcm, rate = await provider.synthesize_pcm(text, voice=persona.tts_voice)
+            pcm, rate = await synthesize_persona(provider, text, persona, device_id)
         except Exception as exc:
             logger.bind(tag=_TAG).error(f"Page agent TTS failed for {device_id!r}: {exc}")
             return JSONResponse({"ok": False, "message": f"TTS error: {exc}"}, status_code=502)
         finally:
             session_state.set_pipeline_status(device_id, "idle")
-        return Response(content=pcm_to_wav(pcm, rate), media_type="audio/wav", headers=_CORS)
+        return Response(
+            content=pcm_to_wav(pcm, rate),
+            media_type="audio/wav",
+            headers={**_CORS, "X-Voice-Notice": session_state.get_state(device_id).voice_notice},
+        )
 
     # ── Voice WebSocket: browser mic → hub VAD + ASR + LLM + TTS ──────────
 
@@ -768,6 +773,9 @@ def make_router(
                 reply = (reply or "").strip()
                 if not reply:
                     session_state.set_pipeline_status(device_id, "listening")
+                    await websocket.send_text(
+                        json.dumps({"type": "error", "message": "The agent returned no reply."})
+                    )
                     return
                 conversation.append({"role": "user", "content": transcript})
                 conversation.append({"role": "assistant", "content": reply})
@@ -791,13 +799,21 @@ def make_router(
 
                 # TTS: synthesize and stream PCM back
                 session_state.set_pipeline_status(device_id, "speaking", reply)
-                tts = get_tts(persona.tts_provider, config)
+                voice_persona = await store.get_persona_for_device(device_id) or persona
+                tts = get_tts(voice_persona.tts_provider, config)
                 tts_started = time.monotonic()
                 try:
-                    pcm_bytes, tts_rate = await tts.synthesize_pcm(reply, voice=persona.tts_voice)
+                    pcm_bytes, tts_rate = await synthesize_persona(
+                        tts, reply, voice_persona, device_id
+                    )
                 except Exception as exc:
                     session_state.set_pipeline_status(device_id, "listening")
                     logger.bind(tag=_TAG).error(f"Page voice TTS error: {exc}")
+                    await websocket.send_text(
+                        json.dumps(
+                            {"type": "error", "message": "Voice synthesis failed. Try again."}
+                        )
+                    )
                     return
                 tts_ms = int((time.monotonic() - tts_started) * 1000)
                 session_state.record_turn(device_id, asr_ms, llm_ms, tts_ms)
@@ -813,6 +829,7 @@ def make_router(
                             "type": "tts",
                             "state": "start",
                             "text": reply,
+                            "voice_notice": session_state.get_state(device_id).voice_notice,
                         }
                     )
                 )
@@ -820,8 +837,11 @@ def make_router(
                 chunk_size = 1920
                 for i in range(0, len(pcm_bytes), chunk_size):
                     await websocket.send_bytes(pcm_bytes[i : i + chunk_size])
+                    session_state.mark_first_audio(device_id)
                 await websocket.send_text(json.dumps({"type": "tts", "state": "stop"}))
-                session_state.set_pipeline_status(device_id, "listening")
+                # Delivery is complete, but browser playback may still be running.
+                # Let its heartbeat report speaking/listening until the next turn.
+                session_state.set_pipeline_status(device_id, "idle")
                 logger.bind(tag=_TAG).info(
                     f"Page voice {device_id!r}: {transcript!r} → {reply[:60]!r}"
                 )
@@ -840,6 +860,7 @@ def make_router(
                         continue  # drop audio while thinking/speaking
                     if vad.push(pcm):
                         segment_ms = vad.segment_ms
+                        session_state.begin_response(device_id)
                         pcm_all = vad.take_pcm()
                         wav_bytes = pcm_to_wav(pcm_all, 16000)
                         asr = get_asr(persona.asr_provider, config)

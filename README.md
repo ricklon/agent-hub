@@ -185,6 +185,35 @@ setup. Dashboard actions show a shared working state, report request failures,
 confirm disruptive operations, and adapt the controls and tables for small
 screens and keyboard navigation.
 
+Cards are the default view for every agent runtime: devices, browser tabs,
+voice services, MCP, and AG2. Cards share owner grouping, persona, health,
+capabilities, and interaction links; **Diagnostics** opens the dense table.
+Operators can use **Launch browser agent** to open a new instance in its own
+tab. Completed voice turns show ASR/LLM/TTS stage timings on their card.
+Device streaming stages overlap, so their sum is not response latency.
+
+Open **Interact** (or **Conversation** on a disconnected agent) to keep the fleet
+visible alongside its status, recent transcript, and message controls. Device
+messages run through the xiaozhi voice session and replies play on its onboard
+speaker. Browser speech plays in the selected agent's tab using its persona
+voice. Other MCP agents only get a speech option when they advertise a `.speak`
+tool accepting `text` with no other required arguments; their voice remains
+externally managed.
+
+**Test in this browser** previews the selected persona locally. **Test on Device
+speaker** or **Test on Agent browser tab** plays the same sentence on the selected
+agent. Browser tests never silently substitute browser-built-in speech. Invalid
+persona voice overrides fall back to the provider default with a visible notice,
+consistently on devices and pages. Reload existing agent tabs once after this
+update to advertise support for explicit persona voice routing.
+
+The panel reports **first audio sent**, measured from captured utterance processing
+(or injected text) to the first outgoing audio packet, which may be a thinking cue.
+It excludes silence detection, network transit, and physical speaker buffering;
+it is not a measurement of first audible sound. Use a real device/browser session
+to qualify end-to-end latency. Voice changes are resolved at speech time on an
+established device connection; other persona changes still require reconnection.
+
 Three ports are used, and each serves only its own routes:
 
 | Port | Purpose |
@@ -292,6 +321,16 @@ Cloudflare Access user, who becomes its owner. A page that registers with a
 its history). A hub without Access refuses page agents unless
 `server.page_agents_allow_anonymous` is on. See
 `docs/page-agent-ownership-plan.md`.
+
+The browser workspace puts discussion and hands-free voice first; camera and
+speaker tools are under **Camera and speaker controls**. Microphone/camera need
+HTTPS or localhost. Clear the wake word for open mic. Incoming voice chunks
+play sequentially, and the speaking indicator stays active until playback ends.
+Microphone audio is withheld during replies to avoid feeding the reply back into ASR.
+For local JavaScript playback/cancellation regressions, run
+`node tests/browser/page_voice.cjs`; `just test` also runs this harness when
+Node is installed. These use media doubles; live microphone and provider
+latency still require a real browser session.
 
 ## Architecture (target)
 

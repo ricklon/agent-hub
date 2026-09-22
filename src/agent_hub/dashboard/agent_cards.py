@@ -12,41 +12,41 @@ from agent_hub.server import mcp_bridge, session_state
 AGENT_CARD_CSS = """\
 .fleet-toolbar{display:flex;justify-content:space-between;align-items:flex-end;gap:1rem;
   flex-wrap:wrap;margin:.5rem 0 .9rem}.view-switch{display:flex;gap:.35rem}
-.view-switch a{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;
-  padding:.4rem .7rem;text-decoration:none}.view-switch a[aria-current=page]{background:#1f6feb;
-  border-color:#1f6feb;color:#fff}.agent-owner-group{margin:0 0 1.5rem}
+.view-switch a{background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px;
+  padding:.4rem .7rem;text-decoration:none}.view-switch a[aria-current=page]{background:#0369a1;
+  border-color:#0369a1;color:#fff}.agent-owner-group{margin:0 0 1.5rem}
 .agent-owner-heading{display:flex;align-items:baseline;gap:.55rem;margin-bottom:.55rem}
-.agent-owner-heading h3{margin:0;color:#c9d1d9}
-.agent-owner-heading span{color:#8b949e;font-size:.75rem}
+.agent-owner-heading h3{margin:0;color:#e2e8f0}
+.agent-owner-heading span{color:#94a3b8;font-size:.75rem}
 .agent-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:.85rem}
-.agent-card{position:relative;background:#161b22;border:1px solid #30363d;border-left-width:4px;
+.agent-card{position:relative;background:#0f172a;border:1px solid #334155;border-left-width:4px;
   border-radius:8px;padding:1rem;min-width:0}.agent-card.health-healthy{border-left-color:#3fb950}
-.agent-card.health-degraded{border-left-color:#d29922}.agent-card.health-offline{border-left-color:#6e7681}
+.agent-card.health-degraded{border-left-color:#d29922}.agent-card.health-offline{border-left-color:#94a3b8}
 .agent-card-top{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.7rem;
   align-items:center}
 .agent-kind-icon{display:grid;place-items:center;width:2.25rem;height:2.25rem;border-radius:50%;
-  color:#79c0ff;background:#0d1117;border:1px solid #30363d}.agent-kind-icon svg{width:1.25rem;
+  color:#79c0ff;background:#020617;border:1px solid #334155}.agent-kind-icon svg{width:1.25rem;
   height:1.25rem;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;
   stroke-linejoin:round}.agent-card-title h4{margin:0;font-size:1rem;overflow-wrap:anywhere}
-.agent-card-title a{color:#58a6ff;text-decoration:none}
+.agent-card-title a{color:#38bdf8;text-decoration:none}
 .agent-card-title a:hover{text-decoration:underline}
-.agent-device-id,.agent-model{display:block;color:#8b949e;font-size:.72rem;margin-top:.15rem;
+.agent-device-id,.agent-model{display:block;color:#94a3b8;font-size:.72rem;margin-top:.15rem;
   overflow-wrap:anywhere}.agent-health-dot{width:.65rem;height:.65rem;border-radius:50%;
-  background:#6e7681;box-shadow:0 0 0 3px #21262d}
+  background:#94a3b8;box-shadow:0 0 0 3px #1e293b}
 .health-healthy .agent-health-dot{background:#3fb950}
 .health-degraded .agent-health-dot{background:#d29922}
 .agent-state-row{display:flex;align-items:center;
   gap:.5rem;flex-wrap:wrap;margin:.85rem 0 .25rem;font-size:.78rem}.agent-transport,.agent-muted{
-  color:#8b949e;font-size:.75rem}.agent-card-fault{color:#d29922;font-size:.75rem;margin-top:.35rem}
+  color:#94a3b8;font-size:.75rem}.agent-card-fault{color:#d29922;font-size:.75rem;margin-top:.35rem}
 .agent-card-meta{margin:.85rem 0;display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
-.agent-card-meta div{min-width:0}.agent-card-meta dt{color:#8b949e;font-size:.68rem;
+.agent-card-meta div{min-width:0}.agent-card-meta dt{color:#94a3b8;font-size:.68rem;
   text-transform:uppercase;letter-spacing:.05em}
 .agent-card-meta dd{margin:.18rem 0 0;overflow-wrap:anywhere}
-.agent-capabilities{min-height:1.55rem}.agent-more-tools{color:#8b949e;font-size:.7rem;margin-left:.25rem}
+.agent-capabilities{min-height:1.55rem}.agent-more-tools{color:#94a3b8;font-size:.7rem;margin-left:.25rem}
 .agent-card-actions{display:flex;gap:.45rem;flex-wrap:wrap;margin-top:.85rem;padding-top:.8rem;
-  border-top:1px solid #30363d}
+  border-top:1px solid #334155}
 .agent-card-actions .action-link{padding:.32rem .58rem;font-size:.78rem}
-.agent-card-empty{padding:1.5rem;text-align:center;color:#8b949e;border:1px dashed #30363d;
+.agent-card-empty{padding:1.5rem;text-align:center;color:#94a3b8;border:1px dashed #334155;
   border-radius:6px}@media (max-width:760px){
   .fleet-toolbar{align-items:stretch;flex-direction:column}
   .view-switch a{flex:1;text-align:center}.agent-card-grid{grid-template-columns:1fr}}
@@ -130,10 +130,22 @@ def _agent_card(
         and any("camera" in tool or "photo" in tool for tool in tools)
         else ""
     )
+    interaction_label = (
+        "Interact" if connected and not (persona and persona.transcription) else "Conversation"
+    )
     interact = (
-        f'<a class="action-link primary" href="/dashboard/agents/{device_url}#interaction">'
-        "Interact</a>"
-        if connected and not (persona and persona.transcription)
+        f'<a class="action-link primary" href="/dashboard/agents/{device_url}/conversation" '
+        f'hx-get="/dashboard/agents/{device_url}/conversation" '
+        f'hx-target="#conversation-host" hx-swap="innerHTML" '
+        f"data-conversation-open>{interaction_label}</a>"
+    )
+    state = session_state.get_state(agent.device_id)
+    timing = (
+        f'<div class="agent-transport">Last response prepared in '
+        f"{state.last.total_ms / 1000:.1f}s "
+        f"· ASR {state.last.asr_ms}ms · LLM {state.last.llm_ms}ms "
+        f"· TTS {state.last.tts_ms}ms</div>"
+        if state.turns
         else ""
     )
     last_seen = html.escape(fmt_ts(agent.last_seen, fmt="%H:%M:%S"))
@@ -150,9 +162,11 @@ def _agent_card(
     <span>{html.escape(activity.title())}</span>
     <span class="badge badge-kind">{html.escape(_runtime_label(agent.kind))}</span></div>
   <div class="agent-transport">{html.escape(transport)}</div>{fault}
-  <dl class="agent-card-meta"><div><dt>Persona</dt><dd>{persona_name}{model_line}</dd></div>
-    <div><dt>Last seen</dt><dd>{last_seen}</dd></div></dl>
-  <div class="agent-capabilities">{capabilities}</div>
+  <dl class="agent-card-meta">
+    <div><dt>Persona</dt><dd>{persona_name}{model_line}</dd></div>
+    <div><dt>Last seen</dt><dd>{last_seen}</dd></div>
+  </dl>
+  <div class="agent-capabilities">{capabilities}</div>{timing}
   <div class="agent-card-actions">{interact}{camera}
     <a class="action-link" href="/dashboard/agents/{device_url}">Manage</a></div>
 </article>"""
