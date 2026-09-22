@@ -25,6 +25,7 @@ from loguru import logger
 
 from agent_hub import skills as server_skills
 from agent_hub import spend
+from agent_hub.conversations import conversation_for_turn, effective_settings
 from agent_hub.providers.llm import get_provider
 from agent_hub.registry.models import Persona
 from agent_hub.registry.store import RegistryStore
@@ -164,9 +165,15 @@ async def run_turn(
         d["function"]["name"] for d in mcp_bridge.list_page_tool_definitions(device_id)
     }
 
-    # Persisted history also holds photo and transcript rows, which a model
-    # rejects; only chat turns go in.
-    history = history_for_llm(await store.load_history(device_id, limit=persona.memory_window * 2))
+    settings = effective_settings(persona, await store.get_agent(device_id))
+    conversation = await conversation_for_turn(store, device_id, persona, settings)
+    # Recent turns of this conversation only. Persisted history also holds
+    # photo and transcript rows, which a model rejects; only chat turns go in.
+    history = history_for_llm(
+        await store.load_history(
+            device_id, limit=settings.memory_window * 2, conversation_id=conversation.id
+        )
+    )
     history.append({"role": "user", "content": text})
     system_prompt = build_system_prompt(persona, tools)
 
@@ -207,9 +214,12 @@ async def run_turn(
 
     reply = (reply or "").strip()
     if reply:
-        await store.append_history(device_id, "user", text)
+        await store.append_history(device_id, "user", text, conversation_id=conversation.id)
         await store.append_history(
-            device_id, "assistant", f"{reply}\n[image:captured]" if images else reply
+            device_id,
+            "assistant",
+            f"{reply}\n[image:captured]" if images else reply,
+            conversation_id=conversation.id,
         )
     logger.bind(tag=_TAG).info(
         f"Turn {device_id!r}: {text!r} → {reply[:80]!r} "

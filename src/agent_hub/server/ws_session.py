@@ -31,6 +31,7 @@ from loguru import logger
 
 import agent_hub.skills as server_skills
 from agent_hub import spend
+from agent_hub.conversations import conversation_for_turn, effective_settings
 from agent_hub.providers.asr import get_provider as get_asr
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import describe_error as describe_model_error
@@ -403,6 +404,7 @@ async def _run_llm_turn(
     device_id: str,
     supports_emoji: bool,
     emotion: str = "",
+    memory_window: int | None = None,
 ) -> tuple[int, int, int, str]:
     """LLM + TTS half of a voice turn. Mutates history.
 
@@ -411,10 +413,11 @@ async def _run_llm_turn(
     The first two overlap, so turn_ms is measured rather than summed.
     """
     history.append({"role": "user", "content": transcript})
-    window = (persona.memory_window or 20) * 2
-    if len(history) > window:
-        del history[:-window]
-    llm_history = _history_for_llm(history)
+    window = (memory_window or persona.memory_window or 20) * 2
+    # Send only the recent window, but don't trim ``history`` itself: the
+    # caller saves what this turn appended by index, and trimming here shifted
+    # that index, so once the window was full the user's words were never saved.
+    llm_history = _history_for_llm(history[-window:])
     llm = get_llm(persona.llm_provider, config, model_override=persona.llm_model or None)
 
     # Permission gating. None/[] allowlist → safe defaults (risky device tools
@@ -656,6 +659,7 @@ async def _run_voice_turn(
     mcp_client: MCPClient | None = None,
     device_id: str = "",
     supports_emoji: bool = False,
+    memory_window: int | None = None,
 ) -> None:
     """Run one ASR → LLM → TTS cycle."""
     session_state.begin_response(device_id)
@@ -744,6 +748,7 @@ async def _run_voice_turn(
         device_id,
         supports_emoji,
         emotion=result.emotion,
+        memory_window=memory_window,
     )
 
     if not reply:
@@ -804,7 +809,18 @@ async def _run_transcription_turn(
         )
     )
     session_id_tag = session_state.ensure_transcription_session(device_id) if device_id else None
-    await store.append_history(device_id, "transcript", transcript, session_id=session_id_tag)
+    conversation_id = (
+        (await store.transcript_conversation(device_id, session_id_tag, persona)).id
+        if session_id_tag
+        else None
+    )
+    await store.append_history(
+        device_id,
+        "transcript",
+        transcript,
+        session_id=session_id_tag,
+        conversation_id=conversation_id,
+    )
     if device_id:
         session_state.record_turn(device_id, asr_ms, 0, 0)
 
@@ -819,6 +835,7 @@ async def _run_text_turn(
     mcp_client: MCPClient | None,
     device_id: str,
     supports_emoji: bool,
+    memory_window: int | None = None,
 ) -> str:
     """Run one LLM → TTS cycle from an injected text utterance, bypassing ASR.
     Returns the LLM reply text (empty string if no reply).
@@ -858,6 +875,7 @@ async def _run_text_turn(
         device_id,
         supports_emoji,
         emotion="",
+        memory_window=memory_window,
     )
 
     if reply and device_id:
@@ -1010,9 +1028,32 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
             # operator assigning a persona whose `transcription` flag is set.
             transcription_mode = hello.transcription_only or bool(persona.transcription)
 
-            # Load persisted history; trim to memory_window on reconnect
-            window = (persona.memory_window or 20) * 2
-            conversation: list[dict[str, str]] = await store.load_history(device_id, limit=window)
+            # Resume the open conversation, if the idle gap hasn't closed it.
+            # Connecting alone doesn't start one: a wake word that never turns
+            # into a turn shouldn't leave an empty conversation behind.
+            settings = effective_settings(persona, await store.get_agent(device_id))
+            window = settings.memory_window * 2
+            open_conversation = await store.open_conversation(
+                device_id, persona=persona, idle_minutes=settings.idle_minutes, create=False
+            )
+            conversation_id: int | None = open_conversation.id if open_conversation else None
+            conversation: list[dict[str, str]] = (
+                await store.load_history(device_id, limit=window, conversation_id=conversation_id)
+                if conversation_id is not None
+                else []
+            )
+
+            async def _enter_conversation() -> int:
+                """Resolve the conversation for a new turn, reloading context at a boundary."""
+                nonlocal conversation_id
+                current = await conversation_for_turn(store, device_id, persona, settings)
+                if current.id != conversation_id:
+                    conversation_id = current.id
+                    conversation[:] = await store.load_history(
+                        device_id, limit=window, conversation_id=current.id
+                    )
+                return current.id
+
             if conversation:
                 logger.bind(tag=_TAG).debug(
                     f"{device_id!r} resumed {len(conversation)} messages from history"
@@ -1038,8 +1079,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                             )
                         )
                 session_state.set_pipeline_status(device_id, "transcribing")
-                prev_len = len(conversation)
+                turn_conversation_id: int | None = None
                 async with pipeline_lock:
+                    if not transcription_mode:
+                        turn_conversation_id = await _enter_conversation()
+                    prev_len = len(conversation)
                     try:
                         if transcription_mode:
                             await _run_transcription_turn(
@@ -1066,6 +1110,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                                 mcp_client,
                                 device_id,
                                 supports_emoji=hello.supports_emoji,
+                                memory_window=settings.memory_window,
                             )
                     except Exception as exc:
                         import traceback as _tb
@@ -1080,7 +1125,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     )
                 new_msgs = conversation[prev_len:]
                 for msg in new_msgs:
-                    await store.append_history(device_id, msg["role"], msg["content"])
+                    await store.append_history(
+                        device_id, msg["role"], msg["content"], conversation_id=turn_conversation_id
+                    )
+                # Bound the in-session list only after saving what this turn added.
+                del conversation[:-window]
 
             def _fire_pipeline(frames: list[bytes]) -> None:
                 nonlocal active_pipeline
@@ -1130,8 +1179,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     )
                     return "", None
                 reply = ""
-                prev_len = len(conversation)
                 async with pipeline_lock:
+                    turn_conversation_id = await _enter_conversation()
+                    prev_len = len(conversation)
                     try:
                         reply = await _run_text_turn(
                             websocket,
@@ -1143,6 +1193,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                             mcp_client,
                             device_id,
                             supports_emoji=hello.supports_emoji,
+                            memory_window=settings.memory_window,
                         )
                     except Exception as exc:
                         import traceback as _tb
@@ -1152,7 +1203,11 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         )
                 new_msgs = conversation[prev_len:]
                 for m in new_msgs:
-                    await store.append_history(device_id, m["role"], m["content"])
+                    await store.append_history(
+                        device_id, m["role"], m["content"], conversation_id=turn_conversation_id
+                    )
+                # Bound the in-session list only after saving what this turn added.
+                del conversation[:-window]
                 # Only report an image captured *during this turn* (embedded as an
                 # [image:PATH] marker by _run_llm_turn), not the stale latest-image
                 # cache — otherwise a non-camera reply renders a prior photo.
@@ -1224,7 +1279,10 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                                 session_state.set_pipeline_status(device_id, "idle")
                             if transcription_mode:
                                 session_state.set_pipeline_status(device_id, "idle")
+                                ending = session_state.current_transcription_session(device_id)
                                 session_state.end_transcription_session(device_id)
+                                if ending:
+                                    await store.end_transcript_conversation(ending)
                                 await websocket.send_text(
                                     json.dumps(
                                         {

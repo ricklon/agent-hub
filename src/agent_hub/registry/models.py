@@ -65,8 +65,17 @@ class Persona(Base):
     # JSON-encoded list of other agent (device) ids this persona may borrow
     # non-destructive MCP tools from; NULL/[] means none.
     linked_agents: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Max conversation turns kept in LLM context
+    # Recent turns of the current conversation kept in LLM context
     memory_window: Mapped[int] = mapped_column(Integer, default=20)
+    # Conversations and memory (defaults; an agent may override each one).
+    # Minutes of silence after which the next turn starts a new conversation.
+    conversation_idle_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    # Name finished conversations with this persona's model.
+    auto_title: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Summarize finished conversations (in the same model call as the title).
+    summarize_conversations: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Summaries of this many earlier conversations are carried into a new one.
+    remember_conversations: Mapped[int] = mapped_column(Integer, default=3)
     # When true this is a transcriber, not an assistant: the device streams
     # audio continuously and the hub logs each utterance via ASR with no LLM
     # or TTS. TTS/prompt/skills/linked-agent settings are ignored.
@@ -94,6 +103,47 @@ class Persona(Base):
         return [a for a in parsed if isinstance(a, str)] if isinstance(parsed, list) else []
 
 
+class ConversationKind(StrEnum):
+    """What a conversation records."""
+
+    CHAT = "chat"  # turns with an assistant, bounded by idle gap / persona / manual
+    TRANSCRIPT = "transcript"  # one transcriber listen session, bounded by start/stop
+
+
+class TitleSource(StrEnum):
+    """Where a conversation's title came from."""
+
+    AUTO = "auto"  # written by the persona's model at wrap-up
+    MANUAL = "manual"  # set by a person; never replaced
+    FALLBACK = "fallback"  # first words, when no model title was made
+
+
+class Conversation(Base):
+    """A run of turns with one agent, from one boundary to the next."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Stable id for URLs and exports. A transcript conversation reuses its
+    # listen session id, so links made before conversations existed still work.
+    public_id: Mapped[str] = mapped_column(String(48), unique=True, index=True)
+    device_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(16), default=ConversationKind.CHAT.value)
+    persona_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Snapshot, so the list still says which persona it was after a rename or delete.
+    persona_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    title_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wrapped_up_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_turn_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    # Null while in progress.
+    ended_at: Mapped[datetime | None] = mapped_column(nullable=True, index=True)
+    # User turns (or transcript lines), for the list view.
+    turn_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ConversationTurn(Base):
     """One message in a device's persisted conversation history."""
 
@@ -101,6 +151,9 @@ class ConversationTurn(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     device_id: Mapped[str] = mapped_column(String(64), index=True)
+    # The conversation this message belongs to. Null only for rows written
+    # before conversations existed and not yet backfilled.
+    conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     role: Mapped[str] = mapped_column(String(16))  # 'user' or 'assistant'
     content: Mapped[str] = mapped_column(Text)
     # Groups the turns of one transcription session (one start→stop of a
@@ -191,6 +244,13 @@ class Agent(Base):
     # hub authenticated, so "mine" means something. Still not a permission:
     # it decides whose list an agent appears in, not who may drive it.
     owner_subject: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    # Per-agent overrides of the persona's conversation settings. Null means
+    # "use the persona's"; see agent_hub.conversations.effective_settings.
+    conversation_idle_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auto_title: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    summarize_conversations: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    remember_conversations: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_seen: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
