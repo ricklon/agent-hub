@@ -46,7 +46,8 @@ RUN uv sync --frozen --no-dev \
 # docker-compose.do.yml — mounting it would shadow the Moonshine/Silero files.
 # KittenTTS caches under ~/.cache/huggingface, which is not mounted either.
 RUN uv run python scripts/download_moonshine.py \
-    && uv run python scripts/download_kittentts.py
+    && uv run python scripts/download_kittentts.py \
+    && uv run python scripts/download_wake_word.py
 
 EXPOSE 8000 8001 8003
 
