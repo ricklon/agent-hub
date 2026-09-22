@@ -276,19 +276,19 @@ async def test_the_home_filter_is_never_replaced_by_a_refresh(
         health_refresh = await c.get("/dashboard/overview", params=query)
     expected = "?mine=1" if "mine" in query else "?owner=ada%40example.com"
 
-    # The chosen filter is shown as selected, and a chip swaps only the table.
+    # The chosen filter is shown as selected, and a chip swaps only the cards.
     assert f'aria-pressed="true" hx-get="/dashboard/agents{expected}"' in home.text
-    assert 'hx-target="#agent-table"' in home.text
-    # The table polls itself with the same filter, and a refresh of it stays filtered.
+    assert 'hx-target="#agent-cards"' in home.text
+    # The cards poll themselves with the same filter, and their refresh stays filtered.
     for resp in (home, table_refresh):
-        table = resp.text[resp.text.index('id="agent-table"') :]
-        assert f'hx-get="/dashboard/agents{expected}" hx-trigger="every 5s"' in table
-        assert shown in table and hidden not in table
-    # The health poll carries no filter bar or table, so it cannot clobber them,
+        cards = resp.text[resp.text.index('id="agent-cards"') :]
+        assert f'hx-get="/dashboard/agents{expected}" hx-trigger="every 5s"' in cards
+        assert shown in cards and hidden not in cards
+    # The health poll carries no filter bar or cards, so it cannot clobber them,
     # and fleet health stays fleet-wide.
     assert 'id="fleet-health" hx-get="/dashboard/overview"' in health_refresh.text
     assert "owner-chip" not in health_refresh.text
-    assert 'id="agent-table"' not in health_refresh.text
+    assert 'id="agent-cards"' not in health_refresh.text
     assert '<span class="overview-value">2</span>' in health_refresh.text
 
 

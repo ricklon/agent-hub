@@ -24,6 +24,7 @@ from agent_hub.config import config_bool, resolve_timezone
 from agent_hub.dashboard import cleanup, persona_options
 from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
+from agent_hub.dashboard.agent_cards import AGENT_CARD_CSS, render_agent_cards
 from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.overview import render_fleet_overview
@@ -331,7 +332,7 @@ def make_router(
 
     # ── Agents ───────────────────────────────────────────────────────────────
 
-    _full_css = _CSS + _CSS_EXTRA
+    _full_css = _CSS + _CSS_EXTRA + AGENT_CARD_CSS
 
     def _render_page(request: Request, body: str) -> str:
         identity = getattr(request.state, "operator_identity", None)
@@ -363,7 +364,9 @@ def make_router(
         )
 
     @router.get("/dashboard/", response_class=HTMLResponse)
-    async def dashboard_index(request: Request, owner: str = "", mine: str = "") -> HTMLResponse:
+    async def dashboard_index(
+        request: Request, owner: str = "", mine: str = "", view: str = "cards"
+    ) -> HTMLResponse:
         overview = await _render_agent_overview(
             store,
             heartbeat_timeout_seconds,
@@ -371,6 +374,7 @@ def make_router(
             viewer_subject=_viewer_subject(request),
             owner=owner,
             mine=bool(mine),
+            view=view,
         )
         body = await _spend_panel() + overview + await _cleanup_panel()
         return HTMLResponse(_render_page(request, body))
@@ -574,10 +578,19 @@ def make_router(
 
     @router.get("/dashboard/agents", response_class=HTMLResponse)
     async def dashboard_agents_partial(
-        request: Request, owner: str = "", mine: str = ""
+        request: Request, owner: str = "", mine: str = "", view: str = "cards"
     ) -> HTMLResponse:
         identity = getattr(request.state, "operator_identity", None)
         subject = identity.subject if (mine and identity is not None) else ""
+        if view != "diagnostics":
+            cards = await _render_agent_cards(
+                store,
+                heartbeat_timeout_seconds,
+                owner=owner,
+                owner_subject=subject,
+                viewer_subject=identity.subject if identity is not None else "",
+            )
+            return HTMLResponse(_agent_card_view(cards, owner=owner, mine=bool(mine)))
         rows = await _render_agent_rows(
             store,
             heartbeat_timeout_seconds,
@@ -585,10 +598,12 @@ def make_router(
             owner_subject=subject,
             viewer_subject=identity.subject if identity is not None else "",
         )
-        return HTMLResponse(_agent_table(rows, owner=owner, mine=bool(mine)))
+        return HTMLResponse(_agent_table(rows, owner=owner, mine=bool(mine), view="diagnostics"))
 
     @router.get("/dashboard/fleet", response_class=HTMLResponse)
-    async def dashboard_fleet_partial(request: Request) -> HTMLResponse:
+    async def dashboard_fleet_partial(
+        request: Request, owner: str = "", mine: str = "", view: str = "cards"
+    ) -> HTMLResponse:
         """The whole fleet section; polled only while the fleet is empty."""
         return HTMLResponse(
             await _render_agent_overview(
@@ -596,6 +611,9 @@ def make_router(
                 heartbeat_timeout_seconds,
                 has_identity=getattr(request.state, "operator_identity", None) is not None,
                 viewer_subject=_viewer_subject(request),
+                owner=owner,
+                mine=bool(mine),
+                view=view,
             )
         )
 
@@ -1182,6 +1200,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
                 '<p style="color:#8b949e;font-size:0.85rem">Call one tool directly, with no '
                 "model deciding for you. Arguments are JSON.</p>" + "".join(forms)
             )
+        if bridged is not None and bridged.connected:
             console_html += f"""\
 <h3>Ask this agent</h3>
 <p style="color:#8b949e;font-size:0.85rem">Runs a full turn with its persona and tools —
@@ -1206,11 +1225,13 @@ named page agent when its name is reopened.">
     value="1"{keep_checked}> keep conversation history</label>
 </form>"""
         speak_form = f"""\
+<span id="device-actions"></span>
 {reboot_btn}
 {camera_btn}
 {pin_form}
 {remove_btn}
 {owner_form}
+<span id="interaction"></span>
 {console_html}
 <span id="reboot-result" role="status" aria-live="polite"
       style="margin-left:0.75rem"></span>
@@ -2035,13 +2056,25 @@ def _render_spend_panel(totals: dict[str, Any]) -> str:
 </section>"""
 
 
-def _filter_query(owner: str = "", mine: bool = False) -> str:
+def _filter_query(owner: str = "", mine: bool = False, view: str = "cards") -> str:
     """The query string that selects one fleet filter ("" for everyone)."""
-    return "?mine=1" if mine else (f"?owner={quote(owner)}" if owner else "")
+    params = []
+    if mine:
+        params.append("mine=1")
+    elif owner:
+        params.append(f"owner={quote(owner, safe='')}")
+    if view == "diagnostics":
+        params.append("view=diagnostics")
+    return f"?{'&'.join(params)}" if params else ""
 
 
 def _owner_filter(
-    owners: list[str], current: str = "", *, has_identity: bool = False, mine: bool = False
+    owners: list[str],
+    current: str = "",
+    *,
+    has_identity: bool = False,
+    mine: bool = False,
+    view: str = "cards",
 ) -> str:
     """Chips that filter the fleet table by whose agent it is.
 
@@ -2051,13 +2084,15 @@ def _owner_filter(
     """
     if not owners and not has_identity:
         return ""
-    active = _filter_query(current, mine)
+    active = _filter_query(current, mine, view)
+    target = "#agent-table" if view == "diagnostics" else "#agent-cards"
 
-    def chip(query: str, label: str) -> str:
+    def chip(owner: str, mine: bool, label: str) -> str:
+        query = _filter_query(owner, mine, view)
         pressed = "true" if query == active else "false"
         return (
             f'<button class="owner-chip" aria-pressed="{pressed}" '
-            f'hx-get="/dashboard/agents{html.escape(query)}" hx-target="#agent-table" '
+            f'hx-get="/dashboard/agents{html.escape(query)}" hx-target="{target}" '
             f'hx-swap="outerHTML" hx-push-url="/dashboard/{html.escape(query)}" '
             # Mark the choice straight away; the bar itself is never re-rendered.
             "hx-on::before-request=\"this.parentElement.querySelectorAll('.owner-chip')"
@@ -2065,17 +2100,48 @@ def _owner_filter(
             f"{html.escape(label)}</button>"
         )
 
-    chips = chip("", "everyone")
+    chips = chip("", False, "everyone")
     if has_identity:
         # Keyed on the verified claim, so "mine" cannot be spoofed by a robot
         # registering with someone else's owner label.
-        chips += chip("?mine=1", "mine")
-    chips += "".join(chip(f"?owner={quote(o)}", o) for o in owners)
+        chips += chip("", True, "mine")
+    chips += "".join(chip(o, False, o) for o in owners)
     return f'<div class="owner-filter">Show: {chips}</div>'
 
 
-def _agent_table(rows: str, *, poll: bool = True, owner: str = "", mine: bool = False) -> str:
-    query = _filter_query(owner, mine)
+def _view_switch(owner: str, mine: bool, view: str) -> str:
+    """Links between the fleet cards and dense diagnostics table."""
+
+    def link(target_view: str, label: str) -> str:
+        query = html.escape(_filter_query(owner, mine, target_view))
+        current = ' aria-current="page"' if view == target_view else ""
+        return f'<a href="/dashboard/{query}"{current}>{label}</a>'
+
+    return (
+        '<nav class="view-switch" aria-label="Agent view">'
+        + link("cards", "Cards")
+        + link("diagnostics", "Diagnostics")
+        + "</nav>"
+    )
+
+
+def _agent_card_view(cards: str, *, owner: str = "", mine: bool = False) -> str:
+    query = html.escape(_filter_query(owner, mine, "cards"))
+    return (
+        f'<div id="agent-cards" hx-get="/dashboard/agents{query}" '
+        f'hx-trigger="every 5s" hx-swap="outerHTML">{cards}</div>'
+    )
+
+
+def _agent_table(
+    rows: str,
+    *,
+    poll: bool = True,
+    owner: str = "",
+    mine: bool = False,
+    view: str = "diagnostics",
+) -> str:
+    query = html.escape(_filter_query(owner, mine, view))
     poll_attributes = (
         f' hx-get="/dashboard/agents{query}" hx-trigger="every 5s" hx-swap="outerHTML"'
         if poll
@@ -2234,6 +2300,36 @@ async def _render_agent_rows(
     )
 
 
+async def _render_agent_cards(
+    store: RegistryStore,
+    heartbeat_timeout_seconds: int,
+    owner: str = "",
+    owner_subject: str = "",
+    viewer_subject: str = "",
+) -> str:
+    """Load and render fleet cards, preserving database failures as failures."""
+    try:
+        rows_data = await store.list_agents_with_personas()
+    except Exception as exc:
+        logger.error(f"Dashboard agent query failed: {exc}")
+        return '<p class="audit-failure">Could not load agents.</p>'
+    rows_data = _filter_agents(rows_data, owner, owner_subject)
+    return render_agent_cards(_group_agents(rows_data, viewer_subject), heartbeat_timeout_seconds)
+
+
+def _filter_agents(
+    rows_data: list[tuple[Agent, Persona | None]], owner: str, owner_subject: str
+) -> list[tuple[Agent, Persona | None]]:
+    """Apply one owner filter to fleet rows."""
+    if owner_subject:
+        return [
+            (agent, persona) for agent, persona in rows_data if agent.owner_subject == owner_subject
+        ]
+    if owner:
+        return [(agent, persona) for agent, persona in rows_data if (agent.owner or "") == owner]
+    return rows_data
+
+
 async def _render_agent_overview(
     store: RegistryStore,
     heartbeat_timeout_seconds: int,
@@ -2242,12 +2338,13 @@ async def _render_agent_overview(
     viewer_subject: str = "",
     owner: str = "",
     mine: bool = False,
+    view: str = "cards",
 ) -> str:
-    """Fleet health, the owner filter, and the agent table.
+    """Fleet health, stable controls, and the selected agent collection.
 
-    Only the health block and the table refresh, each on its own 5-second
+    Only the health block and agent collection refresh, each on its own 5-second
     poll. The filter bar is never replaced, so a click can't land on a button
-    a refresh just threw away, and the table's poll carries the filter in its
+    a refresh just threw away, and the collection poll carries the filter in its
     own URL so a refresh never quietly shows everyone again.
     """
     try:
@@ -2258,28 +2355,56 @@ async def _render_agent_overview(
     if not rows_data:
         # Nothing to filter yet: show the first-device guidance and check for
         # the first agent, then swap in the full layout once.
+        query = html.escape(_filter_query(owner, mine, view))
         return (
-            '<div id="fleet-overview" hx-get="/dashboard/fleet" hx-trigger="every 5s" '
+            f'<div id="fleet-overview" hx-get="/dashboard/fleet{query}" '
+            'hx-trigger="every 5s" '
             'hx-swap="outerHTML">'
             + render_fleet_overview(rows_data, heartbeat_timeout_seconds)
             + "</div>"
         )
     # "mine" means nothing without a verified identity; fall back to everyone.
     mine = mine and bool(viewer_subject)
+    view = "diagnostics" if view == "diagnostics" else "cards"
     owners = sorted({a.owner for a, _p in rows_data if a.owner})
-    rows = await _render_agent_rows(
-        store,
-        heartbeat_timeout_seconds,
-        owner="" if mine else owner,
-        owner_subject=viewer_subject if mine else "",
-        viewer_subject=viewer_subject,
+    filtered = _filter_agents(
+        rows_data,
+        "" if mine else owner,
+        viewer_subject if mine else "",
     )
+    if view == "diagnostics":
+        try:
+            spend_by_device = await store.llm_spend_by_device()
+            rows = _render_grouped_rows(
+                filtered,
+                heartbeat_timeout_seconds,
+                spend_by_device,
+                viewer_subject=viewer_subject,
+            )
+        except Exception as exc:
+            logger.error(f"Dashboard agent query failed: {exc}")
+            rows = "<tr><td colspan=10>error loading agents</td></tr>"
+        collection = _agent_table(rows, owner=owner, mine=mine, view=view)
+    else:
+        cards = render_agent_cards(
+            _group_agents(filtered, viewer_subject), heartbeat_timeout_seconds
+        )
+        collection = _agent_card_view(cards, owner=owner, mine=mine)
     return (
         '<div id="fleet-overview">'
         + _fleet_health_poll(render_fleet_overview(rows_data, heartbeat_timeout_seconds))
-        + "<h2>All agents</h2>"
-        + _owner_filter(owners, owner, has_identity=has_identity, mine=mine)
-        + _agent_table(rows, owner=owner, mine=mine)
+        + '<div class="fleet-toolbar"><div><h2>All agents</h2>'
+        + _owner_filter(
+            owners,
+            owner,
+            has_identity=has_identity,
+            mine=mine,
+            view=view,
+        )
+        + "</div>"
+        + _view_switch(owner, mine, view)
+        + "</div>"
+        + collection
         + "</div>"
     )
 

@@ -47,7 +47,7 @@ class FunASRONNXProvider(ASRProvider):
 
     def _ensure_model(self) -> Any:
         if self._model is None:
-            from funasr_onnx import SenseVoiceSmall  # type: ignore[import-untyped]
+            from funasr_onnx import SenseVoiceSmall  # type: ignore
 
             logger.bind(tag=_TAG).info(f"Loading FunASR ONNX model from {self._model_dir!r}")
             self._model = SenseVoiceSmall(
