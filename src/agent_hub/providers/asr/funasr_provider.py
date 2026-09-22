@@ -82,7 +82,7 @@ class FunASRProvider(ASRProvider):
 
     def _ensure_model(self) -> Any:
         if self._model is None:
-            from funasr import AutoModel  # type: ignore[import-untyped]
+            from funasr import AutoModel  # type: ignore
 
             logger.bind(tag=_TAG).info(f"Loading FunASR model from {self._model_dir!r}")
             self._model = AutoModel(

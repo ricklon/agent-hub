@@ -117,6 +117,20 @@ async def test_agent_page_shows_the_console_for_a_bridged_agent(store: RegistryS
     assert "Reboot device" not in page.text
 
 
+async def test_connected_agent_with_no_tools_can_still_be_asked(store: RegistryStore) -> None:
+    await store.get_or_create_agent("robot-empty", kind=AgentKind.MCP)
+    bridge = mcp_bridge.register_page_agent("robot-empty", "tok", [])
+    bridge.connected = True
+    try:
+        async with await _client(store) as c:
+            page = await c.get("/dashboard/agents/robot-empty")
+    finally:
+        mcp_bridge.unregister_page_agent("robot-empty")
+    assert "Tool console" not in page.text
+    assert "Ask this agent" in page.text
+    assert 'id="interaction"' in page.text
+
+
 async def test_a_device_page_has_no_tool_console(store: RegistryStore) -> None:
     await store.get_or_create_agent("df-k10", kind=AgentKind.XIAOZHI)
     async with await _client(store) as c:
