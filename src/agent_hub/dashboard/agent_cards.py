@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.registry.models import Agent, AgentKind, Persona
+from agent_hub.registry.page_identity import page_agent_launch_url
 from agent_hub.server import mcp_bridge, session_state
 
 AGENT_CARD_CSS = """\
@@ -56,14 +57,54 @@ AGENT_CARD_CSS = """\
 AgentGroup = tuple[str, list[tuple[Agent, Persona | None]]]
 
 
-def render_agent_cards(groups: list[AgentGroup], heartbeat_timeout_seconds: int) -> str:
-    """Render identity-aware agent groups as capability-oriented cards."""
+def render_agent_cards(
+    groups: list[AgentGroup], heartbeat_timeout_seconds: int, launcher: str | None = None
+) -> str:
+    """Render identity-aware agent groups as capability-oriented cards.
+
+    Args:
+        groups: Agents grouped by owner.
+        heartbeat_timeout_seconds: How long a silent agent stays healthy.
+        launcher: Access subject ("" without Access) of a viewer allowed to open
+            page agents, who gets Launch on their own stopped ones; None for none.
+    """
     if not any(rows for _title, rows in groups):
         return '<div class="agent-card-empty">No agents match this filter.</div>'
     return "".join(
-        _owner_group(index, title, rows, heartbeat_timeout_seconds)
+        _owner_group(index, title, rows, heartbeat_timeout_seconds, launcher)
         for index, (title, rows) in enumerate(groups)
         if rows
+    )
+
+
+def is_agent_connected(agent: Agent) -> bool:
+    """True while a device holds its voice socket or a bridged agent its stream."""
+    if agent.kind == AgentKind.XIAOZHI.value:
+        return session_state.is_connected(agent.device_id)
+    bridge = mcp_bridge.get_page_agent(agent.device_id)
+    return bool(bridge and bridge.connected)
+
+
+def interaction_link(agent: Agent, persona: Persona | None, connected: bool) -> str:
+    """The link that opens the conversation panel beside the current page."""
+    device_url = html.escape(quote(agent.device_id, safe=""))
+    label = "Interact" if connected and not (persona and persona.transcription) else "Conversation"
+    return (
+        f'<a class="action-link primary" href="/dashboard/agents/{device_url}/conversation" '
+        f'hx-get="/dashboard/agents/{device_url}/conversation" '
+        f'hx-target="#conversation-host" hx-swap="innerHTML" '
+        f"data-conversation-open>{label}</a>"
+    )
+
+
+def launch_link(agent: Agent, connected: bool, launcher: str | None) -> str:
+    """Launch for a stopped page agent the viewer owns: opens it in a new tab."""
+    url = page_agent_launch_url(agent, launcher) if launcher is not None else None
+    if connected or url is None:
+        return ""
+    return (
+        f'<a class="action-link" href="{html.escape(url)}" target="_blank" rel="noopener" '
+        f'title="Open this agent in a new browser tab">Launch</a>'
     )
 
 
@@ -72,10 +113,12 @@ def _owner_group(
     title: str,
     agents: list[tuple[Agent, Persona | None]],
     heartbeat_timeout_seconds: int,
+    launcher: str | None,
 ) -> str:
     group_id = f"agent-owner-group-{index}"
     cards = "".join(
-        _agent_card(agent, persona, heartbeat_timeout_seconds) for agent, persona in agents
+        _agent_card(agent, persona, heartbeat_timeout_seconds, launcher)
+        for agent, persona in agents
     )
     count = len(agents)
     return f"""\
@@ -90,6 +133,7 @@ def _agent_card(
     agent: Agent,
     persona: Persona | None,
     heartbeat_timeout_seconds: int,
+    launcher: str | None = None,
 ) -> str:
     label = html.escape(agent.label or agent.device_id)
     device_id = html.escape(agent.device_id)
@@ -99,12 +143,7 @@ def _agent_card(
     )
     activity = session_state.get_device_activity(agent.device_id, agent.reported_activity)
     tools = _tool_names(agent)
-    bridge = mcp_bridge.get_page_agent(agent.device_id)
-    connected = (
-        session_state.is_connected(agent.device_id)
-        if agent.kind == AgentKind.XIAOZHI.value
-        else bool(bridge and bridge.connected)
-    )
+    connected = is_agent_connected(agent)
     persona_name = html.escape(persona.name) if persona else "No persona"
     model = html.escape(persona.llm_model or persona.llm_provider or "") if persona else ""
     model_line = f'<span class="agent-model">{model}</span>' if model else ""
@@ -130,15 +169,7 @@ def _agent_card(
         and any("camera" in tool or "photo" in tool for tool in tools)
         else ""
     )
-    interaction_label = (
-        "Interact" if connected and not (persona and persona.transcription) else "Conversation"
-    )
-    interact = (
-        f'<a class="action-link primary" href="/dashboard/agents/{device_url}/conversation" '
-        f'hx-get="/dashboard/agents/{device_url}/conversation" '
-        f'hx-target="#conversation-host" hx-swap="innerHTML" '
-        f"data-conversation-open>{interaction_label}</a>"
-    )
+    interact = interaction_link(agent, persona, connected) + launch_link(agent, connected, launcher)
     state = session_state.get_state(agent.device_id)
     timing = (
         f'<div class="agent-transport">Last response prepared in '

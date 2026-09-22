@@ -30,7 +30,13 @@ from agent_hub.conversations import settings_for_device as conversation_settings
 from agent_hub.dashboard import cleanup, conversations_view, persona_options
 from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
-from agent_hub.dashboard.agent_cards import AGENT_CARD_CSS, render_agent_cards
+from agent_hub.dashboard.agent_cards import (
+    AGENT_CARD_CSS,
+    interaction_link,
+    is_agent_connected,
+    launch_link,
+    render_agent_cards,
+)
 from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.conversation import make_conversation_router
@@ -242,6 +248,7 @@ def make_router(
             owner=owner,
             mine=bool(mine),
             view=view,
+            launcher=_launcher(request),
         )
         role = str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
         launch = (
@@ -468,6 +475,7 @@ def make_router(
                 owner=owner,
                 owner_subject=subject,
                 viewer_subject=identity.subject if identity is not None else "",
+                launcher=_launcher(request),
             )
             return HTMLResponse(_agent_card_view(cards, owner=owner, mine=bool(mine)))
         rows = await _render_agent_rows(
@@ -493,6 +501,7 @@ def make_router(
                 owner=owner,
                 mine=bool(mine),
                 view=view,
+                launcher=_launcher(request),
             )
         )
 
@@ -1272,6 +1281,15 @@ named page agent when its name is reopened.">
   <label style="font-size:0.8rem;color:#8b949e"><input type="checkbox" name="keep_history"
     value="1"{keep_checked}> keep conversation history</label>
 </form>"""
+        # Open the agent from here: the conversation panel, and for a stopped
+        # page agent its owner can relaunch, a new tab running it.
+        connected = is_agent_connected(agent)
+        agent_actions = (
+            '<div class="agent-card-actions" style="border-top:0;padding-top:0;margin-top:0">'
+            + interaction_link(agent, persona, connected)
+            + launch_link(agent, connected, _launcher(request))
+            + "</div>"
+        )
         speak_form = f"""\
 <span id="device-actions"></span>
 {reboot_btn}
@@ -1331,6 +1349,7 @@ named page agent when its name is reopened.">
   Firmware: {agent.firmware_version or "—"} &nbsp;·&nbsp;
   Last seen: {fmt_ts(agent.last_seen, display_tz, "%H:%M:%S")}{spend_line}
 </p>
+{agent_actions}
 <h3>Connection</h3>
 <div hx-get="/dashboard/agents/{device_id}/status"
      hx-trigger="load, every 3s"
@@ -2443,6 +2462,7 @@ async def _render_agent_cards(
     owner: str = "",
     owner_subject: str = "",
     viewer_subject: str = "",
+    launcher: str | None = None,
 ) -> str:
     """Load and render fleet cards, preserving database failures as failures."""
     try:
@@ -2451,7 +2471,9 @@ async def _render_agent_cards(
         logger.error(f"Dashboard agent query failed: {exc}")
         return '<p class="audit-failure">Could not load agents.</p>'
     rows_data = _filter_agents(rows_data, owner, owner_subject)
-    return render_agent_cards(_group_agents(rows_data, viewer_subject), heartbeat_timeout_seconds)
+    return render_agent_cards(
+        _group_agents(rows_data, viewer_subject), heartbeat_timeout_seconds, launcher
+    )
 
 
 def _filter_agents(
@@ -2476,6 +2498,7 @@ async def _render_agent_overview(
     owner: str = "",
     mine: bool = False,
     view: str = "cards",
+    launcher: str | None = None,
 ) -> str:
     """Fleet health, stable controls, and the selected agent collection.
 
@@ -2524,7 +2547,7 @@ async def _render_agent_overview(
         collection = _agent_table(rows, owner=owner, mine=mine, view=view)
     else:
         cards = render_agent_cards(
-            _group_agents(filtered, viewer_subject), heartbeat_timeout_seconds
+            _group_agents(filtered, viewer_subject), heartbeat_timeout_seconds, launcher
         )
         collection = _agent_card_view(cards, owner=owner, mine=mine)
     return (
@@ -2924,6 +2947,11 @@ def _viewer_subject(request: Request) -> str:
     """Verified Access subject of whoever is viewing, or "" without Access."""
     identity = getattr(request.state, "operator_identity", None)
     return identity.subject if identity is not None else ""
+
+
+def _launcher(request: Request) -> str | None:
+    """Who may open page agents from the dashboard: their subject, or None for viewers."""
+    return None if _role(request) == OperatorRole.VIEWER.value else _viewer_subject(request)
 
 
 def _role(request: Request) -> str:
