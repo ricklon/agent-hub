@@ -31,7 +31,12 @@ from loguru import logger
 
 import agent_hub.skills as server_skills
 from agent_hub import spend
-from agent_hub.conversations import conversation_for_turn, effective_settings
+from agent_hub.conversations import (
+    conversation_for_turn,
+    effective_settings,
+    memory_note_for_turn,
+    with_memory,
+)
 from agent_hub.providers.asr import get_provider as get_asr
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import describe_error as describe_model_error
@@ -405,6 +410,7 @@ async def _run_llm_turn(
     supports_emoji: bool,
     emotion: str = "",
     memory_window: int | None = None,
+    memory_note: str = "",
 ) -> tuple[int, int, int, str]:
     """LLM + TTS half of a voice turn. Mutates history.
 
@@ -454,6 +460,7 @@ async def _run_llm_turn(
     if tool_lines:
         tools_section = "Available tools you MUST use when relevant:\n" + "\n".join(tool_lines)
         base_prompt = f"{base_prompt}\n\n{tools_section}".strip()
+    base_prompt = with_memory(base_prompt, memory_note)
 
     if emotion and emotion != "NEUTRAL":
         system_prompt = f"{base_prompt}\n[User tone: {emotion.lower()}]".strip()
@@ -660,6 +667,7 @@ async def _run_voice_turn(
     device_id: str = "",
     supports_emoji: bool = False,
     memory_window: int | None = None,
+    memory_note: str = "",
 ) -> None:
     """Run one ASR → LLM → TTS cycle."""
     session_state.begin_response(device_id)
@@ -749,6 +757,7 @@ async def _run_voice_turn(
         supports_emoji,
         emotion=result.emotion,
         memory_window=memory_window,
+        memory_note=memory_note,
     )
 
     if not reply:
@@ -836,6 +845,7 @@ async def _run_text_turn(
     device_id: str,
     supports_emoji: bool,
     memory_window: int | None = None,
+    memory_note: str = "",
 ) -> str:
     """Run one LLM → TTS cycle from an injected text utterance, bypassing ASR.
     Returns the LLM reply text (empty string if no reply).
@@ -876,6 +886,7 @@ async def _run_text_turn(
         supports_emoji,
         emotion="",
         memory_window=memory_window,
+        memory_note=memory_note,
     )
 
     if reply and device_id:
@@ -1080,9 +1091,13 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                         )
                 session_state.set_pipeline_status(device_id, "transcribing")
                 turn_conversation_id: int | None = None
+                note = ""
                 async with pipeline_lock:
                     if not transcription_mode:
                         turn_conversation_id = await _enter_conversation()
+                        note = await memory_note_for_turn(
+                            store, config, device_id, turn_conversation_id, settings
+                        )
                     prev_len = len(conversation)
                     try:
                         if transcription_mode:
@@ -1111,6 +1126,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                                 device_id,
                                 supports_emoji=hello.supports_emoji,
                                 memory_window=settings.memory_window,
+                                memory_note=note,
                             )
                     except Exception as exc:
                         import traceback as _tb
@@ -1181,6 +1197,9 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 reply = ""
                 async with pipeline_lock:
                     turn_conversation_id = await _enter_conversation()
+                    note = await memory_note_for_turn(
+                        store, config, device_id, turn_conversation_id, settings
+                    )
                     prev_len = len(conversation)
                     try:
                         reply = await _run_text_turn(
@@ -1194,6 +1213,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                             device_id,
                             supports_emoji=hello.supports_emoji,
                             memory_window=settings.memory_window,
+                            memory_note=note,
                         )
                     except Exception as exc:
                         import traceback as _tb

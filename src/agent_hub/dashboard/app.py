@@ -21,6 +21,7 @@ from loguru import logger
 
 from agent_hub import spend
 from agent_hub.config import config_bool, resolve_timezone
+from agent_hub.conversations import effective_settings
 from agent_hub.dashboard import cleanup, persona_options
 from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
@@ -1146,6 +1147,7 @@ named page agent when its name is reopened.">
      hx-swap="innerHTML"
      id="device-status">Loading…</div>
 {persona_html}
+{_conversation_settings_panel(agent, persona)}
 <h3>Device MCP tools</h3>
 <div>{device_tool_badges}</div>
 <h3>Server skills</h3>
@@ -1154,6 +1156,41 @@ named page agent when its name is reopened.">
 {lat_html}
 {speak_form}"""
         return HTMLResponse(_render_page(request, body))
+
+    @router.post("/dashboard/agents/{device_id}/conversation_settings", response_class=HTMLResponse)
+    async def agent_conversation_settings(device_id: str, request: Request) -> HTMLResponse:
+        """Save an agent's conversation overrides; blank or "persona" clears one."""
+        form = await request.form()
+        values: dict[str, Any] = {}
+        limits = {
+            "conversation_idle_minutes": (1, 1440),
+            "memory_window": (1, 200),
+            "remember_conversations": (0, 20),
+        }
+        for name, (low, high) in limits.items():
+            raw = str(form.get(name, "")).strip()
+            if not raw:
+                values[name] = None
+                continue
+            try:
+                values[name] = min(high, max(low, int(raw)))
+            except ValueError:
+                return HTMLResponse(
+                    f'<p class="msg" style="color:#f85149">{html.escape(name)}: '
+                    f"{html.escape(raw)!s} is not a whole number.</p>",
+                    status_code=400,
+                )
+        for name in ("auto_title", "summarize_conversations"):
+            choice = str(form.get(name, "")).strip()
+            values[name] = {"on": True, "off": False}.get(choice)
+        if not await store.set_agent_conversation_settings(device_id, values):
+            return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        agent = await store.get_agent(device_id)
+        persona = await store.get_persona_for_device(device_id)
+        return HTMLResponse(
+            _conversation_settings_panel(agent, persona)
+            + '<p class="msg">✓ Saved. Takes effect on the next turn.</p>'
+        )
 
     @router.post("/dashboard/agents/{device_id}/reboot", response_class=HTMLResponse)
     async def agent_reboot(device_id: str) -> HTMLResponse:
@@ -1334,6 +1371,10 @@ named page agent when its name is reopened.">
                 mcp_tools_allowlist=base.mcp_tools_allowlist or "",
                 linked_agents=base.linked_agents or "",
                 memory_window=base.memory_window,
+                conversation_idle_minutes=base.conversation_idle_minutes,
+                auto_title=base.auto_title,
+                summarize_conversations=base.summarize_conversations,
+                remember_conversations=base.remember_conversations,
             )
         return HTMLResponse(
             f'<p class="msg">✓ Created. <a href="/dashboard/personas/{persona.name}" '
@@ -1545,10 +1586,29 @@ named page agent when its name is reopened.">
     {linked_boxes}
   </div>
 
-  <div class="form-section" data-assistant-only>
-    <h3>Memory</h3>
-    <label>Conversation window (turns kept in LLM context)</label>
-    <input type="number" name="memory_window" value="{persona.memory_window}" min="1" max="200">
+  <div class="form-section">
+    <h3>Conversations &amp; memory</h3>
+    <p class="doc-muted">Defaults for every agent using this persona; an agent's page can
+    override any of them.</p>
+    <div class="field-row">
+      <div><label>New conversation after this many minutes of silence</label>
+        <input type="number" name="conversation_idle_minutes"
+          value="{persona.conversation_idle_minutes}" min="1" max="1440"></div>
+      <div data-assistant-only><label>Recent turns the model sees</label>
+        <input type="number" name="memory_window" value="{persona.memory_window}"
+          min="1" max="200"></div>
+    </div>
+    <label style="display:flex;gap:0.5rem;align-items:center">
+      <input type="checkbox" name="auto_title" value="1"{" checked" if persona.auto_title else ""}>
+      Name finished conversations (one call to this persona's model per conversation)</label>
+    <label style="display:flex;gap:0.5rem;align-items:center">
+      <input type="checkbox" name="summarize_conversations" value="1"{
+            " checked" if persona.summarize_conversations else ""
+        }> Summarize finished conversations (same call)</label>
+    <div data-assistant-only><label>Remember this many earlier conversations
+      (their summaries go into a new one; 0 = off)</label>
+      <input type="number" name="remember_conversations"
+        value="{persona.remember_conversations}" min="0" max="20"></div>
   </div>
 
   <button type="submit">Save</button>
@@ -1564,6 +1624,12 @@ named page agent when its name is reopened.">
   }});
   box.addEventListener("change", dim);
   dim();
+  // Remembering needs summaries.
+  const summarize = document.querySelector('input[name="summarize_conversations"]');
+  const remember = document.querySelector('input[name="remember_conversations"]');
+  const gate = () => {{ remember.disabled = !summarize.checked; }};
+  summarize.addEventListener("change", gate);
+  gate();
 }})();
 </script>"""
         return HTMLResponse(_render_page(request, body))
@@ -1602,6 +1668,10 @@ named page agent when its name is reopened.">
         mcp_tools_allowlist: str = Form(default=""),
         memory_window: int = Form(default=20),
         transcription: str = Form(default=""),
+        conversation_idle_minutes: int = Form(default=30),
+        auto_title: str = Form(default=""),
+        summarize_conversations: str = Form(default=""),
+        remember_conversations: int | None = Form(default=None),
     ) -> HTMLResponse:
         import json as _json
 
@@ -1643,6 +1713,13 @@ named page agent when its name is reopened.">
             linked_agents=linked_arg,
             memory_window=max(1, memory_window),
             transcription=bool(transcription.strip()),
+            conversation_idle_minutes=min(1440, max(1, conversation_idle_minutes)),
+            auto_title=bool(auto_title.strip()),
+            summarize_conversations=bool(summarize_conversations.strip()),
+            # A disabled field isn't submitted (summaries off): keep the number.
+            remember_conversations=(
+                None if remember_conversations is None else min(20, max(0, remember_conversations))
+            ),
         )
         if ok:
             logger.info(f"Persona '{name}' updated via dashboard")
@@ -2385,6 +2462,74 @@ def _persona_used_by(rows: list[tuple[Agent, Persona | None]], viewer_subject: s
         '<p class="doc-muted">Saving changes all of them.</p>'
         f"{''.join(sections)}</section>"
     )
+
+
+def _conversation_settings_panel(agent: Agent | None, persona: Persona | None) -> str:
+    """This agent's conversation settings: what's in force, and an override form.
+
+    Each field is blank (or "persona") to follow the persona, and says what that
+    value is, so it's clear which settings this agent has changed.
+    """
+    if agent is None:
+        return '<div id="conversation-settings"></div>'
+    settings = effective_settings(persona, agent)
+    device_id = html.escape(quote(agent.device_id, safe=""))
+    persona_name = html.escape(persona.name) if persona else "no persona"
+
+    def origin(name: str) -> str:
+        if settings.sources.get(name) == "agent":
+            return '<span class="badge badge-kind">this agent</span>'
+        return f'<span class="doc-muted">from {persona_name}</span>'
+
+    def number(name: str, label: str, value: int, low: int, high: int) -> str:
+        own = getattr(agent, name)
+        return (
+            f"<tr><th>{label}</th><td>"
+            f'<input type="number" name="{name}" min="{low}" max="{high}" '
+            f'value="{"" if own is None else own}" placeholder="{value}" style="width:6rem"> '
+            f"{origin(name)}</td></tr>"
+        )
+
+    def switch(name: str, label: str, value: bool) -> str:
+        own = getattr(agent, name)
+        options = "".join(
+            f'<option value="{v}"{" selected" if sel else ""}>{text}</option>'
+            for v, text, sel in (
+                ("", f"persona ({'on' if value else 'off'})", own is None),
+                ("on", "on", own is True),
+                ("off", "off", own is False),
+            )
+        )
+        return (
+            f'<tr><th>{label}</th><td><select name="{name}">{options}</select> '
+            f"{origin(name)}</td></tr>"
+        )
+
+    return f"""\
+<div id="conversation-settings">
+<h3>Conversations &amp; memory</h3>
+<form hx-post="/dashboard/agents/{device_id}/conversation_settings"
+      hx-target="#conversation-settings" hx-swap="outerHTML">
+<table style="width:auto">
+  {
+        number(
+            "conversation_idle_minutes",
+            "New conversation after (min)",
+            settings.idle_minutes,
+            1,
+            1440,
+        )
+    }
+  {number("memory_window", "Recent turns the model sees", settings.memory_window, 1, 200)}
+  {switch("auto_title", "Name finished conversations", settings.auto_title)}
+  {switch("summarize_conversations", "Summarize finished conversations", settings.summarize)}
+  {number("remember_conversations", "Earlier conversations remembered", settings.remember, 0, 20)}
+</table>
+<p class="doc-muted" style="font-size:0.8rem">Blank or "persona" follows the persona.
+Remembering needs summaries: with summaries off, nothing is remembered.</p>
+<button type="submit">Save overrides</button>
+</form>
+</div>"""
 
 
 def _named_page_ownership_refusal(
