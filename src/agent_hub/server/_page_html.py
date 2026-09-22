@@ -6,6 +6,8 @@ This file intentionally contains wide minified-ish CSS/JS; ruff E501 is
 suppressed for it in pyproject.toml.
 """
 
+from agent_hub.dashboard.styles import WORKSPACE_CSS
+
 PAGE_HTML = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -40,8 +42,7 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
    is answerable without reading anything. */
 .voice-live #voicedot{animation:voicepulse 1.4s ease-in-out infinite}
 @keyframes voicepulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
-/* Input level. The audio callback fires every 256ms, which is too slow to
-   look live, so RMS is sampled there and animated on rAF. */
+/* Animate input level between capture callbacks for a steady meter. */
 #meter{width:12rem;height:.6rem;background:#010409;border:1px solid #30363d;
   border-radius:3px;overflow:hidden;flex:none}
 #meterbar{height:100%;width:0%;background:#3fb950;transition:width .08s linear}
@@ -58,9 +59,11 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 button.secondary{background:#21262d;border:1px solid #30363d}
 button.secondary:hover{background:#30363d}
 </style></head><body>
-<h1>Page Agent</h1>
+<h1>Browser agent</h1>
+<p>A member of your fleet, running in this tab.</p>
 <div class="row"><a href="/dashboard/" style="color:#58a6ff">← Dashboard</a></div>
 <div id="status">initialising…</div>
+<div id="voice-notice" role="status" aria-live="polite" style="color:#fbbf24"></div>
 <div id="personaline" style="font-size:.8rem;color:#8b949e"></div>
 <div id="agentline" class="row" hidden><span id="agentname"></span>
 <button id="switchagent" class="secondary" title="Close this agent and pick another">Switch agent</button></div>
@@ -77,42 +80,49 @@ button.secondary:hover{background:#30363d}
 </form>
 
 <div id="agentui" hidden>
-<h2>Camera (seeing)</h2>
-<div class="row"><button id="cam">Start camera</button><span id="camstate">off</span></div>
-<video id="video" autoplay playsinline muted style="display:none"></video>
-
-<h2>Speak</h2>
-<div class="row"><input id="say" value="Hello from the page agent." style="flex:1;min-width:12rem">
-<button id="speak">Speak</button></div>
-
+<section class="workspace-panel">
 <h2>Discussion</h2>
-<div class="row"><input id="discuss" placeholder="ask the agent — e.g. 'what do you see?'"
+<div class="row"><input aria-label="Message to agent" id="discuss" placeholder="ask the agent — e.g. 'what do you see?'"
   style="flex:1;min-width:12rem">
 <button id="post">Send</button>
 <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.8rem">
-voice: <select id="voiceMode" title="How replies and page.audio_speaker.speak are voiced">
+Text reply voice: <select id="voiceMode" title="How replies and page.audio_speaker.speak are voiced">
   <option value="hub" selected>persona voice (hub TTS)</option>
   <option value="browser">browser built-in</option>
   <option value="off">silent</option>
 </select></label></div>
 <div id="log" data-empty="1" style="background:#010409;border:1px solid #30363d;padding:.6rem;overflow:auto;max-height:24rem;border-radius:4px;white-space:pre-wrap;font-family:monospace;color:#c9d1d9">dialogue will appear here…</div>
 
-<h2>Voice (hands-free with wake word)</h2>
+</section>
+<section class="workspace-panel">
+<h2>Talk to your agent</h2>
+<p style="color:#94a3b8">Hands-free replies use the persona voice on this browser’s speaker.</p>
 <div class="row">
 <button id="listen">Listen</button>
 <label style="display:inline-flex;align-items:center;gap:.2rem;font-size:.8rem">
 Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
 <span style="font-size:.75rem;color:#8b949e">clear it for open mic</span>
 </div>
-<div class="row"><div id="voicestate">
+<div class="row"><div id="voicestate" role="status" aria-live="polite">
   <span id="voicedot"></span>
   <span id="voicelabel">off</span>
   <span id="voicehint">press Listen to start</span>
 </div>
 <div id="meter" title="microphone input level"><div id="meterbar"></div></div>
 <span id="meterlabel">mic</span></div>
-</div>
 
+</section>
+<details class="workspace-panel"><summary>Camera and speaker controls</summary>
+<h2>Camera (seeing)</h2>
+<div class="row"><button id="cam">Start camera</button><span id="camstate">off</span></div>
+<video id="video" autoplay playsinline muted style="display:none"></video>
+
+<h2>Speak</h2>
+<div class="row"><input aria-label="Text to speak" id="say" value="Hello from the page agent." style="flex:1;min-width:12rem">
+<button id="speak">Speak</button></div>
+
+</details>
+</div>
 <script>
 // The hub derives the agent id from who is signed in and the name picked
 // here, so the page never makes one up. Two storage keys, two jobs:
@@ -131,6 +141,7 @@ let agentName = "";
 let es = null, hbTimer = null;
 let token = "", respondUrl = "", eventUrl = "", hbUrl = "", hbInterval = 30;
 let volume = 1.0;
+let hubAudio = null;
 let stream = null;
 let asking = false;
 // What the heartbeat reports; the dashboard shows it next to health.
@@ -151,7 +162,7 @@ if (!MEDIA_OK) {
 
 const TOOLS = [
   {name: "page.audio_speaker.speak", description: "Speak text aloud on this page with its selected voice (persona TTS or browser built-in).",
-    inputSchema: {type: "object", properties: {text: {type: "string"}}, required: ["text"]}},
+    inputSchema: {type: "object", properties: {text: {type: "string"}, voice_mode: {type: "string", enum: ["hub", "browser", "off"]}}, required: ["text"]}},
   {name: "page.audio_speaker.set_volume", description: "Set speech volume 0..100.",
     inputSchema: {type: "object", properties: {volume: {type: "integer", minimum: 0, maximum: 100}}, required: ["volume"]}},
   {name: "page.camera.take_photo", description: "Capture one webcam frame as a JPEG data URL.",
@@ -357,32 +368,46 @@ async function speakHub(text) {
     body: JSON.stringify({device_id: deviceId, token: token, text: text})
   });
   if (!resp.ok) throw new Error("hub TTS " + resp.status);
+  document.getElementById("voice-notice").textContent = resp.headers.get("X-Voice-Notice") || "";
   const blob = await resp.blob();
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);
   audio.volume = volume;
-  await audio.play();
-  audio.addEventListener("ended", () => URL.revokeObjectURL(url), {once: true});
+  if (hubAudio) { URL.revokeObjectURL(url); throw new Error("The agent is already speaking"); }
+  hubAudio = audio;
+  const wasReplying = replyPlaying;
+  replyPlaying = true;
+  if (!wasReplying) setActivity("speaking");
+  const finished = () => {
+    URL.revokeObjectURL(url);
+    if (hubAudio !== audio) return;
+    hubAudio = null;
+    replyPlaying = wasReplying;
+    if (!wasReplying) setActivity(listening ? "listening" : "idle");
+  };
+  audio.addEventListener("ended", finished, {once: true});
+  audio.addEventListener("error", finished, {once: true});
+  try { await audio.play(); }
+  catch (error) { finished(); throw error; }
 }
 
-async function speak(text) {
-  const mode = voiceMode();
+async function speak(text, requestedMode) {
+  const mode = requestedMode || voiceMode();
   if (mode === "off" || !text) return "silent";
   if (mode === "browser") { speakBuiltin(text); return "browser"; }
   try { await speakHub(text); return "hub"; }
   catch (e) {
-    // The persona's TTS system is unreachable (offline Edge, missing model):
-    // say so and fall back to the browser voice rather than staying mute.
-    voiceLog("hub TTS failed (" + e + ") — using browser voice", "#d29922");
-    speakBuiltin(text);
-    return "browser (fallback)";
+    const message = "Persona voice unavailable: " + e + ". Check audio permissions or the provider; choose browser built-in explicitly to use a different voice.";
+    document.getElementById("voice-notice").textContent = message;
+    voiceLog(message, "#d29922");
+    throw new Error(message);
   }
 }
 
 async function dispatch(name, args) {
   switch (name) {
     case "page.audio_speaker.speak": {
-      const how = await speak(args.text || "");
+      const how = await speak(args.text || "", args.voice_mode);
       return textResult("spoken via " + how + ": " + (args.text || ""));
     }
     case "page.audio_speaker.set_volume":
@@ -494,7 +519,7 @@ async function registerWebMcp() {
   }
 }
 
-document.getElementById("speak").onclick = () => speak(document.getElementById("say").value);
+document.getElementById("speak").onclick = () => speak(document.getElementById("say").value).catch(() => {});
 
 async function askAgent() {
   if (asking) return;
@@ -543,7 +568,7 @@ async function askAgent() {
       lineAgent.textContent = "agent: " + data.reply;
       lineAgent.style.color = "#3fb950";
       logEl.appendChild(lineAgent);
-      speak(data.reply);
+      speak(data.reply).catch(() => {});
     } else {
       const lineErr = document.createElement("div");
       lineErr.textContent = "agent: (error) " + (data.message || "no reply");
@@ -664,7 +689,7 @@ document.getElementById("wakeWord").addEventListener("input", () => {
     const word = document.getElementById("wakeWord").value.trim().toLowerCase();
     voiceWs.send(JSON.stringify({type: "wake_word", word: word}));
   }
-  if (listening) setVoiceState("listening");
+  if (listening && !replyPlaying) setVoiceState("listening");
 });
 
 // ── Voice WebSocket: hands-free with wake word ──────────────────────────
@@ -677,6 +702,10 @@ let micStream = null;
 let micSource = null;
 let processor = null;
 let listening = false;
+let starting = false;
+let replyPlaying = false;
+let playbackEnd = 0;
+let playbackTimer = null;
 
 function voiceLog(msg, color) {
   const logEl = document.getElementById("log");
@@ -705,21 +734,25 @@ function downsampleTo16k(buf, inRate) {
 }
 
 async function startListening() {
-  if (listening || !token) return;
+  if (listening || starting || !token) return;
   if (!MEDIA_OK) {
     voiceLog("microphone unavailable: the page needs https or localhost", "#f85149");
     return;
   }
   // The mic permission prompt and WS handshake take a moment; without this the
   // badge sits on "off" and the button says "Stop", which reads as broken.
+  starting = true;
+  document.getElementById("listen").textContent = "Cancel";
   setVoiceState("starting");
   const wakeWord = document.getElementById("wakeWord").value.trim().toLowerCase();
   const wsUrl = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host
     + "/page-agent/voice?device_id=" + encodeURIComponent(deviceId)
     + "&token=" + encodeURIComponent(token);
-  voiceWs = new WebSocket(wsUrl);
+  const socket = new WebSocket(wsUrl);
+  voiceWs = socket;
   voiceWs.binaryType = "arraybuffer";
   voiceWs.onopen = async () => {
+    if (voiceWs !== socket) return;
     // Always sent, even empty: an empty wake word means open mic, and not
     // sending it left the hub on its default "computer".
     voiceWs.send(JSON.stringify({type: "wake_word", word: wakeWord}));
@@ -729,10 +762,16 @@ async function startListening() {
       // particular is what makes a laptop mic loud enough for the wake word.
       // Do NOT constrain sampleRate here — it is advisory, browsers ignore it,
       // and asking can trigger OverconstrainedError on some devices.
-      micStream = await navigator.mediaDevices.getUserMedia({audio: {
+      const acquiredStream = await navigator.mediaDevices.getUserMedia({audio: {
         channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true
       }});
+      if (voiceWs !== socket || socket.readyState !== WebSocket.OPEN) {
+        acquiredStream.getTracks().forEach(t => t.stop());
+        return;
+      }
+      micStream = acquiredStream;
     } catch (e) {
+      if (voiceWs !== socket) return;
       voiceLog("mic denied: " + e, "#f85149");
       stopListening();
       return;
@@ -743,8 +782,12 @@ async function startListening() {
     // native rate and downsample in JS. Sending 48 kHz PCM labelled 16 kHz is
     // exactly what made the wake word "not hear anything".
     try {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const context = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx = context;
+      await context.resume();
+      if (voiceWs !== socket) { context.close(); return; }
     } catch (e) {
+      if (voiceWs !== socket) return;
       voiceLog("audio init failed: " + e, "#f85149");
       stopListening();
       return;
@@ -752,7 +795,7 @@ async function startListening() {
     const inRate = audioCtx.sampleRate;
     voiceLog("capturing at " + inRate + " Hz → 16000 Hz", "#8b949e");
     micSource = audioCtx.createMediaStreamSource(micStream);
-    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    processor = audioCtx.createScriptProcessor(1024, 1, 1);
     processor.onaudioprocess = (e) => {
       if (!listening || !voiceWs || voiceWs.readyState !== 1) return;
       let input = e.inputBuffer.getChannelData(0);
@@ -775,10 +818,12 @@ async function startListening() {
         s = Math.max(-32768, Math.min(32767, s));
         pcm[i] = s;
       }
-      voiceWs.send(pcm.buffer);
+      // Drop microphone audio while replying, and bound queued capture to 250ms.
+      if (!replyPlaying && !hubAudio && voiceWs.bufferedAmount < 8000) voiceWs.send(pcm.buffer);
     };
     micSource.connect(processor);
     processor.connect(audioCtx.destination);
+    starting = false;
     listening = true;
     document.getElementById("listen").textContent = "Stop";
     setVoiceState("listening");
@@ -786,6 +831,7 @@ async function startListening() {
     voiceLog("listening" + (wakeWord ? " for wake word '" + wakeWord + "'" : ""), "#3fb950");
   };
   voiceWs.onmessage = async (ev) => {
+    if (voiceWs !== socket) return;
     if (typeof ev.data === "string") {
       const msg = JSON.parse(ev.data);
       if (msg.type === "stt") {
@@ -799,11 +845,14 @@ async function startListening() {
         line.style.color = "#58a6ff";
         logEl.appendChild(line);
       } else if (msg.type === "thinking") {
+        replyPlaying = true;
         setVoiceState("thinking");
       } else if (msg.type === "heard") {
         // Something was picked up but not acted on: say so instead of nothing.
         voiceLog(msg.text ? "(" + msg.reason + ") " + msg.text : "heard sound, but no words", "#6e7681");
       } else if (msg.type === "tts" && msg.state === "start") {
+        replyPlaying = true;
+        document.getElementById("voice-notice").textContent = msg.voice_notice || "";
         setVoiceState("speaking");
         // The voice option applies here too: the hub streams audio only in
         // "hub" mode; "browser" speaks the text; "off" stays quiet.
@@ -816,11 +865,17 @@ async function startListening() {
         logEl.appendChild(line);
         logEl.scrollTop = logEl.scrollHeight;
       } else if (msg.type === "tts" && msg.state === "stop") {
-        setVoiceState("listening");
+        clearTimeout(playbackTimer);
+        playbackTimer = setTimeout(() => {
+          replyPlaying = false;
+          if (listening) setVoiceState("listening");
+        }, Math.max(0, playbackEnd - (audioCtx ? audioCtx.currentTime : 0)) * 1000);
       } else if (msg.type === "transcript") {
         voiceLog("(not wake word) " + msg.text, "#6e7681");
         setVoiceState("ignored", 2500);
       } else if (msg.type === "error") {
+        replyPlaying = false;
+        setVoiceState("listening");
         voiceLog("error: " + msg.message, "#f85149");
       }
     } else {
@@ -834,15 +889,22 @@ async function startListening() {
       const src = audioCtx.createBufferSource();
       src.buffer = buf;
       src.connect(audioCtx.destination);
-      src.start();
+      // Network chunks arrive in bursts; schedule contiguous audio, never overlap.
+      const startsAt = Math.max(audioCtx.currentTime, playbackEnd);
+      src.start(startsAt);
+      playbackEnd = startsAt + buf.duration;
     }
   };
   voiceWs.onerror = () => { voiceLog("WS error", "#f85149"); };
-  voiceWs.onclose = () => { stopListening(); };
+  voiceWs.onclose = () => { if (voiceWs === socket) stopListening(); };
 }
 
 function stopListening() {
+  starting = false;
   listening = false;
+  replyPlaying = false;
+  playbackEnd = 0;
+  clearTimeout(playbackTimer);
   if (processor) { processor.disconnect(); processor = null; }
   if (micSource) { micSource.disconnect(); micSource = null; }
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
@@ -854,10 +916,12 @@ function stopListening() {
 }
 
 document.getElementById("listen").onclick = () => {
-  if (listening) stopListening(); else startListening();
+  if (listening || starting) stopListening(); else startListening();
 };
 
 start();
 </script>
 </body></html>
 """
+
+PAGE_HTML = PAGE_HTML.replace("</style>", WORKSPACE_CSS + "</style>")

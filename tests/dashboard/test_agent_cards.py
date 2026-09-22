@@ -98,3 +98,18 @@ async def test_live_empty_tool_list_overrides_stale_heartbeat_tools(
     assert "No tools reported" in page.text
     assert "stale.drive" not in page.text
     assert ">Interact</a>" in page.text
+
+
+async def test_every_agent_kind_appears_in_the_same_fleet(store: RegistryStore) -> None:
+    """Every registered runtime is visible in cards, including browser instances."""
+    for kind in AgentKind:
+        await store.get_or_create_agent(f"agent-{kind.value}", kind=kind)
+    app = FastAPI()
+    app.include_router(make_router(store, {}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/dashboard/")
+    assert response.text.count('class="agent-card health-') == len(AgentKind)
+    for kind in AgentKind:
+        assert f"/dashboard/agents/agent-{kind.value}" in response.text
+    assert "+ Launch browser agent" in response.text
+    assert response.text.index("Your agent workspace") < response.text.index('id="agent-cards"')

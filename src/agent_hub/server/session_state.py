@@ -42,6 +42,9 @@ class DeviceState:
     last: TurnLatency = field(default_factory=TurnLatency)
     avg: TurnLatency = field(default_factory=TurnLatency)
     turns: int = 0
+    voice_notice: str = ""
+    response_started: float | None = None
+    first_audio_ms: int | None = None
 
 
 @dataclass
@@ -373,3 +376,17 @@ def get_device_activity(device_id: str, reported_activity: str | None = None) ->
     if reported_activity in {"idle", "listening", "thinking", "speaking", "paused"}:
         return reported_activity  # type: ignore[return-value]
     return "idle"
+
+
+def begin_response(device_id: str) -> None:
+    """Start timing an utterance after capture, or a submitted text turn."""
+    state = get_state(device_id)
+    state.response_started = _time.monotonic()
+    state.first_audio_ms = None
+
+
+def mark_first_audio(device_id: str) -> None:
+    """Record time to first outgoing audio; this excludes network and playback."""
+    state = get_state(device_id)
+    if state.response_started is not None and state.first_audio_ms is None:
+        state.first_audio_ms = int((_time.monotonic() - state.response_started) * 1000)
