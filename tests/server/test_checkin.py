@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 
 from agent_hub.config import ServerConfig, Settings
 from agent_hub.registry.store import RegistryStore
+from agent_hub.server.checkin import _heartbeat_url, _image_url
 from agent_hub.server.checkin import make_router as make_checkin_router
 
 
@@ -273,3 +274,66 @@ class TestCheckinClientIP:
         )
         assert agent is not None
         assert agent.ip_address == "192.168.1.50"
+
+
+class TestHeartbeatUrl:
+    """The heartbeat router is mounted on http_port, but the URL handed to a
+    device is derived from the WebSocket URL, which points at ws_port. These
+    cover the port swap and the proxied case where there is no port to swap.
+    """
+
+    def test_default_ws_url_gets_the_http_port(self) -> None:
+        settings = Settings.from_dict({})
+
+        url = _heartbeat_url(settings)
+
+        assert f":{settings.server.http_port}/xiaozhi/heartbeat/" in url
+        assert f":{settings.server.ws_port}/" not in url
+
+    def test_explicit_ws_port_is_swapped_for_the_http_port(self) -> None:
+        settings = Settings.from_dict(
+            {"server": {"websocket": "ws://192.168.1.39:8000/xiaozhi/v1/"}}
+        )
+
+        assert _heartbeat_url(settings) == "http://192.168.1.39:8003/xiaozhi/heartbeat/"
+
+    def test_custom_ports_are_honoured(self) -> None:
+        settings = Settings.from_dict(
+            {
+                "server": {
+                    "websocket": "ws://192.168.1.39:9100/xiaozhi/v1/",
+                    "ws_port": 9100,
+                    "http_port": 9200,
+                }
+            }
+        )
+
+        assert _heartbeat_url(settings) == "http://192.168.1.39:9200/xiaozhi/heartbeat/"
+
+    def test_proxied_url_without_a_port_is_left_alone(self) -> None:
+        """One host fronting every route: adding a port would break it."""
+        settings = Settings.from_dict({"server": {"websocket": "wss://hub.foofab.net/xiaozhi/v1/"}})
+
+        assert _heartbeat_url(settings) == "https://hub.foofab.net/xiaozhi/heartbeat/"
+
+    def test_unrelated_explicit_port_is_left_alone(self) -> None:
+        """A port that is not ws_port was chosen deliberately; don't rewrite it."""
+        settings = Settings.from_dict(
+            {"server": {"websocket": "wss://hub.foofab.net:8443/xiaozhi/v1/"}}
+        )
+
+        assert _heartbeat_url(settings) == "https://hub.foofab.net:8443/xiaozhi/heartbeat/"
+
+    def test_ipv6_literal_keeps_its_brackets(self) -> None:
+        settings = Settings.from_dict({"server": {"websocket": "ws://[fd00::1]:8000/xiaozhi/v1/"}})
+
+        assert _heartbeat_url(settings) == "http://[fd00::1]:8003/xiaozhi/heartbeat/"
+
+    def test_image_url_stays_on_the_ws_port(self) -> None:
+        """The image router *is* mounted beside the WebSocket, so it must not
+        be swapped the way the heartbeat URL is."""
+        settings = Settings.from_dict(
+            {"server": {"websocket": "ws://192.168.1.39:8000/xiaozhi/v1/"}}
+        )
+
+        assert _image_url(settings) == "http://192.168.1.39:8000/xiaozhi/v1/image/"
