@@ -146,6 +146,7 @@ class RegistryStore:
             "ALTER TABLE agents ADD COLUMN summarize_conversations BOOLEAN",
             "ALTER TABLE agents ADD COLUMN remember_conversations INTEGER",
             "ALTER TABLE conversations ADD COLUMN wrap_up_attempts INTEGER DEFAULT 0 NOT NULL",
+            "ALTER TABLE dashboard_operators ADD COLUMN paid_models BOOLEAN DEFAULT 0 NOT NULL",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
@@ -560,6 +561,7 @@ class RegistryStore:
         role: OperatorRole,
         *,
         enabled: bool,
+        paid_models: bool | None = None,
     ) -> bool:
         """Update an operator while preserving at least one enabled admin.
 
@@ -567,13 +569,25 @@ class RegistryStore:
             subject: Stable Cloudflare Access subject identifier.
             role: New authorization role.
             enabled: Whether this identity may use the dashboard.
+            paid_models: In free mode, whether their agents may run paid
+                models; None leaves it unchanged.
 
         Returns:
             True when updated. False means the row was missing or the change
             would remove the final enabled administrator.
         """
         async with self._operator_lock:
-            return await self._update_dashboard_operator(subject, role, enabled=enabled)
+            return await self._update_dashboard_operator(
+                subject, role, enabled=enabled, paid_models=paid_models
+            )
+
+    async def get_dashboard_operator(self, subject: str) -> DashboardOperator | None:
+        """Return the operator row for a Cloudflare Access subject, if any."""
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(DashboardOperator).where(DashboardOperator.subject == subject)
+            )
+            return result.scalar_one_or_none()
 
     async def _update_dashboard_operator(
         self,
@@ -581,6 +595,7 @@ class RegistryStore:
         role: OperatorRole,
         *,
         enabled: bool,
+        paid_models: bool | None = None,
     ) -> bool:
         """Apply an operator update while the process-local role lock is held."""
         async with self._sessions() as session:
@@ -606,6 +621,8 @@ class RegistryStore:
                     return False
             operator.role = role.value
             operator.enabled = enabled
+            if paid_models is not None:
+                operator.paid_models = paid_models
             await session.commit()
             return True
 

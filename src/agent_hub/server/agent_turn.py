@@ -32,7 +32,8 @@ from agent_hub.conversations import (
     memory_note_for_turn,
     with_memory,
 )
-from agent_hub.providers.llm import get_provider, resolved_model
+from agent_hub.model_access import PaidModelNotAllowed, choose_model
+from agent_hub.providers.llm import get_provider
 from agent_hub.providers.llm.model_check import describe_error, failure_message
 from agent_hub.registry.models import Persona
 from agent_hub.registry.store import RegistryStore
@@ -206,7 +207,12 @@ async def run_turn(
             return (await server_skills.run_result(name, args)).text
         return f"unknown tool: {name!r}"
 
-    llm = get_provider(persona.llm_provider, config, model_override=persona.llm_model or None)
+    try:
+        # The agent owner's allowance decides paid vs free (model_access).
+        choice = await choose_model(store, config, persona, device_id)
+    except PaidModelNotAllowed as exc:
+        raise TurnError(str(exc)) from exc
+    llm = get_provider(persona.llm_provider, config, model_override=choice.model)
     spend.bind_device(device_id)
     session_state.set_pipeline_status(device_id, "thinking", text)
     started = time.monotonic()
@@ -218,7 +224,7 @@ async def run_turn(
         # Say which model failed and why in words, not the provider's raw JSON,
         # and leave it on the agent's Manage page as device voice turns do.
         session_state.set_pipeline_status(device_id, "idle")
-        model = resolved_model(config, persona.llm_provider, persona.llm_model or None)
+        model = choice.model
         session_state.record_llm_error(device_id, model, describe_error(exc))
         logger.bind(tag=_TAG).error(f"Turn failed for {device_id!r} on {model!r}: {exc}")
         raise TurnError(failure_message(model, exc)) from exc

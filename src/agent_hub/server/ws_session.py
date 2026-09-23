@@ -37,6 +37,7 @@ from agent_hub.conversations import (
     memory_note_for_turn,
     with_memory,
 )
+from agent_hub.model_access import PaidModelNotAllowed, choose_model
 from agent_hub.providers.asr import get_provider as get_asr
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import describe_error as describe_model_error
@@ -411,6 +412,7 @@ async def _run_llm_turn(
     emotion: str = "",
     memory_window: int | None = None,
     memory_note: str = "",
+    store: RegistryStore | None = None,
 ) -> tuple[int, int, int, str]:
     """LLM + TTS half of a voice turn. Mutates history.
 
@@ -424,7 +426,23 @@ async def _run_llm_turn(
     # caller saves what this turn appended by index, and trimming here shifted
     # that index, so once the window was full the user's words were never saved.
     llm_history = _history_for_llm(history[-window:])
-    llm = get_llm(persona.llm_provider, config, model_override=persona.llm_model or None)
+    active_model = _persona_model(persona, config)
+    if store is None:
+        llm = get_llm(persona.llm_provider, config, model_override=persona.llm_model or None)
+    else:
+        try:
+            # The agent owner's allowance decides paid vs free (model_access).
+            choice = await choose_model(store, config, persona, device_id)
+            active_model = choice.model
+            llm = get_llm(persona.llm_provider, config, model_override=choice.model)
+        except PaidModelNotAllowed as exc:
+            model = _persona_model(persona, config)
+            logger.bind(tag=_TAG).warning(f"Voice turn refused for {device_id!r}: {exc}")
+            session_state.record_llm_error(device_id, model, str(exc))
+            await _speak(websocket, _model_error_notice(config), persona, config, session_id)
+            session_state.set_pipeline_status(device_id, "idle", transcript)
+            history.pop()
+            return 0, 0, 0, ""
 
     # Permission gating. None/[] allowlist → safe defaults (risky device tools
     # excluded); a non-empty list is an explicit admin/custom allowlist. The
@@ -602,7 +620,7 @@ async def _run_llm_turn(
         # the turn silently: the utterance was saved, nothing came back, and
         # nothing said why. Say so out loud, and record why for the dashboard.
         await slow_cue.close()
-        model = _persona_model(persona, config)
+        model = active_model
         reason = describe_model_error(exc)
         logger.bind(tag=_TAG).error(f"LLM call failed for {device_id!r} on {model!r}: {reason}")
         if device_id:
@@ -668,6 +686,7 @@ async def _run_voice_turn(
     supports_emoji: bool = False,
     memory_window: int | None = None,
     memory_note: str = "",
+    store: RegistryStore | None = None,
 ) -> None:
     """Run one ASR → LLM → TTS cycle."""
     session_state.begin_response(device_id)
@@ -758,6 +777,7 @@ async def _run_voice_turn(
         emotion=result.emotion,
         memory_window=memory_window,
         memory_note=memory_note,
+        store=store,
     )
 
     if not reply:
@@ -846,6 +866,7 @@ async def _run_text_turn(
     supports_emoji: bool,
     memory_window: int | None = None,
     memory_note: str = "",
+    store: RegistryStore | None = None,
 ) -> str:
     """Run one LLM → TTS cycle from an injected text utterance, bypassing ASR.
     Returns the LLM reply text (empty string if no reply).
@@ -887,6 +908,7 @@ async def _run_text_turn(
         emotion="",
         memory_window=memory_window,
         memory_note=memory_note,
+        store=store,
     )
 
     if reply and device_id:
@@ -1127,6 +1149,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                                 supports_emoji=hello.supports_emoji,
                                 memory_window=settings.memory_window,
                                 memory_note=note,
+                                store=store,
                             )
                     except Exception as exc:
                         import traceback as _tb
@@ -1214,6 +1237,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                             supports_emoji=hello.supports_emoji,
                             memory_window=settings.memory_window,
                             memory_note=note,
+                            store=store,
                         )
                     except Exception as exc:
                         import traceback as _tb

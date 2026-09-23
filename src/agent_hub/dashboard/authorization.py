@@ -12,6 +12,7 @@ from fastapi import HTTPException, Request, WebSocket, status
 from loguru import logger
 
 from agent_hub.dashboard.access_identity import AccessIdentityError, AccessIdentityVerifier
+from agent_hub.model_access import operator_may_use_paid
 from agent_hub.registry.models import OperatorRole
 from agent_hub.registry.store import RegistryStore
 
@@ -125,10 +126,14 @@ class DashboardAuthorization:
                 )
             connection.state.operator_identity = identity
             connection.state.operator_role = operator.role
+            connection.state.paid_models = operator_may_use_paid(operator)
             return
 
         connection.state.operator_identity = None
         connection.state.operator_role = OperatorRole.ADMIN.value
+        # Without Access nobody is identifiable, so free mode (if on) applies
+        # to everyone, local admin included: that is what a class night needs.
+        connection.state.paid_models = False
         if not self._password:
             return
         auth = connection.headers.get("authorization", "")

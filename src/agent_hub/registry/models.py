@@ -194,6 +194,9 @@ class DashboardOperator(Base):
     email: Mapped[str] = mapped_column(String(320), index=True)
     role: Mapped[str] = mapped_column(String(16), default=OperatorRole.VIEWER.value)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # In free mode (llm.free_only), whether this person's agents may run paid
+    # models. Off for everyone new; admins always may. See model_access.py.
+    paid_models: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen_at: Mapped[datetime] = mapped_column(server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

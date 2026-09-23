@@ -122,6 +122,15 @@ the Models page then lists only free OpenRouter models and refuses paid ids
 or `1`/`0`; blank means off, and any other value stops the hub at startup.
 Free mode is read at startup, so restart after changing it.
 
+With Cloudflare Access, free mode is **per person**: everyone starts on free
+models, and an admin ticks **paid models** for a person on the Operators page
+(admins always have it). The check runs when a turn runs, against the agent's
+owner, because personas are shared: if a free user's agent is on a persona with
+a paid model, the turn runs on a free fallback instead (the first `:free` model
+in `llm.openai.fallback_models`, else the hub default if it is free, else the
+turn is refused), and the agent's Manage page says so. Agents nobody owns, and
+every session on a hub without Access, stay on free models.
+
 Free models share a pool at each provider, so one is sometimes **rate-limited
 upstream** (HTTP 429) for a few minutes. Set `llm.openai.fallback_models` (env
 `AGENT_HUB_LLM_OPENAI_FALLBACK_MODELS`, comma-separated) and OpenRouter moves to
@@ -287,7 +296,7 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_DASHBOARD_DEFAULT_ROLE` | `viewer` | Role for a Cloudflare Access identity the hub has not seen before. `operator` suits an event where everyone admitted is a builder; `admin` is refused |
 | `AGENT_HUB_SERVER_PAGE_AGENTS_ALLOW_ANONYMOUS` | `false` | Page agents need a signed-in Cloudflare Access user. On a hub without Access (LAN, class night, local dev) set `true` to allow them; they all belong to owner `local` |
 | `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` | — | Optional shared check-in secret; empty allows LAN/classroom auto-registration; also gates robot registration on `/agent/register` |
-| `AGENT_HUB_LLM_FREE_ONLY` | `false` | Free mode: only free OpenRouter models may be selected or saved |
+| `AGENT_HUB_LLM_FREE_ONLY` | `false` | Free mode: agents run free OpenRouter models unless their owner has **paid models** (Operators page); admins always do |
 | `AGENT_HUB_LLM_OPENAI_FALLBACK_MODELS` | — | OpenRouter models to fall back to, comma-separated, when a persona's model is rate-limited or down; a `:free` model only falls back to `:free` ones |
 | `AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT` | `data/images` | Directory the dashboard may serve captured images from |
 | `AGENT_HUB_SERVER_DASHBOARD_ALLOWED_ORIGINS` | — | Extra origins allowed to submit dashboard forms, comma-separated; only needed behind a Host-rewriting proxy |

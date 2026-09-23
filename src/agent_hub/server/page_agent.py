@@ -40,7 +40,7 @@ from agent_hub.conversations import (
     with_memory,
 )
 from agent_hub.dashboard.authorization import DashboardAuthorization
-from agent_hub.providers.llm import resolved_model
+from agent_hub.model_access import PaidModelNotAllowed, choose_model
 from agent_hub.providers.llm.model_check import describe_error, failure_message
 from agent_hub.registry.models import AgentKind, Persona
 from agent_hub.registry.page_identity import (
@@ -872,9 +872,14 @@ def make_router(
                     conversation[:] = await store.load_history(
                         device_id, limit=window, conversation_id=current.id
                     )
-                llm = get_llm(
-                    persona.llm_provider, config, model_override=persona.llm_model or None
-                )
+                try:
+                    # The agent owner's allowance decides paid vs free.
+                    choice = await choose_model(store, config, persona, device_id)
+                except PaidModelNotAllowed as exc:
+                    session_state.set_pipeline_status(device_id, "listening")
+                    await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
+                    return
+                llm = get_llm(persona.llm_provider, config, model_override=choice.model)
                 system_prompt_now = with_memory(
                     system_prompt,
                     await memory_note_for_turn(store, config, device_id, current.id, settings),
@@ -941,9 +946,7 @@ def make_router(
                             logger.bind(tag=_TAG).error(f"Page voice LLM error: {retry_exc}")
                             message = str(retry_exc)
                             if isinstance(retry_exc, openai.OpenAIError):
-                                model = resolved_model(
-                                    config, persona.llm_provider, persona.llm_model or None
-                                )
+                                model = choice.model
                                 session_state.record_llm_error(
                                     device_id, model, describe_error(retry_exc)
                                 )

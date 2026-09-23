@@ -43,6 +43,9 @@ class DeviceState:
     avg: TurnLatency = field(default_factory=TurnLatency)
     turns: int = 0
     voice_notice: str = ""
+    # Set when a free model stands in for the persona's paid one because the
+    # agent's owner may use free models only (model_access.choose_model).
+    model_notice: str = ""
     response_started: float | None = None
     first_audio_ms: int | None = None
 
@@ -225,6 +228,12 @@ def record_tool_result(
             "error": error,
         }
     )
+
+
+def set_model_notice(device_id: str, notice: str) -> None:
+    """Say (or clear) that this agent runs a different model than its persona's."""
+    if device_id:
+        _get(device_id).model_notice = notice
 
 
 def record_llm_error(device_id: str, model: str, error: str) -> None:
