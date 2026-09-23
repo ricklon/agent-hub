@@ -25,6 +25,7 @@ from datetime import UTC
 from typing import Any
 from urllib.parse import urlsplit
 
+import openai
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from loguru import logger
@@ -39,6 +40,8 @@ from agent_hub.conversations import (
     with_memory,
 )
 from agent_hub.dashboard.authorization import DashboardAuthorization
+from agent_hub.providers.llm import resolved_model
+from agent_hub.providers.llm.model_check import describe_error, failure_message
 from agent_hub.registry.models import AgentKind, Persona
 from agent_hub.registry.page_identity import (
     LOCAL_OWNER,
@@ -936,8 +939,17 @@ def make_router(
                         except Exception as retry_exc:  # noqa: BLE001 - report and keep listening
                             session_state.set_pipeline_status(device_id, "listening")
                             logger.bind(tag=_TAG).error(f"Page voice LLM error: {retry_exc}")
+                            message = str(retry_exc)
+                            if isinstance(retry_exc, openai.OpenAIError):
+                                model = resolved_model(
+                                    config, persona.llm_provider, persona.llm_model or None
+                                )
+                                session_state.record_llm_error(
+                                    device_id, model, describe_error(retry_exc)
+                                )
+                                message = failure_message(model, retry_exc)
                             await websocket.send_text(
-                                json.dumps({"type": "error", "message": str(retry_exc)})
+                                json.dumps({"type": "error", "message": message})
                             )
                             return
                         llm_ms = llm_ms or int((time.monotonic() - llm_started) * 1000)

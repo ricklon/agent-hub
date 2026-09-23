@@ -103,10 +103,31 @@ def describe_error(exc: BaseException, timeout_s: float = DEFAULT_TIMEOUT_S) -> 
     return f"{type(exc).__name__}: {exc}"[:200]
 
 
+def failure_message(model: str, exc: BaseException) -> str:
+    """What to tell a person whose turn failed on the model, instead of raw JSON.
+
+    Args:
+        model: The model the turn asked for.
+        exc: What the provider raised.
+    """
+    advice = (
+        "Try again in a moment, or pick another model for this persona."
+        if isinstance(exc, (openai.RateLimitError, openai.APITimeoutError, TimeoutError))
+        else "Pick another model for this persona, or check the provider."
+    )
+    return f"The model {model} is unavailable: {describe_error(exc)}. {advice}"
+
+
+# OpenRouter's wrapper text for any upstream failure; the status says more.
+_GENERIC_PROVIDER_MESSAGES = {"Provider returned error"}
+
+
 def _provider_message(exc: BaseException) -> str:
     body = getattr(exc, "body", None)
     message = body.get("message") if isinstance(body, dict) else None
-    return f": {str(message)[:160]}" if message else ""
+    if not message or str(message) in _GENERIC_PROVIDER_MESSAGES:
+        return ""
+    return f": {str(message)[:160]}"
 
 
 async def _probe(llm: LLMProvider, prompt: str, *, expects_tool: bool, timeout_s: float) -> Probe:

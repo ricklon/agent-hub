@@ -83,6 +83,18 @@ class LLMProvider(abc.ABC):
 _cache: dict[str, LLMProvider] = {}
 
 
+def model_list(value: Any) -> list[str]:
+    """A list of model ids from YAML (a list) or an env var (comma-separated)."""
+    items = value if isinstance(value, list) else str(value or "").split(",")
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def resolved_model(config: dict[str, Any], provider: str, override: str | None) -> str:
+    """The model a persona actually runs: its own, or the provider's default."""
+    default = ((config.get("llm") or {}).get(provider or "openai") or {}).get("model", "")
+    return override or str(default) or provider
+
+
 def get_provider(
     name: str,
     config: dict[str, Any],
@@ -114,6 +126,7 @@ def get_provider(
             api_key=str(cfg.get("api_key", "")),
             model=model,
             base_url=cfg.get("base_url") or None,
+            fallback_models=model_list(cfg.get("fallback_models")),
         )
         _cache[cache_key] = provider
         return provider
