@@ -19,6 +19,7 @@ from loguru import logger
 
 from agent_hub import spend
 from agent_hub.conversations import effective_settings
+from agent_hub.model_access import choose_model
 from agent_hub.providers.llm import get_provider
 from agent_hub.registry.models import Conversation, ConversationKind, Persona
 from agent_hub.registry.store import RegistryStore
@@ -146,7 +147,9 @@ async def wrap_up_conversation(
         else _CHAT_INSTRUCTIONS
     )
     try:
-        llm = get_provider(persona.llm_provider, config, model_override=persona.llm_model or None)
+        # Wrap-up is billed like a turn, so the agent owner's allowance applies.
+        choice = await choose_model(store, config, persona, conversation.device_id)
+        llm = get_provider(persona.llm_provider, config, model_override=choice.model)
         spend.bind_device(conversation.device_id)
         reply = await llm.complete(
             [{"role": "user", "content": _transcript(messages, conversation.kind)}],

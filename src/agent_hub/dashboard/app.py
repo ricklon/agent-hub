@@ -174,7 +174,11 @@ def make_router(
 
     stale_policy = cleanup.StalePolicy.from_config(config)
 
-    async def _reject_model(model_id: str) -> str | None:
+    def _free_for(request: Request) -> bool:
+        """Free mode as it applies to this viewer: on unless they may choose paid."""
+        return free_only and not _may_choose_paid(request)
+
+    async def _reject_model(model_id: str, request: Request) -> str | None:
         """Reason a model id cannot be used on this hub, or None if it can.
 
         Two gates: free mode (paid ids refused) and capability (a model the
@@ -185,8 +189,11 @@ def make_router(
         """
         if not model_id:
             return None
-        if free_only and not await is_free_model(model_id, api_key):
-            return f"Free mode is on (llm.free_only): {model_id!r} is not a free model."
+        if _free_for(request) and not await is_free_model(model_id, api_key):
+            return (
+                f"Free models only: {model_id!r} is not a free model. "
+                "An admin can allow paid models for you on the Operators page."
+            )
         if not await supports_tools(model_id, api_key):
             return f"{model_id!r} cannot call tools, which every persona on this hub needs."
         return None
@@ -221,9 +228,9 @@ def make_router(
             else ""
         )
         free_badge = (
-            ' <span class="badge badge-free" title="llm.free_only is on: only free '
-            'OpenRouter models can be selected">free mode</span>'
-            if free_only
+            ' <span class="badge badge-free" title="Free mode: your agents run free '
+            'OpenRouter models. An admin can allow paid models for you.">free mode</span>'
+            if _free_for(request)
             else ""
         )
         return _PAGE.format(
@@ -534,10 +541,19 @@ def make_router(
     async def operators_page(request: Request) -> HTMLResponse:
         operators = await store.list_dashboard_operators()
         rows = "".join(_render_operator_row(operator) for operator in operators)
+        paid_note = (
+            "Free mode is on: everyone's agents run free models unless <b>paid models</b> "
+            "is ticked for their owner. Admins always may. A free user's agent on a paid "
+            "persona runs a free fallback model instead."
+            if free_only
+            else "Free mode is off, so every agent may run paid models; <b>paid models</b> "
+            "takes effect when <code>llm.free_only</code> is turned on."
+        )
         body = f"""\
 <h2>Operators</h2>
 <p class="doc-muted">Cloudflare Access decides who may sign in. Agent Hub assigns
 what each verified identity may do. New identities start as viewers.</p>
+<p class="doc-muted">{paid_note}</p>
 <div id="operator-result" role="status" aria-live="polite"></div>
 <table>
 <thead><tr><th>email</th><th>authorization</th></tr></thead>
@@ -559,6 +575,7 @@ what each verified identity may do. New identities start as viewers.</p>
         subject: str,
         role: str = Form(...),
         enabled: str = Form(default=""),
+        paid_models: str = Form(default=""),
     ) -> HTMLResponse:
         try:
             parsed_role = OperatorRole(role)
@@ -568,6 +585,7 @@ what each verified identity may do. New identities start as viewers.</p>
             subject,
             parsed_role,
             enabled=enabled == "1",
+            paid_models=paid_models == "1",
         )
         if not ok:
             return HTMLResponse(
@@ -963,6 +981,13 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             if llm_error
             else ""
         )
+        model_notice = session_state.get_state(device_id).model_notice
+        model_notice_row = (
+            f'<tr><th>Model</th><td><span style="color:#d29922">⚠ {html.escape(model_notice)}'
+            "</span></td></tr>"
+            if model_notice
+            else ""
+        )
         return HTMLResponse(f"""\
 <table style="width:auto;margin-bottom:0.5rem">
   <tr><th style="width:7rem">Health</th>
@@ -971,7 +996,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
   <tr><th>{transport_label}</th><td>{ws_html}</td></tr>
   <tr><th>MCP</th><td>{mcp_html}</td></tr>
   <tr><th>Registration</th><td>{db_status}</td></tr>
-  {llm_error_row}
+  {llm_error_row}{model_notice_row}
 </table>""")
 
     @router.get("/dashboard/spend.json")
@@ -1624,7 +1649,8 @@ named page agent when its name is reopened.">
         # Models the hub can actually use, offered in-form so nobody has to
         # copy ids from the Models page. Same gates as the picker.
         catalogue = await _fetch_openrouter_models(api_key)
-        usable_models = [m for m in catalogue if m["tools"] and (not free_only or m["free"])]
+        free_view = _free_for(request)
+        usable_models = [m for m in catalogue if m["tools"] and (not free_view or m["free"])]
         effective_model = persona.llm_model or default_model
         model_warning = (
             '<p class="msg" style="color:#f85149">⚠ '
@@ -1690,7 +1716,7 @@ named page agent when its name is reopened.">
         llm_model_val = html.escape(persona.llm_model or "")
         free_hint = (
             ' <span class="badge badge-free">free mode: free models only</span>'
-            if free_only
+            if free_view
             else ""
         )
         tts_voice_val = html.escape(persona.tts_voice or "")
@@ -1902,7 +1928,7 @@ named page agent when its name is reopened.">
         linked = sorted({str(a).strip() for a in form.getlist("linked_agents") if str(a).strip()})
         linked_arg = _json.dumps(linked) if linked else ""
 
-        refusal = await _reject_model(llm_model.strip())
+        refusal = await _reject_model(llm_model.strip(), request)
         if refusal:
             return HTMLResponse(f'<p style="color:#f85149">{html.escape(refusal)}</p>', 403)
         bad_voice = persona_options.voice_problem(tts_provider, tts_voice)
@@ -1943,12 +1969,13 @@ named page agent when its name is reopened.">
         current = next(
             (p.llm_model for p in personas if p.name == "hub-default"), None
         ) or config.get("llm", {}).get("openai", {}).get("model", "")
-        free_attrs = " checked disabled" if free_only else ""
+        free_view = _free_for(request)
+        free_attrs = " checked disabled" if free_view else ""
         free_note = (
-            '<p class="doc-muted" style="margin:.3rem 0 0">Free mode is on in config '
+            '<p class="doc-muted" style="margin:.3rem 0 0">Free mode is on '
             "(<code>llm.free_only</code>): only free models are listed and paid ids "
-            "are refused.</p>"
-            if free_only
+            "are refused. An admin can allow paid models for you on the Operators page.</p>"
+            if free_view
             else ""
         )
         body = f"""\
@@ -2009,7 +2036,7 @@ tool is not usable here.</p>
         ) or config.get("llm", {}).get("openai", {}).get("model", "")
 
         only_multi = bool(multimodal)
-        only_free = bool(free) or free_only
+        only_free = bool(free) or _free_for(request)
         q = search.lower()
 
         # Only models that can call tools are offered: every persona on this
@@ -2074,6 +2101,7 @@ tool is not usable here.</p>
 
     @router.post("/dashboard/models/test", response_class=HTMLResponse)
     async def models_test(
+        request: Request,
         model_id: str = Form(default=""),
         llm_model: str = Form(default=""),
         llm_provider: str = Form(default="openai"),
@@ -2091,7 +2119,7 @@ tool is not usable here.</p>
         # A model the catalogue no longer lists is not refused: calling it costs
         # nothing, and "it's gone" is exactly what the test should report.
         if (
-            free_only
+            _free_for(request)
             and _uses_openrouter(config, provider)
             and await _is_known_paid(model, api_key)
         ):
@@ -2114,10 +2142,11 @@ tool is not usable here.</p>
 
     @router.post("/dashboard/models/select", response_class=HTMLResponse)
     async def models_select(
+        request: Request,
         model_id: str = Form(...),
         persona: str = Form(default="hub-default"),
     ) -> HTMLResponse:
-        refusal = await _reject_model(model_id)
+        refusal = await _reject_model(model_id, request)
         if refusal:
             return HTMLResponse(f'<p style="color:#f85149">{html.escape(refusal)}</p>', 403)
         ok = await store.update_persona_model(persona, model_id)
@@ -2155,6 +2184,9 @@ def _render_operator_row(operator: Any) -> str:
         for role in OperatorRole
     )
     checked = " checked" if operator.enabled else ""
+    is_admin = operator.role == OperatorRole.ADMIN.value
+    # Admins always may; the box shows that rather than a setting to change.
+    paid = " checked disabled" if is_admin else (" checked" if operator.paid_models else "")
     last_seen = fmt_ts(operator.last_seen_at)
     subject = quote(operator.subject, safe="")
     return f"""\
@@ -2164,6 +2196,8 @@ def _render_operator_row(operator: Any) -> str:
   hx-target="#operator-result" hx-swap="innerHTML">
   <select name="role">{options}</select>
   <label style="margin:0"><input type="checkbox" name="enabled" value="1"{checked}> enabled</label>
+  <label style="margin:0" title="In free mode, whether this person's agents may run paid models">
+    <input type="checkbox" name="paid_models" value="1"{paid}> paid models</label>
   <span class="doc-muted">last seen {last_seen}</span>
   <button type="submit">Save</button>
 </form></td></tr>"""
@@ -2952,6 +2986,18 @@ def _viewer_subject(request: Request) -> str:
 def _launcher(request: Request) -> str | None:
     """Who may open page agents from the dashboard: their subject, or None for viewers."""
     return None if _role(request) == OperatorRole.VIEWER.value else _viewer_subject(request)
+
+
+def _may_choose_paid(request: Request) -> bool:
+    """Whether this viewer may pick paid models in free mode (set by authentication).
+
+    Only a verified Access identity can be allowed; a session without one
+    (no Access configured) stays in free mode like everyone else.
+    """
+    if getattr(request.state, "operator_identity", None) is None:
+        return False
+    default = _role(request) == OperatorRole.ADMIN.value
+    return bool(getattr(request.state, "paid_models", default))
 
 
 def _role(request: Request) -> str:
