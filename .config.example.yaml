@@ -89,6 +89,12 @@ llm:
     api_key: "YOUR_OPENAI_API_KEY"
     model: "gpt-4o-mini"
     base_url: null  # set to Ollama/LM Studio URL for local inference
+    # OpenRouter only: models to switch to, in order, when a persona's model is
+    # rate-limited or down (free models share a pool and hit this often). A
+    # ":free" persona model only falls back to other ":free" ones, so it never
+    # starts costing money. Up to 2 are used. Env: comma-separated, e.g.
+    # AGENT_HUB_LLM_OPENAI_FALLBACK_MODELS=google/gemma-4-31b-it:free,qwen/qwen3.8-27b:free
+    fallback_models: []
   anthropic:
     api_key: "YOUR_ANTHROPIC_API_KEY"
     model: "claude-haiku-4-5-20251001"

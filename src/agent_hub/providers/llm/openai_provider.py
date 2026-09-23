@@ -16,6 +16,24 @@ from agent_hub.providers.llm import LLMProvider
 # often reject the extra fields, so usage reporting is opt-in by host rather
 # than sent blindly to whatever base_url is configured.
 _USAGE_CAPABLE_HOSTS = ("openrouter.ai", "api.openai.com")
+# OpenRouter tries at most this many models per request, the primary included.
+_MAX_ROUTE_MODELS = 3
+
+
+def route_models(primary: str, fallbacks: list[str]) -> list[str]:
+    """The models OpenRouter may use for one request, primary first.
+
+    A free primary only falls back to other free models, so a persona kept to
+    free models (free mode, or its owner's choice) never starts costing money
+    because its model was busy. A paid primary may fall back to anything.
+
+    Args:
+        primary: The persona's model.
+        fallbacks: Configured ``llm.openai.fallback_models``, in order.
+    """
+    free = primary.endswith(":free")
+    usable = [m for m in fallbacks if m != primary and (m.endswith(":free") or not free)]
+    return [primary, *dict.fromkeys(usable)][:_MAX_ROUTE_MODELS]
 
 
 def _parse_tool_arguments(raw: str | None) -> tuple[dict[str, Any], str | None]:
@@ -53,6 +71,7 @@ class OpenAILLMProvider(LLMProvider):
         api_key: str,
         model: str = "gpt-4o-mini",
         base_url: str | None = None,
+        fallback_models: list[str] | None = None,
     ) -> None:
         """Create an OpenAILLMProvider.
 
@@ -62,6 +81,9 @@ class OpenAILLMProvider(LLMProvider):
             model: Chat model name.
             base_url: Override API base URL (e.g. 'http://localhost:11434/v1'
                 for Ollama).
+            fallback_models: Models OpenRouter may switch to when ``model`` is
+                rate-limited or down. Ignored on other endpoints, which have
+                no such routing.
         """
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
         self._model = model
@@ -71,6 +93,10 @@ class OpenAILLMProvider(LLMProvider):
         )
         # OpenRouter only returns a real cost when asked for it.
         self._cost_capable = base_url is not None and "openrouter.ai" in base_url
+        route = route_models(model, fallback_models or []) if self._cost_capable else [model]
+        # One model needs no routing field; more lets OpenRouter move to the
+        # next when one is rate-limited or unavailable, in the same request.
+        self._route = route if len(route) > 1 else []
 
     def _usage_kwargs(self, *, stream: bool) -> dict[str, Any]:
         """Extra request fields that make the endpoint report token usage."""
@@ -84,7 +110,14 @@ class OpenAILLMProvider(LLMProvider):
             kwargs["extra_body"] = {"usage": {"include": True}}
         return kwargs
 
-    async def _meter(self, usage: Any) -> None:
+    def _request_kwargs(self, *, stream: bool) -> dict[str, Any]:
+        """Usage reporting plus, on OpenRouter, the fallback route."""
+        kwargs = self._usage_kwargs(stream=stream)
+        if self._route:
+            kwargs["extra_body"] = {**kwargs.get("extra_body", {}), "models": self._route}
+        return kwargs
+
+    async def _meter(self, usage: Any, model: str | None = None) -> None:
         """Record one call's usage. Falls back to estimation when unreported."""
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
         completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
@@ -92,7 +125,8 @@ class OpenAILLMProvider(LLMProvider):
         # and we fall back to the configured price table.
         raw_cost = getattr(usage, "cost", None)
         cost = float(raw_cost) if raw_cost is not None else None
-        await spend.record(self._model, prompt_tokens, completion_tokens, cost)
+        # With fallbacks, the model that answered may not be the persona's.
+        await spend.record(model or self._model, prompt_tokens, completion_tokens, cost)
 
     def _build_messages(
         self, messages: list[dict[str, str]], system_prompt: str
@@ -122,9 +156,9 @@ class OpenAILLMProvider(LLMProvider):
         resp = await completions.create(
             model=self._model,
             messages=self._build_messages(messages, system_prompt),
-            **self._usage_kwargs(stream=False),
+            **self._request_kwargs(stream=False),
         )
-        await self._meter(getattr(resp, "usage", None))
+        await self._meter(getattr(resp, "usage", None), getattr(resp, "model", None))
         return (resp.choices[0].message.content or "").strip()
 
     async def complete_with_tools(
@@ -145,11 +179,11 @@ class OpenAILLMProvider(LLMProvider):
                 messages=working,
                 tools=tools,
                 tool_choice="auto",
-                **self._usage_kwargs(stream=False),
+                **self._request_kwargs(stream=False),
             )
             # Each tool round is a separate billed call, so meter before any
             # early return below.
-            await self._meter(getattr(resp, "usage", None))
+            await self._meter(getattr(resp, "usage", None), getattr(resp, "model", None))
             if not resp.choices:
                 return ""
             msg = resp.choices[0].message
@@ -203,9 +237,9 @@ class OpenAILLMProvider(LLMProvider):
         resp = await completions.create(
             model=self._model,
             messages=working,
-            **self._usage_kwargs(stream=False),
+            **self._request_kwargs(stream=False),
         )
-        await self._meter(getattr(resp, "usage", None))
+        await self._meter(getattr(resp, "usage", None), getattr(resp, "model", None))
         if not resp.choices:
             return ""
         return (resp.choices[0].message.content or "").strip()
@@ -230,7 +264,7 @@ class OpenAILLMProvider(LLMProvider):
                 tools=tools,
                 tool_choice="auto",
                 stream=True,
-                **self._usage_kwargs(stream=True),
+                **self._request_kwargs(stream=True),
             )
 
             content_parts: list[str] = []
@@ -239,7 +273,7 @@ class OpenAILLMProvider(LLMProvider):
                 # The usage block arrives in its own trailing chunk, which
                 # carries no choices — check it before skipping those.
                 if getattr(chunk, "usage", None):
-                    await self._meter(chunk.usage)
+                    await self._meter(chunk.usage, getattr(chunk, "model", None))
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -348,12 +382,12 @@ class OpenAILLMProvider(LLMProvider):
             model=self._model,
             messages=self._build_messages(messages, system_prompt),
             stream=True,
-            **self._usage_kwargs(stream=True),
+            **self._request_kwargs(stream=True),
         )
         async for chunk in stream:
             # The trailing usage chunk has no choices; indexing [0] would raise.
             if getattr(chunk, "usage", None):
-                await self._meter(chunk.usage)
+                await self._meter(chunk.usage, getattr(chunk, "model", None))
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta.content or ""

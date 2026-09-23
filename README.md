@@ -122,6 +122,13 @@ the Models page then lists only free OpenRouter models and refuses paid ids
 or `1`/`0`; blank means off, and any other value stops the hub at startup.
 Free mode is read at startup, so restart after changing it.
 
+Free models share a pool at each provider, so one is sometimes **rate-limited
+upstream** (HTTP 429) for a few minutes. Set `llm.openai.fallback_models` (env
+`AGENT_HUB_LLM_OPENAI_FALLBACK_MODELS`, comma-separated) and OpenRouter moves to
+the next model in the same request. A `:free` persona model only falls back to
+other `:free` models. When every model is busy, the page and the dashboard say
+which model failed and why instead of showing the provider's raw error.
+
 1. Go to [openrouter.ai](https://openrouter.ai) and sign in
 2. Click your profile → **Keys** → **Create key**
 3. Copy the key (starts with `sk-or-`)
@@ -281,6 +288,7 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_PAGE_AGENTS_ALLOW_ANONYMOUS` | `false` | Page agents need a signed-in Cloudflare Access user. On a hub without Access (LAN, class night, local dev) set `true` to allow them; they all belong to owner `local` |
 | `AGENT_HUB_SERVER_ENROLLMENT_TOKEN` | — | Optional shared check-in secret; empty allows LAN/classroom auto-registration; also gates robot registration on `/agent/register` |
 | `AGENT_HUB_LLM_FREE_ONLY` | `false` | Free mode: only free OpenRouter models may be selected or saved |
+| `AGENT_HUB_LLM_OPENAI_FALLBACK_MODELS` | — | OpenRouter models to fall back to, comma-separated, when a persona's model is rate-limited or down; a `:free` model only falls back to `:free` ones |
 | `AGENT_HUB_SERVER_DASHBOARD_IMAGE_ROOT` | `data/images` | Directory the dashboard may serve captured images from |
 | `AGENT_HUB_SERVER_DASHBOARD_ALLOWED_ORIGINS` | — | Extra origins allowed to submit dashboard forms, comma-separated; only needed behind a Host-rewriting proxy |
 | `AGENT_HUB_SERVER_ALLOWED_HOSTS` | — | Host allowlist for the dashboard, comma-separated; blocks DNS-rebinding. List every name/IP the dashboard is reached by |
