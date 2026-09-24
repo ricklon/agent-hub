@@ -216,7 +216,7 @@ async def test_tts_speaks_with_the_persona_voice(store: RegistryStore, monkeypat
             calls.append((text, voice))
             return b"\x00\x00" * 160, 16000
 
-    monkeypatch.setattr(tts_pkg, "get_provider", lambda name, config: _FakeTTS())
+    monkeypatch.setattr(tts_pkg, "get_provider", lambda name, config, model=None: _FakeTTS())
     async with await _client(store) as client:
         reg = await client.post("/page-agent/register", json={"device_id": "page-tts", "tools": []})
         token = reg.json()["token"]

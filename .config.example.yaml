@@ -142,6 +142,7 @@ tts:
     # Empty reuses llm.openai.api_key when llm.openai.base_url is OpenRouter.
     # Env: AGENT_HUB_TTS_OPENROUTER_API_KEY
     api_key: ""
+    # Hub default; a persona can pick its own TTS model in the editor.
     # google/gemini-3.8-flash-lite-tts is the lower-latency tier, which suits
     # conversation; google/gemini-3.8-flash-tts is the higher-fidelity tier
     # (narration, character voices). Same voices.

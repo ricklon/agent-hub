@@ -63,7 +63,7 @@ class _FakeRateController:
 async def test_speak_falls_back_to_default_voice_on_invalid_persona_voice(monkeypatch) -> None:
     """A typo in persona.tts_voice should not abort the whole voice turn."""
     tts = _FakeTTS()
-    monkeypatch.setattr(ws_session, "get_tts", lambda provider, config: tts)
+    monkeypatch.setattr(ws_session, "get_tts", lambda provider, config, model=None: tts)
     monkeypatch.setattr(ws_session, "OpusEncoder", _FakeOpusEncoder)
     monkeypatch.setattr(ws_session, "AudioRateController", _FakeRateController)
 
@@ -93,7 +93,7 @@ async def test_speak_resolves_updated_persona_voice_without_reconnect(monkeypatc
     from agent_hub.server.persona_voice import VOICE_TEST_TEXT
 
     tts = _FakeTTS()
-    monkeypatch.setattr(ws_session, "get_tts", lambda provider, config: tts)
+    monkeypatch.setattr(ws_session, "get_tts", lambda provider, config, model=None: tts)
     monkeypatch.setattr(ws_session, "OpusEncoder", _FakeOpusEncoder)
     monkeypatch.setattr(ws_session, "AudioRateController", _FakeRateController)
     old = Persona(name="voice", tts_provider="edge", tts_voice="old")
