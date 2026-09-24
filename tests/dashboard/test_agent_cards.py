@@ -53,7 +53,7 @@ async def test_page_agent_is_an_ordinary_card_with_live_browser_tools(
     assert ">Camera</a>" not in page.text
 
 
-async def test_default_cards_poll_and_diagnostics_state_survives_navigation(
+async def test_default_cards_poll_and_diagnostics_live_on_the_health_tab(
     store: RegistryStore,
 ) -> None:
     await store.get_or_create_agent(
@@ -61,18 +61,27 @@ async def test_default_cards_poll_and_diagnostics_state_survives_navigation(
     )
     async with await _client(store) as client:
         cards = await client.get("/dashboard/", params={"owner": "ada@example.com"})
-        diagnostics = await client.get(
+        old_link = await client.get(
             "/dashboard/",
             params={"owner": "ada@example.com", "view": "diagnostics"},
         )
+        diagnostics = await client.get("/dashboard/health", params={"owner": "ada@example.com"})
 
     assert (
         'id="agent-cards" hx-get="/dashboard/agents?owner=ada%40example.com" '
         'hx-trigger="every 5s"' in cards.text
     )
-    assert 'href="/dashboard/?owner=ada%40example.com&amp;view=diagnostics"' in cards.text
-    assert 'aria-current="page">Diagnostics</a>' in diagnostics.text
+    # The Agents page carries a one-line health strip, not the diagnostics table.
+    assert 'class="health-strip"' in cards.text
+    assert 'hx-get="/dashboard/overview?compact=1"' in cards.text
+    assert 'id="agent-table"' not in cards.text
+    assert '<a href="/dashboard/health">Health</a>' in cards.text
+    # Old diagnostics links land on Health with their filter.
+    assert old_link.status_code == 303
+    assert old_link.headers["location"] == "/dashboard/health?owner=ada%40example.com"
+    assert "<h2>Diagnostics</h2>" in diagnostics.text
     assert 'hx-target="#agent-table"' in diagnostics.text
+    assert 'hx-push-url="/dashboard/health?owner=ada%40example.com"' in diagnostics.text
     assert (
         'hx-get="/dashboard/agents?owner=ada%40example.com&amp;view=diagnostics" '
         'hx-trigger="every 5s"' in diagnostics.text

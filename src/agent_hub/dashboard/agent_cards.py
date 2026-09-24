@@ -12,10 +12,7 @@ from agent_hub.server import mcp_bridge, session_state
 
 AGENT_CARD_CSS = """\
 .fleet-toolbar{display:flex;justify-content:space-between;align-items:flex-end;gap:1rem;
-  flex-wrap:wrap;margin:.5rem 0 .9rem}.view-switch{display:flex;gap:.35rem}
-.view-switch a{background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px;
-  padding:.4rem .7rem;text-decoration:none}.view-switch a[aria-current=page]{background:#0369a1;
-  border-color:#0369a1;color:#fff}.agent-owner-group{margin:0 0 1.5rem}
+  flex-wrap:wrap;margin:.5rem 0 .9rem}.agent-owner-group{margin:0 0 1.5rem}
 .agent-owner-heading{display:flex;align-items:baseline;gap:.55rem;margin-bottom:.55rem}
 .agent-owner-heading h3{margin:0;color:#e2e8f0}
 .agent-owner-heading span{color:#94a3b8;font-size:.75rem}
@@ -50,7 +47,7 @@ AGENT_CARD_CSS = """\
 .agent-card-empty{padding:1.5rem;text-align:center;color:#94a3b8;border:1px dashed #334155;
   border-radius:6px}@media (max-width:760px){
   .fleet-toolbar{align-items:stretch;flex-direction:column}
-  .view-switch a{flex:1;text-align:center}.agent-card-grid{grid-template-columns:1fr}}
+  .agent-card-grid{grid-template-columns:1fr}}
 """
 
 

@@ -19,15 +19,7 @@ def render_fleet_overview(
     if not agents:
         return _empty_fleet_state()
 
-    health_by_device: dict[str, session_state.DeviceHealth] = {
-        agent.device_id: session_state.get_device_health(
-            agent.device_id,
-            agent.last_heartbeat,
-            agent.health_fault,
-            heartbeat_timeout_seconds,
-        )
-        for agent, _persona in agents
-    }
+    health_by_device = _health_by_device(agents, heartbeat_timeout_seconds)
     counts = Counter(health_by_device.values())
     attention = [
         agent
@@ -53,6 +45,46 @@ def render_fleet_overview(
   <div class="overview-grid">{cards}</div>
 </section>
 {_attention_panel(attention, health_by_device)}"""
+
+
+def render_health_strip(
+    agents: list[tuple[Agent, Persona | None]],
+    heartbeat_timeout_seconds: int,
+) -> str:
+    """One line of fleet health for the Agents page; the detail lives on Health."""
+    if not agents:
+        return ""
+    counts = Counter(_health_by_device(agents, heartbeat_timeout_seconds).values())
+    attention = counts["degraded"] + counts["offline"]
+    parts = [f'<span class="overview-good">{counts["healthy"]} healthy</span>']
+    if counts["degraded"]:
+        parts.append(f'<span class="overview-warn">{counts["degraded"]} degraded</span>')
+    if counts["offline"]:
+        parts.append(f'<span class="overview-muted">{counts["offline"]} offline</span>')
+    link = (
+        f'<a href="/dashboard/health">{attention} need attention →</a>'
+        if attention
+        else '<a href="/dashboard/health">Health →</a>'
+    )
+    return (
+        '<p class="health-strip" aria-label="Fleet health summary">'
+        + " · ".join(parts)
+        + f" {link}</p>"
+    )
+
+
+def _health_by_device(
+    agents: list[tuple[Agent, Persona | None]], heartbeat_timeout_seconds: int
+) -> dict[str, session_state.DeviceHealth]:
+    return {
+        agent.device_id: session_state.get_device_health(
+            agent.device_id,
+            agent.last_heartbeat,
+            agent.health_fault,
+            heartbeat_timeout_seconds,
+        )
+        for agent, _persona in agents
+    }
 
 
 def _summary_card(label: str, value: int, css_class: str) -> str:

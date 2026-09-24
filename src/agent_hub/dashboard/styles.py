@@ -116,6 +116,9 @@ input[type=number]{width:6rem}
 .overview-good .overview-value{color:#3fb950}
 .overview-warn .overview-value{color:#d29922}
 .overview-muted .overview-value{color:#94a3b8}
+.health-strip{margin:.25rem 0 .75rem;font-size:.85rem;color:#94a3b8}
+.health-strip .overview-good{color:#3fb950}.health-strip .overview-warn{color:#d29922}
+.health-strip a{color:#38bdf8;margin-left:.4rem}
 .attention-panel{border:1px solid #5a4217;background:#17130b;border-radius:6px;padding:1rem}
 .attention-count{font-size:0.75rem;background:#5a4217;color:#f2cc60;border-radius:999px;
   padding:0.15rem 0.45rem;vertical-align:middle}
