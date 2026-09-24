@@ -679,7 +679,7 @@ def make_router(
 
         session_state.set_pipeline_status(device_id, "speaking", text)
         try:
-            provider = get_tts(persona.tts_provider, config)
+            provider = get_tts(persona.tts_provider, config, persona.tts_model)
             pcm, rate = await synthesize_persona(provider, text, persona, device_id)
         except Exception as exc:
             logger.bind(tag=_TAG).error(f"Page agent TTS failed for {device_id!r}: {exc}")
@@ -823,7 +823,7 @@ def make_router(
                 started = time.monotonic()
                 try:
                     pcm_bytes, tts_rate = await synthesize_persona(
-                        get_tts(voice.tts_provider, config), text, voice, device_id
+                        get_tts(voice.tts_provider, config, voice.tts_model), text, voice, device_id
                     )
                 except Exception as exc:  # noqa: BLE001 - one bad sentence must not end the turn
                     logger.bind(tag=_TAG).error(f"Page voice TTS error: {exc}")

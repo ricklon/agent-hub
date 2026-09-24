@@ -74,12 +74,14 @@ class TTSProvider(abc.ABC):
 _cache: dict[str, TTSProvider] = {}
 
 
-def get_provider(name: str, config: dict[str, Any]) -> TTSProvider:
+def get_provider(name: str, config: dict[str, Any], model: str | None = None) -> TTSProvider:
     """Instantiate a TTS provider by name from config.
 
     Args:
         name: Provider key matching .config.yaml tts.<name>.
         config: Full raw config dict (tts section is extracted internally).
+        model: A persona's model within that provider (OpenRouter or Kitten
+            model id); None uses tts.<name>.model. Edge has no models.
 
     Returns:
         Configured TTSProvider instance.
@@ -87,8 +89,10 @@ def get_provider(name: str, config: dict[str, Any]) -> TTSProvider:
     Raises:
         ValueError: If the provider name is unknown.
     """
-    if name in _cache:
-        return _cache[name]
+    model = model if name != "edge" else None
+    cache_key = f"{name}:{model}" if model else name
+    if cache_key in _cache:
+        return _cache[cache_key]
 
     tts_cfg: dict[str, Any] = config.get("tts", {})
     if name == "edge":
@@ -105,12 +109,32 @@ def get_provider(name: str, config: dict[str, Any]) -> TTSProvider:
 
         cfg = tts_cfg.get("kitten", {})
         provider = KittenTTSProvider(
-            model=cfg.get("model", "KittenML/kitten-tts-nano-0.8"),
+            model=model or cfg.get("model", "KittenML/kitten-tts-nano-0.8"),
             voice=cfg.get("voice", "Luna"),
             speed=float(cfg.get("speed", 1.0)),
+        )
+    elif name == "openrouter":
+        from agent_hub.providers.tts.openrouter import OpenRouterTTSProvider
+
+        cfg = tts_cfg.get("openrouter", {})
+        llm_cfg = (config.get("llm") or {}).get("openai") or {}
+        # Reuse the LLM key when the LLM already goes through OpenRouter.
+        llm_key = (
+            str(llm_cfg.get("api_key") or "")
+            if "openrouter.ai" in str(llm_cfg.get("base_url") or "")
+            else ""
+        )
+        speed = cfg.get("speed")
+        provider = OpenRouterTTSProvider(
+            api_key=str(cfg.get("api_key") or llm_key),
+            model=model or str(cfg.get("model") or "google/gemini-3.8-flash-lite-tts"),
+            voice=str(cfg.get("voice") or "Kore"),
+            base_url=str(cfg.get("base_url") or "https://openrouter.ai/api/v1"),
+            speed=float(speed) if speed not in (None, "") else None,
+            price_per_million_chars=float(cfg.get("price_per_million_chars") or 0.0),
         )
     else:
         raise ValueError(f"Unknown TTS provider: {name!r}")
 
-    _cache[name] = provider
+    _cache[cache_key] = provider
     return provider

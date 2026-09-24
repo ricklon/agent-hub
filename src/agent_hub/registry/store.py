@@ -147,6 +147,7 @@ class RegistryStore:
             "ALTER TABLE agents ADD COLUMN remember_conversations INTEGER",
             "ALTER TABLE conversations ADD COLUMN wrap_up_attempts INTEGER DEFAULT 0 NOT NULL",
             "ALTER TABLE dashboard_operators ADD COLUMN paid_models BOOLEAN DEFAULT 0 NOT NULL",
+            "ALTER TABLE personas ADD COLUMN tts_model VARCHAR(128)",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
@@ -1086,6 +1087,7 @@ class RegistryStore:
         tts_provider: str = "edge",
         tts_voice: str | None = None,
         asr_provider: str = "funasr_onnx",
+        tts_model: str | None = None,
     ) -> Persona | None:
         """Create a new persona. Returns None if the name is already taken."""
         async with self._sessions() as session:
@@ -1099,6 +1101,7 @@ class RegistryStore:
                 llm_model=llm_model,
                 tts_provider=tts_provider,
                 tts_voice=tts_voice,
+                tts_model=tts_model,
                 asr_provider=asr_provider,
             )
             session.add(persona)
@@ -1140,6 +1143,7 @@ class RegistryStore:
         llm_model: str | None = None,
         tts_provider: str | None = None,
         tts_voice: str | None = None,
+        tts_model: str | None = None,
         asr_provider: str | None = None,
         server_skills: str | None = None,
         mcp_tools_allowlist: str | None = None,
@@ -1167,6 +1171,8 @@ class RegistryStore:
                 persona.tts_provider = tts_provider
             if tts_voice is not None:
                 persona.tts_voice = tts_voice or None
+            if tts_model is not None:
+                persona.tts_model = tts_model or None
             if asr_provider is not None:
                 persona.asr_provider = asr_provider
             if server_skills is not None:

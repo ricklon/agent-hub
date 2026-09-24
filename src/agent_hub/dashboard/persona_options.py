@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from agent_hub.providers import asr as _asr
 
-TTS_PROVIDERS: tuple[str, ...] = ("edge", "kitten")
+TTS_PROVIDERS: tuple[str, ...] = ("edge", "kitten", "openrouter")
 
 # Edge exposes 400+ voices dynamically; this is a curated English shortlist for
 # the picker. Any Edge voice id still works if typed in directly.
@@ -37,13 +37,88 @@ KITTEN_VOICES: tuple[str, ...] = (
     "Kiki",
     "Leo",
 )
-TTS_VOICE_SUGGESTIONS: tuple[str, ...] = EDGE_VOICES + KITTEN_VOICES
+# OpenRouter voices depend on the model; these are the 30 prebuilt voices of
+# Gemini 3.8 Flash Lite TTS (the default) and Flash TTS. Other models' voice
+# ids, or Gemini voice_... ids from Voice Design, can be typed in; a voice the
+# model rejects falls back to the configured one with a visible notice.
+OPENROUTER_VOICES: tuple[str, ...] = (
+    "Kore",
+    "Puck",
+    "Zephyr",
+    "Charon",
+    "Fenrir",
+    "Leda",
+    "Orus",
+    "Aoede",
+    "Callirrhoe",
+    "Autonoe",
+    "Enceladus",
+    "Iapetus",
+    "Umbriel",
+    "Algieba",
+    "Despina",
+    "Erinome",
+    "Algenib",
+    "Rasalgethi",
+    "Laomedeia",
+    "Achernar",
+    "Alnilam",
+    "Schedar",
+    "Gacrux",
+    "Pulcherrima",
+    "Achird",
+    "Zubenelgenubi",
+    "Vindemiatrix",
+    "Sadachbia",
+    "Sadaltager",
+    "Sulafat",
+)
+TTS_VOICE_SUGGESTIONS: tuple[str, ...] = EDGE_VOICES + KITTEN_VOICES + OPENROUTER_VOICES
 
 # Which voices belong to which voice system. Edge accepts any of its 400+
 # voice ids if typed in, so its list is a suggestion; Kitten ships exactly
 # these eight, so anything else is a save-time error rather than a runtime one.
-VOICES_BY_PROVIDER: dict[str, tuple[str, ...]] = {"edge": EDGE_VOICES, "kitten": KITTEN_VOICES}
+VOICES_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    "edge": EDGE_VOICES,
+    "kitten": KITTEN_VOICES,
+    "openrouter": OPENROUTER_VOICES,
+}
 FIXED_VOICE_PROVIDERS: frozenset[str] = frozenset({"kitten"})
+
+# Models a persona can pick within each voice system (blank = the hub's
+# configured default). OpenRouter takes any TTS model id it serves; these are
+# the suggestions. Kitten models are downloaded on first use, so only the
+# known ones are accepted. Edge has no model choice.
+TTS_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    "openrouter": ("google/gemini-3.8-flash-lite-tts", "google/gemini-3.8-flash-tts"),
+    "kitten": (
+        "KittenML/kitten-tts-nano-0.8",
+        "KittenML/kitten-tts-nano-0.8-int8",
+        "KittenML/kitten-tts-micro-0.8",
+        "KittenML/kitten-tts-mini-0.8",
+    ),
+}
+FIXED_MODEL_PROVIDERS: frozenset[str] = frozenset({"kitten"})
+
+
+def tts_models_for(tts_provider: str) -> tuple[str, ...]:
+    """TTS model ids to offer for one voice system (empty when it has none)."""
+    return TTS_MODELS_BY_PROVIDER.get(tts_provider, ())
+
+
+def tts_model_problem(tts_provider: str, model: str) -> str | None:
+    """Why ``model`` cannot be used with ``tts_provider``, or None if it can.
+
+    Blank always passes (it means the configured default).
+    """
+    if not model:
+        return None
+    if tts_provider not in TTS_MODELS_BY_PROVIDER:
+        return f"{tts_provider} has no model choice; leave the TTS model blank."
+    if tts_provider in FIXED_MODEL_PROVIDERS and model not in TTS_MODELS_BY_PROVIDER[tts_provider]:
+        options = ", ".join(TTS_MODELS_BY_PROVIDER[tts_provider])
+        return f"{model!r} is not a {tts_provider} model. Choose one of: {options}."
+    return None
 
 
 def voices_for(tts_provider: str) -> tuple[str, ...]:

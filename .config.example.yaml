@@ -134,6 +134,27 @@ tts:
     # Available voices: Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo
     voice: "Luna"
     speed: 1.0
+  # Cloud voices through OpenRouter's speech endpoint (see
+  # openrouter.ai/collections/text-to-speech-models). Billed
+  # per character: each sentence passes the spend guard and is recorded in the
+  # spend ledger. In free mode only operators allowed paid models can pick it.
+  openrouter:
+    # Empty reuses llm.openai.api_key when llm.openai.base_url is OpenRouter.
+    # Env: AGENT_HUB_TTS_OPENROUTER_API_KEY
+    api_key: ""
+    # Hub default; a persona can pick its own TTS model in the editor.
+    # google/gemini-3.8-flash-lite-tts is the lower-latency tier, which suits
+    # conversation; google/gemini-3.8-flash-tts is the higher-fidelity tier
+    # (narration, character voices). Same voices.
+    model: "google/gemini-3.8-flash-lite-tts"
+    # Voices depend on the model; Gemini TTS takes Kore, Puck, Zephyr, Charon,
+    # Aoede, Leda, ... (30 prebuilt) or a voice_... id from Voice Design.
+    voice: "Kore"
+    # Honoured only by models that support it; empty = model default.
+    speed: ""
+    # USD per 1M input characters, for the spend ledger. Check the model page;
+    # 0 records the call without a cost.
+    price_per_million_chars: 0
 
 asr:
   default_provider: funasr_onnx

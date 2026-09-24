@@ -193,7 +193,7 @@ async def _speak_segment(
         current = await resolver()
         if current is not None:
             persona = current
-    tts = get_tts(persona.tts_provider, config)
+    tts = get_tts(persona.tts_provider, config, persona.tts_model)
     device_id = str(
         getattr(websocket, "headers", {}).get("device-id")
         or getattr(websocket, "query_params", {}).get("device-id", "")
