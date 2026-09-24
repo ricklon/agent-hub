@@ -80,10 +80,13 @@ async def test_async_tool_handlers_are_awaited(
     assert turn.called("slow_look")
 
 
-async def test_a_raising_handler_surfaces_as_a_tool_error(
+async def test_a_raising_handler_is_reported_to_the_model(
     store: RegistryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    install_scripted_llm(monkeypatch, ScriptedLLM(tool_calls=[("boom", {})], reply="unreached"))
+    # A page tool that fails is the model's to work around, not a failed turn.
+    llm = install_scripted_llm(
+        monkeypatch, ScriptedLLM(tool_calls=[("boom", {})], reply="I could not do that.")
+    )
 
     def boom(_args: dict[str, object]) -> str:
         raise ValueError("handler exploded")
@@ -91,12 +94,11 @@ async def test_a_raising_handler_surfaces_as_a_tool_error(
     async with PageAgentClient.session(store) as page:
         page.add_tool("boom", "always fails", boom)
         await page.register()
+        turn = await page.ask("trigger it")
 
-        with pytest.raises(PageAgentError) as excinfo:
-            await page.ask("trigger it")
-
-    assert excinfo.value.status_code == 500
-    assert "handler exploded" in str(excinfo.value)
+    assert turn.reply == "I could not do that."
+    assert "The tool boom failed" in llm.results[0]
+    assert "handler exploded" in llm.results[0]
 
 
 async def test_server_skills_run_but_are_not_recorded_as_tool_calls(
