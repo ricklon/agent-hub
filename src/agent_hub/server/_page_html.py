@@ -178,7 +178,7 @@ const TOOLS = [
     inputSchema: {type: "object", properties: {volume: {type: "integer", minimum: 0, maximum: 100}}, required: ["volume"]}},
   {name: "page.camera.take_photo", description: "Capture one webcam frame as a JPEG data URL.",
     inputSchema: {type: "object", properties: {}}},
-  {name: "page.site.get", description: "Fetch a URL from the page and return its text body. Subject to CORS.",
+  {name: "page.site.get", description: "Fetch a URL from this browser page and return its text. Only works for sites that allow cross-origin reads (CORS), which most websites do not; do not use it to look up general web pages.",
     inputSchema: {type: "object", properties: {url: {type: "string"}}, required: ["url"]}},
   {name: "page.agent.status", description: "Return page agent status JSON.",
     inputSchema: {type: "object", properties: {}}},
@@ -531,7 +531,15 @@ async function dispatch(name, args) {
         tools: TOOLS.map(t => t.name), volume: volume
       }));
     case "page.site.get": {
-      const r = await fetch(args.url);
+      let r;
+      try { r = await fetch(args.url); }
+      catch (e) {
+        // The browser hides why; almost always the site does not allow
+        // cross-origin reads (CORS), otherwise it is unreachable.
+        throw new Error("could not read " + args.url + " from this page: the site blocks " +
+          "cross-origin reads (CORS) or is unreachable");
+      }
+      if (!r.ok) throw new Error(args.url + " answered HTTP " + r.status);
       const t = await r.text();
       return textResult(t.slice(0, 4000));
     }
