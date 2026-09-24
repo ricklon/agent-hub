@@ -221,7 +221,7 @@ async def test_tts_speaks_with_the_persona_voice(store: RegistryStore, monkeypat
         reg = await client.post("/page-agent/register", json={"device_id": "page-tts", "tools": []})
         token = reg.json()["token"]
         ok = await client.post(
-            "/page-agent/tts", json={"device_id": "page-tts", "token": token, "text": "hello"}
+            "/page-agent/tts", json={"device_id": "page-tts", "token": token, "text": "**hello**"}
         )
         bad = await client.post(
             "/page-agent/tts", json={"device_id": "page-tts", "token": "nope", "text": "hello"}
@@ -229,7 +229,8 @@ async def test_tts_speaks_with_the_persona_voice(store: RegistryStore, monkeypat
     assert ok.status_code == 200
     assert ok.headers["content-type"].startswith("audio/wav")
     assert ok.content[:4] == b"RIFF"
-    assert calls == [("hello", None)]  # hub-default has no voice override
+    # Markdown is not read aloud; hub-default has no voice override.
+    assert calls == [("hello", None)]
     assert bad.status_code == 401
 
 

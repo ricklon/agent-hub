@@ -402,7 +402,33 @@ function speakBuiltin(text) {
   speechSynthesis.speak(u);
 }
 
-async function speakHub(text) {
+// Split a reply the way the hub's voice session does (a run of .!? then
+// optional closing quotes/brackets, then space or the end), so a long reply
+// starts speaking after its first sentence rather than after all of it.
+// Very short pieces ("Sure.") ride with the next: a request each costs more
+// than the audio they carry.
+function speechChunks(text) {
+  const parts = [];
+  const re = /([.!?]+)(["')\\]]*)(\\s+|$)/g;
+  let start = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    const end = m.index + m[0].length;
+    const piece = text.slice(start, end).trim();
+    if (piece) parts.push(piece);
+    start = end;
+    if (end >= text.length) break;
+  }
+  const rest = text.slice(start).trim();
+  if (rest) parts.push(rest);
+  const merged = [];
+  for (const part of parts) {
+    if (merged.length && merged[merged.length - 1].length < 24) merged[merged.length - 1] += " " + part;
+    else merged.push(part);
+  }
+  return merged;
+}
+
+async function fetchSpeech(text) {
   const resp = await fetch("/page-agent/tts", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -410,26 +436,61 @@ async function speakHub(text) {
   });
   if (!resp.ok) throw new Error("hub TTS " + resp.status);
   document.getElementById("voice-notice").textContent = resp.headers.get("X-Voice-Notice") || "";
-  const blob = await resp.blob();
-  const url = URL.createObjectURL(blob);
-  const audio = new Audio(url);
-  audio.volume = volume;
-  if (hubAudio) { URL.revokeObjectURL(url); throw new Error("The agent is already speaking"); }
-  hubAudio = audio;
+  return URL.createObjectURL(await resp.blob());
+}
+
+// Speak with the persona voice one sentence at a time, fetching the next
+// sentence while the current one plays. Resolves once the first sentence
+// starts playing (so a speak tool call returns in seconds, not after the
+// whole reply); later failures stop the rest and are logged.
+async function speakHub(text) {
+  if (hubAudio) throw new Error("The agent is already speaking");
+  const parts = speechChunks(text);
+  if (!parts.length) return;
+  const speech = {audio: null, stopped: false, endClip: null,
+    stop() { this.stopped = true; if (this.audio) this.audio.pause(); if (this.endClip) this.endClip(); }};
+  hubAudio = speech;
   const wasReplying = replyPlaying;
   replyPlaying = true;
   if (!wasReplying) setActivity("speaking");
-  const finished = () => {
-    URL.revokeObjectURL(url);
-    if (hubAudio !== audio) return;
-    hubAudio = null;
-    replyPlaying = wasReplying;
-    if (!wasReplying) setActivity(listening ? "listening" : "idle");
-  };
-  audio.addEventListener("ended", finished, {once: true});
-  audio.addEventListener("error", finished, {once: true});
-  try { await audio.play(); }
-  catch (error) { finished(); throw error; }
+  let started = false;
+  let signal;
+  const firstStart = new Promise((resolve, reject) => { signal = {resolve, reject}; });
+  const playClip = url => new Promise((resolve, reject) => {
+    const audio = new Audio(url);
+    audio.volume = volume;
+    speech.audio = audio;
+    const end = () => { speech.endClip = null; URL.revokeObjectURL(url); resolve(); };
+    speech.endClip = end;
+    audio.addEventListener("ended", end, {once: true});
+    audio.addEventListener("error", end, {once: true});
+    audio.play().then(
+      () => { started = true; signal.resolve(); },
+      error => { speech.endClip = null; URL.revokeObjectURL(url); reject(error); });
+  });
+  (async () => {
+    let next = fetchSpeech(parts[0]);
+    try {
+      for (let i = 0; i < parts.length && !speech.stopped; i++) {
+        const url = await next;
+        next = i + 1 < parts.length ? fetchSpeech(parts[i + 1]) : null;
+        if (next) next.catch(() => {});  // awaited next round; silenced if we stop first
+        if (speech.stopped) { URL.revokeObjectURL(url); break; }
+        await playClip(url);
+      }
+      signal.resolve();
+    } catch (error) {
+      signal.reject(error);
+      if (started) voiceLog("speech stopped part-way: " + error, "#d29922");
+    } finally {
+      if (hubAudio === speech) {
+        hubAudio = null;
+        replyPlaying = wasReplying;
+        if (!wasReplying) setActivity(listening ? "listening" : "idle");
+      }
+    }
+  })();
+  return firstStart;
 }
 
 async function speak(text, requestedMode) {
@@ -743,6 +804,7 @@ const playing = new Set();
 let playAt = 0;
 
 function stopPlayback() {
+  if (hubAudio) hubAudio.stop();
   for (const src of playing) { try { src.stop(); } catch (e) {} }
   playing.clear();
   playAt = 0;

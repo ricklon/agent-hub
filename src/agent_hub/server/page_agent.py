@@ -663,7 +663,8 @@ def make_router(
             return JSONResponse({"ok": False, "message": "expected object"}, status_code=400)
         device_id = str(payload.get("device_id") or "").strip()
         token = str(payload.get("token") or "").strip()
-        text = str(payload.get("text") or "").strip()
+        # Emphasis markers would be read aloud; the voice session strips them too.
+        text = strip_markdown(str(payload.get("text") or ""))
         if not device_id or not token or not text:
             return JSONResponse(
                 {"ok": False, "message": "device_id, token and text required"}, status_code=400
