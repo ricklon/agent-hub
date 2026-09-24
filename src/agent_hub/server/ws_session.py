@@ -448,7 +448,7 @@ async def _run_llm_turn(
     # excluded); a non-empty list is an explicit admin/custom allowlist. The
     # same policy is applied here (LLM tool list) and in _exec_tool (execution).
     tool_allowlist = persona.mcp_tools_allowlist_list
-    enabled_skills = persona.server_skills_list  # None/[] → all skills enabled
+    enabled_skills = persona.server_skills_list  # None/[] → the default skills
     allowed_device_names = set(
         tool_policy.allowed_device_tools(
             list(mcp_client.tools.keys()) if (mcp_client and mcp_client.ready) else [],
@@ -457,7 +457,7 @@ async def _run_llm_turn(
     )
 
     def _skill_enabled(name: str) -> bool:
-        return not enabled_skills or name in enabled_skills
+        return server_skills.is_enabled(name, enabled_skills)
 
     base_prompt = persona.system_prompt or ""
     tool_lines: list[str] = []

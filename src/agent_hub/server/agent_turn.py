@@ -139,7 +139,10 @@ def agent_tool_defs(device_id: str, persona: Persona) -> list[dict[str, Any]]:
     """Every tool this agent may call: its own, the server's, and borrowed ones."""
     own = mcp_bridge.list_page_tool_definitions(device_id)
     skills = [
-        d for d in server_skills.get_definitions() if d["function"]["name"] not in _WRAPPER_SKILLS
+        d
+        for d in server_skills.get_definitions()
+        if d["function"]["name"] not in _WRAPPER_SKILLS
+        and server_skills.is_enabled(d["function"]["name"], persona.server_skills_list)
     ]
     return own + skills + linked_tool_defs(persona)
 
@@ -204,6 +207,8 @@ async def run_turn(
                 images.append(result)
             return result
         if server_skills.has_skill(name):
+            if not server_skills.is_enabled(name, persona.server_skills_list):
+                return f"The skill {name} is not enabled for this persona."
             return (await server_skills.run_result(name, args)).text
         return f"unknown tool: {name!r}"
 

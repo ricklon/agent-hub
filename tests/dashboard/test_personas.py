@@ -102,8 +102,10 @@ async def test_save_with_a_skill_subset_pins_that_subset(store: RegistryStore) -
     assert persona.server_skills_list == ["get_current_time"]
 
 
-async def test_save_with_all_skills_checked_stores_none(store: RegistryStore) -> None:
-    all_names = [d["function"]["name"] for d in skills.get_definitions()]
+async def test_save_with_the_default_skills_checked_stores_none(store: RegistryStore) -> None:
+    # Exactly the defaults is stored as NULL; an opt-in skill (fetch_page)
+    # ticked on top makes the list explicit instead.
+    all_names = sorted(skills.default_skill_names())
     async with await _client(store) as c:
         resp = await c.post(
             "/dashboard/personas/hub-default",

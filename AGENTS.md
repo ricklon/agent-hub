@@ -77,6 +77,7 @@ agent-hub/
 │   ├── skills/              ← server-side LLM tools (NOT the `skills/` below)
 │   │   ├── get_weather.py
 │   │   ├── get_current_time.py
+│   │   ├── fetch_page.py    ← allow-listed page/calendar reader (off by default)
 │   │   └── web_search.py
 │   └── dashboard/
 │       └── app.py           ← FastAPI + HTMX (large; see note)

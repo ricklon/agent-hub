@@ -203,6 +203,12 @@ registry:
   stale_device_days: 14
   stale_page_hours: 24
 
+skills:
+  # fetch_page (off by default; tick it on a persona) reads pages and calendar
+  # feeds on these sites and their subdomains only, over https, from public
+  # addresses only. Env: AGENT_HUB_SKILLS_FETCH_ALLOWED_DOMAINS=a.org,b.com
+  fetch_allowed_domains: ["fubarlabs.org", "meetup.com"]
+
 hub:
   default_persona:
     name: "hub-default"
