@@ -25,8 +25,9 @@ const context = vm.createContext({
   console, Uint8Array, Int16Array, Float32Array, WebSocket: Socket,
   sessionStorage: {getItem: () => 'test-page'},
   navigator: {mediaDevices: {getUserMedia: () => new Promise(resolve => { resolveMic = resolve; })}},
-  document: {getElementById: el, createElement: () => el('created')},
-  window: {addEventListener() {}}, location: {protocol: 'https:', host: 'test'},
+  document: {getElementById: el, createElement: () => el('created'), body: el('body')},
+  URLSearchParams,
+  window: {addEventListener() {}}, location: {protocol: 'https:', host: 'test', search: ''},
   setTimeout: (callback, ms) => { finishPlayback = {callback, ms}; return 1; },
   clearTimeout() {}, cancelAnimationFrame() {}, requestAnimationFrame() { return 1; }
 });

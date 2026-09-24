@@ -43,8 +43,27 @@ CONVERSATION_SCRIPT = """
     document.getElementById('conversation-host').replaceChildren();
     if (opener && opener.isConnected) opener.focus();
   }
+  // A browser agent running in the panel stops when the panel is replaced,
+  // so relaunching it just shows it and opening anything else asks first.
+  function runningAgent() {
+    const panel = document.querySelector('#conversation-panel[data-running-agent]');
+    return panel ? panel.dataset.runningAgent || 'this agent' : '';
+  }
   document.body.addEventListener('htmx:beforeRequest', event => {
     if (event.detail.elt.matches('[data-conversation-open]')) {
+      const elt = event.detail.elt, running = runningAgent();
+      const url = new URL(elt.getAttribute('hx-get') || '', location.href);
+      const launching = url.pathname === '/dashboard/page-agent/run' && (elt.matches('form')
+        ? String(new FormData(elt).get('name') || '').trim() : url.searchParams.get('name'));
+      if (running && launching === running) {
+        event.preventDefault();
+        document.getElementById('conversation-panel').focus();
+        return;
+      }
+      if (running && !confirm('Stop ' + running + '? It is running in the side panel.')) {
+        event.preventDefault();
+        return;
+      }
       opener = event.detail.elt;
       cancelPanelRequests();
     }
@@ -75,10 +94,30 @@ CONVERSATION_SCRIPT = """
     }
   });
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && document.getElementById('conversation-panel')) closePanel();
+    if (event.key === 'Escape' && document.getElementById('conversation-panel')
+        && !runningAgent()) closePanel();
   });
   document.addEventListener('click', async event => {
     if (event.target.closest('[data-close-conversation]')) { closePanel(); return; }
+    // Moving a running agent to its own window. Removing the panel's frame
+    // sends its goodbye now, before the window has even loaded; a goodbye
+    // landing after the window registered would take the moved agent offline.
+    const move = event.target.closest('[data-own-window-move]');
+    if (move) {
+      event.preventDefault();
+      closePanel();
+      window.open(move.href, '_blank', 'noopener');
+      return;
+    }
+    const ownWindow = event.target.closest('[data-own-window]');
+    if (ownWindow) {
+      const form = ownWindow.closest('form');
+      if (!form.reportValidity()) return;
+      const params = new URLSearchParams();
+      for (const [key, value] of new FormData(form)) if (value) params.set(key, value);
+      window.open('/dashboard/page-agent?' + params.toString(), '_blank', 'noopener');
+      return;
+    }
     const button = event.target.closest('[data-voice-preview]');
     if (!button) return;
     releasePreview();

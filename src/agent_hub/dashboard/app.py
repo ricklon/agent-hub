@@ -32,9 +32,8 @@ from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.agent_cards import (
     AGENT_CARD_CSS,
-    interaction_link,
+    agent_actions,
     is_agent_connected,
-    launch_link,
     render_agent_cards,
 )
 from agent_hub.dashboard.audit import render_audit_table
@@ -42,6 +41,12 @@ from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.conversation import make_conversation_router
 from agent_hub.dashboard.conversation_ui import CONVERSATION_CSS, CONVERSATION_SCRIPT
 from agent_hub.dashboard.overview import render_fleet_overview, render_health_strip
+from agent_hub.dashboard.page_run import (
+    PAGE_RUN_CSS,
+    make_page_run_router,
+    new_agent_card,
+    run_url,
+)
 from agent_hub.dashboard.styles import DASHBOARD_CSS
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import ModelCheck, check_model
@@ -90,7 +95,6 @@ document.addEventListener("htmx:beforeSwap", (event) => {{
   <a href="/dashboard/personas">Personas</a>
   <a href="/dashboard/models">Models</a>{free_badge}
   {admin_nav}
-  {operator_nav}
   <a href="/dashboard/docs">Docs</a>
 </nav>
 {body}
@@ -164,6 +168,7 @@ def make_router(
         ]
     )
     router.include_router(make_conversation_router(store, config))
+    router.include_router(make_page_run_router())
     api_key: str = config.get("llm", {}).get("openai", {}).get("api_key", "")
     # The model a persona with no model of its own runs.
     default_model: str = str(config.get("llm", {}).get("openai", {}).get("model", "") or "")
@@ -212,7 +217,7 @@ def make_router(
 
     # ── Agents ───────────────────────────────────────────────────────────────
 
-    _full_css = DASHBOARD_CSS + AGENT_CARD_CSS + CONVERSATION_CSS
+    _full_css = DASHBOARD_CSS + AGENT_CARD_CSS + CONVERSATION_CSS + PAGE_RUN_CSS
 
     def _render_page(request: Request, body: str) -> str:
         identity = getattr(request.state, "operator_identity", None)
@@ -221,11 +226,6 @@ def make_router(
         admin_nav = (
             '<a href="/dashboard/operators">Operators</a><a href="/dashboard/audit">Audit</a>'
             if role == OperatorRole.ADMIN.value
-            else ""
-        )
-        operator_nav = (
-            '<a href="/dashboard/page-agent">Launch agent</a>'
-            if role in {OperatorRole.ADMIN.value, OperatorRole.OPERATOR.value}
             else ""
         )
         free_badge = (
@@ -238,7 +238,6 @@ def make_router(
             css=_full_css,
             operator=operator,
             admin_nav=admin_nav,
-            operator_nav=operator_nav,
             free_badge=free_badge,
             body=body,
             conversation_script=CONVERSATION_SCRIPT,
@@ -262,19 +261,16 @@ def make_router(
             mine=bool(mine),
             launcher=_launcher(request),
         )
-        role = str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
-        launch = (
-            '<a class="action-link primary" href="/dashboard/page-agent" '
-            'target="_blank" rel="noopener">+ Launch browser agent</a>'
-            if role != OperatorRole.VIEWER.value
-            else ""
-        )
         intro = (
             '<section class="workspace-intro"><div><h2>Your agent workspace</h2>'
             "<p>One fleet for devices, browser agents, and connected services. "
-            "Each agent runs with its own persona.</p></div>" + launch + "</section>"
+            "Each agent runs with its own persona.</p></div></section>"
         )
-        return HTMLResponse(_render_page(request, intro + overview))
+        # Outside the polled collection, so a refresh never clears a half-typed name.
+        new_agent = (
+            new_agent_card(await store.list_personas()) if _launcher(request) is not None else ""
+        )
+        return HTMLResponse(_render_page(request, intro + overview + new_agent))
 
     @router.get("/dashboard/health", response_class=HTMLResponse)
     async def dashboard_health(request: Request, owner: str = "", mine: str = "") -> HTMLResponse:
@@ -1339,12 +1335,11 @@ named page agent when its name is reopened.">
     value="1"{keep_checked}> keep conversation history</label>
 </form>"""
         # Open the agent from here: the conversation panel, and for a stopped
-        # page agent its owner can relaunch, a new tab running it.
+        # page agent its owner can relaunch, Launch and Own window first.
         connected = is_agent_connected(agent)
-        agent_actions = (
+        actions_html = (
             '<div class="agent-card-actions" style="border-top:0;padding-top:0;margin-top:0">'
-            + interaction_link(agent, persona, connected)
-            + launch_link(agent, connected, _launcher(request))
+            + agent_actions(agent, persona, connected, _launcher(request))
             + "</div>"
         )
         speak_form = f"""\
@@ -1406,7 +1401,7 @@ named page agent when its name is reopened.">
   Firmware: {agent.firmware_version or "—"} &nbsp;·&nbsp;
   Last seen: {fmt_ts(agent.last_seen, display_tz, "%H:%M:%S")}{spend_line}
 </p>
-{agent_actions}
+{actions_html}
 <h3>Connection</h3>
 <div hx-get="/dashboard/agents/{device_id}/status"
      hx-trigger="load, every 3s"
@@ -1586,7 +1581,9 @@ named page agent when its name is reopened.">
                 f"<td>{llm_cell}</td><td>{tts_cell}</td>"
                 f"<td>{p.asr_provider}</td><td>{memory_cell}</td>"
                 f'<td><a href="/dashboard/personas/{p.name}" style="color:#58a6ff">edit</a>'
-                f' &nbsp; <a href="/dashboard/page-agent?persona={quote(p.name)}" '
+                f' &nbsp; <a href="{html.escape(run_url(persona=p.name))}" '
+                f'hx-get="{html.escape(run_url(persona=p.name))}" hx-target="#conversation-host" '
+                f'hx-swap="innerHTML" data-conversation-open '
                 f'style="color:#58a6ff">launch</a></td></tr>'
             )
 
@@ -1767,8 +1764,10 @@ named page agent when its name is reopened.">
         body = f"""\
 <p><a href="/dashboard/personas" style="color:#58a6ff">← personas</a></p>
 <h2>Edit persona: {name}</h2>
-<p><a href="/dashboard/page-agent?persona={quote(name)}" style="color:#58a6ff">
-  ▶ Launch as page agent</a> &nbsp;— talk to this persona in the browser, no hardware.</p>
+<p><a href="{html.escape(run_url(persona=name))}" hx-get="{html.escape(run_url(persona=name))}"
+  hx-target="#conversation-host" hx-swap="innerHTML" data-conversation-open
+  style="color:#58a6ff">▶ Launch as page agent</a> &nbsp;— talk to this persona in the browser,
+  no hardware.</p>
 {used_by_html}
 <div id="save-result" role="status" aria-live="polite"></div>
 <form hx-post="/dashboard/personas/{name}"

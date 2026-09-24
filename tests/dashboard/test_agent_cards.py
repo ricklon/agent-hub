@@ -120,5 +120,6 @@ async def test_every_agent_kind_appears_in_the_same_fleet(store: RegistryStore) 
     assert response.text.count('class="agent-card health-') == len(AgentKind)
     for kind in AgentKind:
         assert f"/dashboard/agents/agent-{kind.value}" in response.text
-    assert "+ Launch browser agent" in response.text
+    assert "+ New browser agent" in response.text
+    assert response.text.index('id="agent-cards"') < response.text.index("+ New browser agent")
     assert response.text.index("Your agent workspace") < response.text.index('id="agent-cards"')

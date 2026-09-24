@@ -48,6 +48,10 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 #meterbar{height:100%;width:0%;background:#3fb950;transition:width .08s linear}
 #meterlabel{font-size:.75rem;color:#8b949e}
 [hidden]{display:none!important}
+/* Embedded in the dashboard's side panel (?embed=1): the panel has the title
+   and the way back, so the page drops its own. */
+body.embed{padding:.25rem .5rem}.embed .embed-hide{display:none!important}
+.embed #voicestate{min-width:0}
 /* Choosing which agent this tab is. Shown until the tab has registered. */
 #connect{border:1px solid #30363d;border-radius:6px;background:#161b22;padding:.8rem 1rem;
   margin:.8rem 0;max-width:40rem}
@@ -59,16 +63,16 @@ video{border:1px solid #30363d;border-radius:4px;max-width:320px}
 button.secondary{background:#21262d;border:1px solid #30363d}
 button.secondary:hover{background:#30363d}
 </style></head><body>
-<h1>Browser agent</h1>
-<p>A member of your fleet, running in this tab.</p>
-<div class="row"><a href="/dashboard/" style="color:#58a6ff">← Dashboard</a></div>
+<h1 class="embed-hide">Browser agent</h1>
+<p class="embed-hide">A member of your fleet, running in this tab.</p>
+<div class="row embed-hide"><a href="/dashboard/" style="color:#58a6ff">← Dashboard</a></div>
 <div id="status">initialising…</div>
 <div id="voice-notice" role="status" aria-live="polite" style="color:#fbbf24"></div>
 <div id="personaline" style="font-size:.8rem;color:#8b949e"></div>
 <div id="agentline" class="row" hidden><span id="agentname"></span>
 <button id="newconversation" class="secondary"
   title="End the current conversation; the next thing you say starts a new one">New conversation</button>
-<button id="switchagent" class="secondary" title="Close this agent and pick another">Switch agent</button></div>
+<button id="switchagent" class="secondary embed-hide" title="Close this agent and pick another">Switch agent</button></div>
 
 <form id="connect" hidden>
   <strong>Which agent is this tab?</strong>
@@ -135,6 +139,10 @@ Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
 // Storage can be unavailable (private windows, blocked site data); the page
 // then just asks for the name again.
 const TAB_NAME_KEY = "agenthub.pageAgent.name";
+// In the dashboard's side panel the dashboard says which agent to open, and
+// its tab is not an agent tab, so the tab memory is left alone there.
+const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+if (EMBED) document.body.classList.add("embed");
 const LAST_NAME_KEY = "agenthub.pageAgent.lastName";
 function storeGet(store, key) { try { return store.getItem(key) || ""; } catch (e) { return ""; } }
 function storeSet(store, key, value) { try { store.setItem(key, value); } catch (e) {} }
@@ -200,7 +208,7 @@ async function register(name, takeover) {
   hbInterval = data.heartbeat_interval_seconds || 30;
   deviceId = data.device_id;
   agentName = data.name || name;
-  storeSet(sessionStorage, TAB_NAME_KEY, agentName);
+  if (!EMBED) storeSet(sessionStorage, TAB_NAME_KEY, agentName);
   storeSet(localStorage, LAST_NAME_KEY, agentName);
   document.title = agentName + " · page agent";
   document.getElementById("agentname").textContent = "agent: " + agentName;
@@ -303,16 +311,18 @@ document.getElementById("switchagent").onclick = () => {
 };
 
 async function start() {
-  const tabName = storeGet(sessionStorage, TAB_NAME_KEY);
+  const tabName = EMBED ? "" : storeGet(sessionStorage, TAB_NAME_KEY);
   // Launch links from the dashboard name the agent (?name=), so the tab opens
   // it straight away. Not a takeover: if it is already open elsewhere, the
-  // form says so and offers Take over.
-  const launchName = (new URLSearchParams(location.search).get("name") || "").trim();
+  // form says so and offers Take over. The exception is ?handoff=1, a move
+  // out of the dashboard's side panel, which is letting go of it right now.
+  const query = new URLSearchParams(location.search);
+  const launchName = (query.get("name") || "").trim();
   if (launchName && launchName !== tabName) {
     document.getElementById("agentName").value = launchName;
     document.getElementById("connect").hidden = false;
     setStatus("opening " + launchName + "…");
-    await openAgent(false);
+    await openAgent(query.get("handoff") === "1");
     if (token) return;
     setStatus("choose an agent to open");
     loadMyAgents();

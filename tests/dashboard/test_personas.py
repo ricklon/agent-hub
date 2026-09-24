@@ -20,7 +20,7 @@ async def test_personas_list_has_launch_link(store: RegistryStore) -> None:
     async with await _client(store) as c:
         resp = await c.get("/dashboard/personas")
     assert resp.status_code == 200
-    assert "/dashboard/page-agent?persona=hub-default" in resp.text
+    assert "/dashboard/page-agent/run?persona=hub-default" in resp.text
 
 
 async def test_new_persona_is_name_only_and_copies_hub_default(store: RegistryStore) -> None:
@@ -62,7 +62,7 @@ async def test_edit_page_renders_guided_controls(store: RegistryStore) -> None:
     assert 'type="checkbox" name="server_skills"' in body
     assert 'name="preset"' in body
     assert 'id="system-prompt"' in body
-    assert "/dashboard/page-agent?persona=hub-default" in body
+    assert "/dashboard/page-agent/run?persona=hub-default" in body
 
 
 async def test_preset_route_fills_the_prompt(store: RegistryStore) -> None:
