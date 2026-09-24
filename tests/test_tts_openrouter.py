@@ -69,7 +69,10 @@ async def test_a_rejected_voice_falls_back_to_the_default_with_a_notice() -> Non
         voice = json.loads(request.content)["voice"]
         voices.append(voice)
         if voice == "nonsense":
-            return httpx.Response(400, json={"error": {"message": "Invalid voice: nonsense"}})
+            # The real body: OpenRouter does not say the voice was the problem.
+            return httpx.Response(
+                400, json={"error": {"message": "Provider returned 400", "code": 400}}
+            )
         return httpx.Response(200, content=b"\x00\x00", headers={"content-type": "audio/pcm"})
 
     persona = Persona(name="p", tts_provider="openrouter", tts_voice="nonsense")
@@ -78,6 +81,14 @@ async def test_a_rejected_voice_falls_back_to_the_default_with_a_notice() -> Non
         24000,
     )
     assert voices == ["nonsense", "Kore"]
+
+
+async def test_a_bad_request_on_the_default_voice_is_reported() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "Provider returned 400"}})
+
+    with pytest.raises(RuntimeError, match="OpenRouter TTS 400"):
+        await _provider(handler).synthesize_pcm("Hello.")
 
 
 async def test_other_errors_are_reported_not_retried() -> None:
