@@ -21,3 +21,19 @@ def test_browser_voice_playback_and_cancellation() -> None:
         text=True,
         timeout=15,
     )
+
+
+def test_browser_persona_voice_speaks_sentence_by_sentence() -> None:
+    """The persona voice starts after the first sentence, not after the whole reply."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is needed for the browser JavaScript regression harness")
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [node, str(root / "tests/browser/page_speech.cjs")],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
