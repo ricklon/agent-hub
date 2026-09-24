@@ -203,7 +203,10 @@ screens and keyboard navigation.
 
 Cards are the default view for every agent runtime: devices, browser tabs,
 voice services, MCP, and AG2. Cards share owner grouping, persona, health,
-capabilities, and interaction links; **Diagnostics** opens the dense table.
+capabilities, and interaction links. The Agents page keeps fleet health to one
+line; the **Health** tab holds the health totals, the needs-attention queue, the
+dense diagnostics table, LLM spend and stale-agent cleanup
+(`/dashboard/?view=diagnostics` redirects there).
 Operators can use **Launch browser agent** to open a new instance in its own
 tab. Completed voice turns show ASR/LLM/TTS stage timings on their card.
 Device streaming stages overlap, so their sum is not response latency.

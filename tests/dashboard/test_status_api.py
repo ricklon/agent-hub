@@ -146,7 +146,7 @@ async def test_agent_actions_have_confirmations_and_accessible_feedback(
     assert 'aria-label="Message to speak"' in response.text
 
 
-async def test_dashboard_home_prioritizes_agents_needing_attention(
+async def test_health_tab_prioritizes_agents_needing_attention(
     store: RegistryStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -179,8 +179,12 @@ async def test_dashboard_home_prioritizes_agents_needing_attention(
     app.include_router(make_router(store, {}))
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/dashboard/")
+        home = await client.get("/dashboard/")
+        response = await client.get("/dashboard/health")
 
+    # The Agents page only summarizes; the detail is on Health.
+    assert "1 healthy" in home.text and "2 need attention" in home.text
+    assert "Needs attention" not in home.text
     assert response.status_code == 200
     assert "Fleet health" in response.text
     assert '<span class="overview-value">3</span>' in response.text
@@ -193,7 +197,8 @@ async def test_dashboard_home_prioritizes_agents_needing_attention(
     assert "microphone &lt;unavailable&gt;" in response.text
     assert "Sleeping device" in response.text
     assert response.text.count(">Inspect</a>") == 2
-    assert "All agents" in response.text
+    assert "<h2>Diagnostics</h2>" in response.text
+    assert "All agents" in home.text
 
 
 async def test_status_json_reports_capabilities_and_safe_effective_tools(

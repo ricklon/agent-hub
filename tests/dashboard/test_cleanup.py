@@ -84,13 +84,14 @@ async def test_delete_agent_drops_history_but_keeps_spend(store: RegistryStore) 
     assert await store.delete_agent("page-x") is False
 
 
-async def test_home_page_lists_stale_agents_and_prune_route_removes_them(
+async def test_health_page_lists_stale_agents_and_prune_route_removes_them(
     store: RegistryStore,
 ) -> None:
     await store.get_or_create_agent("page-old", kind=AgentKind.PAGE, label="old tab")
     await _backdate(store, "page-old", timedelta(days=2))
     async with await _client(store) as c:
-        home = await c.get("/dashboard/")
+        assert "Cleanup" not in (await c.get("/dashboard/")).text
+        home = await c.get("/dashboard/health")
         assert "Cleanup" in home.text
         assert "old tab" in home.text
         assert "Remove 1 stale" in home.text

@@ -41,7 +41,7 @@ from agent_hub.dashboard.audit import render_audit_table
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.dashboard.conversation import make_conversation_router
 from agent_hub.dashboard.conversation_ui import CONVERSATION_CSS, CONVERSATION_SCRIPT
-from agent_hub.dashboard.overview import render_fleet_overview
+from agent_hub.dashboard.overview import render_fleet_overview, render_health_strip
 from agent_hub.dashboard.styles import DASHBOARD_CSS
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import ModelCheck, check_model
@@ -86,6 +86,7 @@ document.addEventListener("htmx:beforeSwap", (event) => {{
 <header><h1>Agent Hub</h1>{operator}</header>
 <nav>
   <a href="/dashboard/">Agents</a>
+  <a href="/dashboard/health">Health</a>
   <a href="/dashboard/personas">Personas</a>
   <a href="/dashboard/models">Models</a>{free_badge}
   {admin_nav}
@@ -246,7 +247,12 @@ def make_router(
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(
         request: Request, owner: str = "", mine: str = "", view: str = "cards"
-    ) -> HTMLResponse:
+    ) -> Response:
+        if view == "diagnostics":
+            # The diagnostics table moved to Health; keep old links working.
+            return RedirectResponse(
+                "/dashboard/health" + _filter_query(owner, bool(mine)), status_code=303
+            )
         overview = await _render_agent_overview(
             store,
             heartbeat_timeout_seconds,
@@ -254,7 +260,6 @@ def make_router(
             viewer_subject=_viewer_subject(request),
             owner=owner,
             mine=bool(mine),
-            view=view,
             launcher=_launcher(request),
         )
         role = str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
@@ -269,7 +274,22 @@ def make_router(
             "<p>One fleet for devices, browser agents, and connected services. "
             "Each agent runs with its own persona.</p></div>" + launch + "</section>"
         )
-        body = intro + overview + await _spend_panel() + await _cleanup_panel()
+        return HTMLResponse(_render_page(request, intro + overview))
+
+    @router.get("/dashboard/health", response_class=HTMLResponse)
+    async def dashboard_health(request: Request, owner: str = "", mine: str = "") -> HTMLResponse:
+        """Fleet health, the diagnostics table, spend and cleanup, off the Agents page."""
+        overview = await _render_agent_overview(
+            store,
+            heartbeat_timeout_seconds,
+            has_identity=getattr(request.state, "operator_identity", None) is not None,
+            viewer_subject=_viewer_subject(request),
+            owner=owner,
+            mine=bool(mine),
+            view="diagnostics",
+            launcher=_launcher(request),
+        )
+        body = overview + await _spend_panel() + await _cleanup_panel()
         return HTMLResponse(_render_page(request, body))
 
     async def _cleanup_panel() -> str:
@@ -513,13 +533,23 @@ def make_router(
         )
 
     @router.get("/dashboard/overview", response_class=HTMLResponse)
-    async def dashboard_overview_partial() -> HTMLResponse:
-        """The fleet health block alone; the table and filter refresh separately."""
+    async def dashboard_overview_partial(compact: str = "") -> HTMLResponse:
+        """The fleet health block alone; the table and filter refresh separately.
+
+        Args:
+            compact: Non-empty for the one-line strip the Agents page shows.
+        """
         try:
             rows_data = await store.list_agents_with_personas()
         except Exception as exc:
             logger.error(f"Dashboard overview query failed: {exc}")
             return HTMLResponse('<p class="audit-failure">Could not load fleet status.</p>')
+        if compact:
+            return HTMLResponse(
+                _fleet_health_poll(
+                    render_health_strip(rows_data, heartbeat_timeout_seconds), compact=True
+                )
+            )
         return HTMLResponse(
             _fleet_health_poll(render_fleet_overview(rows_data, heartbeat_timeout_seconds))
         )
@@ -2319,6 +2349,7 @@ def _owner_filter(
         return ""
     active = _filter_query(current, mine, view)
     target = "#agent-table" if view == "diagnostics" else "#agent-cards"
+    page = "/dashboard/health" if view == "diagnostics" else "/dashboard/"
 
     def chip(owner: str, mine: bool, label: str) -> str:
         query = _filter_query(owner, mine, view)
@@ -2326,7 +2357,7 @@ def _owner_filter(
         return (
             f'<button class="owner-chip" aria-pressed="{pressed}" '
             f'hx-get="/dashboard/agents{html.escape(query)}" hx-target="{target}" '
-            f'hx-swap="outerHTML" hx-push-url="/dashboard/{html.escape(query)}" '
+            f'hx-swap="outerHTML" hx-push-url="{html.escape(page + _filter_query(owner, mine))}" '
             # Mark the choice straight away; the bar itself is never re-rendered.
             "hx-on::before-request=\"this.parentElement.querySelectorAll('.owner-chip')"
             ".forEach((b) => b.setAttribute('aria-pressed', b === this))\">"
@@ -2340,22 +2371,6 @@ def _owner_filter(
         chips += chip("", True, "mine")
     chips += "".join(chip(o, False, o) for o in owners)
     return f'<div class="owner-filter">Show: {chips}</div>'
-
-
-def _view_switch(owner: str, mine: bool, view: str) -> str:
-    """Links between the fleet cards and dense diagnostics table."""
-
-    def link(target_view: str, label: str) -> str:
-        query = html.escape(_filter_query(owner, mine, target_view))
-        current = ' aria-current="page"' if view == target_view else ""
-        return f'<a href="/dashboard/{query}"{current}>{label}</a>'
-
-    return (
-        '<nav class="view-switch" aria-label="Agent view">'
-        + link("cards", "Cards")
-        + link("diagnostics", "Diagnostics")
-        + "</nav>"
-    )
 
 
 def _agent_card_view(cards: str, *, owner: str = "", mine: bool = False) -> str:
@@ -2627,10 +2642,18 @@ async def _render_agent_overview(
             _group_agents(filtered, viewer_subject), heartbeat_timeout_seconds, launcher
         )
         collection = _agent_card_view(cards, owner=owner, mine=mine)
+    health = (
+        _fleet_health_poll(render_fleet_overview(rows_data, heartbeat_timeout_seconds))
+        if view == "diagnostics"
+        else _fleet_health_poll(
+            render_health_strip(rows_data, heartbeat_timeout_seconds), compact=True
+        )
+    )
+    heading = "Diagnostics" if view == "diagnostics" else "All agents"
     return (
         '<div id="fleet-overview">'
-        + _fleet_health_poll(render_fleet_overview(rows_data, heartbeat_timeout_seconds))
-        + '<div class="fleet-toolbar"><div><h2>All agents</h2>'
+        + health
+        + f'<div class="fleet-toolbar"><div><h2>{heading}</h2>'
         + _owner_filter(
             owners,
             owner,
@@ -2638,18 +2661,17 @@ async def _render_agent_overview(
             mine=mine,
             view=view,
         )
-        + "</div>"
-        + _view_switch(owner, mine, view)
-        + "</div>"
+        + "</div></div>"
         + collection
         + "</div>"
     )
 
 
-def _fleet_health_poll(content: str) -> str:
-    """Fleet health cards and attention queue, refreshed on their own."""
+def _fleet_health_poll(content: str, *, compact: bool = False) -> str:
+    """Fleet health, refreshed on its own: the full block, or the Agents page strip."""
+    url = "/dashboard/overview?compact=1" if compact else "/dashboard/overview"
     return (
-        '<div id="fleet-health" hx-get="/dashboard/overview" '
+        f'<div id="fleet-health" hx-get="{url}" '
         'hx-trigger="every 5s" hx-swap="outerHTML">'
         f"{content}</div>"
     )
