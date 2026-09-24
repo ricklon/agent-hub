@@ -8,6 +8,7 @@ from loguru import logger
 
 from agent_hub.registry.models import Persona
 from agent_hub.server import session_state
+from agent_hub.server.speech_text import for_speech
 
 VOICE_TEST_TEXT = "Hello! This is my persona voice. How can I help you today?"
 
@@ -23,9 +24,16 @@ class PcmSynthesizer(Protocol):
 async def synthesize_persona(
     provider: PcmSynthesizer, text: str, persona: Persona, device_id: str = ""
 ) -> tuple[bytes, int]:
-    """Use the persona voice, reporting any fallback to the provider default."""
+    """Use the persona voice, reporting any fallback to the provider default.
+
+    The text is cleaned for speech first (markdown, symbols, leaked tool
+    calls); if nothing speakable is left, no audio is returned.
+    """
     state = session_state.get_state(device_id)
     state.voice_notice = ""
+    text = for_speech(text)
+    if not text:
+        return b"", 16000
     try:
         return await provider.synthesize_pcm(text, voice=persona.tts_voice)
     except ValueError:
