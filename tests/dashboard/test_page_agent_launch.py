@@ -1,8 +1,9 @@
-"""Opening a page agent from its card or Manage page, not the page-agent picker.
+"""Running a page agent from its card or Manage page, not the page-agent picker.
 
-Opening a name registers it as whoever is signed in, so Launch is offered
-only to the agent's owner: anyone else following the link would get their
-own agent of that name instead of this one.
+Launch runs the agent in the fleet's side panel; Own window opens it in a
+separate tab. Opening a name registers it as whoever is signed in, so both
+are offered only to the agent's owner: anyone else following the link would
+get their own agent of that name instead of this one.
 """
 
 from __future__ import annotations
@@ -26,7 +27,8 @@ from agent_hub.server._page_html import PAGE_HTML
 
 _RICK = OperatorIdentity(email="rick@example.com", subject="sub-rick")
 _ADA = OperatorIdentity(email="ada@example.com", subject="sub-ada")
-_LAUNCH = 'href="/dashboard/page-agent?name=Kitchen%20helper"'
+_LAUNCH = 'hx-get="/dashboard/page-agent/run?name=Kitchen+helper"'
+_OWN_WINDOW = 'href="/dashboard/page-agent?name=Kitchen+helper" target="_blank"'
 
 
 class _FakeAuth(DashboardAuthorization):
@@ -141,8 +143,53 @@ async def test_fleet_card_offers_launch_to_the_owner(store: RegistryStore) -> No
     async with await _client(store) as client:
         cards = await client.get("/dashboard/")
     assert _LAUNCH in cards.text
+    assert _OWN_WINDOW in cards.text
+
+
+async def test_launch_runs_the_agent_in_the_side_panel(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        panel = await client.get("/dashboard/page-agent/run?name=Kitchen+helper&persona=chef")
+
+    assert panel.status_code == 200
+    assert 'data-running-agent="Kitchen helper"' in panel.text
+    assert (
+        '<iframe src="/dashboard/page-agent?name=Kitchen+helper&amp;persona=chef&amp;embed=1"'
+        in panel.text
+    )
+    assert 'allow="microphone; camera; autoplay"' in panel.text
+    # Moving it to its own window keeps the name and persona, without embed.
+    assert (
+        'href="/dashboard/page-agent?name=Kitchen+helper&amp;persona=chef&amp;handoff=1"'
+        in panel.text
+    )
+
+
+async def test_viewers_cannot_run_agents_in_the_panel(store: RegistryStore) -> None:
+    async with await _client(store, role=OperatorRole.VIEWER.value) as client:
+        panel = await client.get("/dashboard/page-agent/run?name=Kitchen+helper")
+    assert panel.status_code == 403
+
+
+async def test_new_agents_start_from_a_card_not_the_nav(store: RegistryStore) -> None:
+    async with await _client(store) as client:
+        operator = await client.get("/dashboard/")
+    async with await _client(store, role=OperatorRole.VIEWER.value) as client:
+        viewer = await client.get("/dashboard/")
+
+    assert "+ New browser agent" in operator.text
+    assert 'hx-get="/dashboard/page-agent/run"' in operator.text
+    assert '<option value="hub-default">' in operator.text
+    assert ">Launch agent</a>" not in operator.text
+    assert "+ New browser agent" not in viewer.text
+
+
+def test_the_embedded_page_leaves_the_tab_memory_alone() -> None:
+    assert 'get("embed") === "1"' in PAGE_HTML
+    assert 'const tabName = EMBED ? "" : storeGet(sessionStorage, TAB_NAME_KEY);' in PAGE_HTML
+    assert "if (!EMBED) storeSet(sessionStorage, TAB_NAME_KEY, agentName);" in PAGE_HTML
 
 
 def test_page_opens_the_agent_named_in_the_url() -> None:
-    assert 'new URLSearchParams(location.search).get("name")' in PAGE_HTML
-    assert "await openAgent(false);" in PAGE_HTML
+    assert 'const launchName = (query.get("name") || "").trim();' in PAGE_HTML
+    # Only a move out of the side panel takes the agent over.
+    assert 'await openAgent(query.get("handoff") === "1");' in PAGE_HTML

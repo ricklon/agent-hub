@@ -207,15 +207,20 @@ capabilities, and interaction links. The Agents page keeps fleet health to one
 line; the **Health** tab holds the health totals, the needs-attention queue, the
 dense diagnostics table, LLM spend and stale-agent cleanup
 (`/dashboard/?view=diagnostics` redirects there).
-Operators can use **Launch browser agent** to open a new instance in its own
-tab. Completed voice turns show ASR/LLM/TTS stage timings on their card.
+Browser agents start from the cards: **+ New browser agent** (name and persona)
+at the end of the fleet, or **Launch** on a stopped one. Launch runs the agent in
+the side panel next to the fleet, where it has the browser's microphone,
+speaker and camera; closing the panel stops it. **Own window** (or "Open in own
+window" from the running panel) runs it in a separate tab instead, so it keeps
+running after you leave the dashboard. Completed voice turns show ASR/LLM/TTS
+stage timings on their card.
 Device streaming stages overlap, so their sum is not response latency.
 
 Open **Interact** (or **Conversation** on a disconnected agent) to keep the fleet
 visible alongside its status, recent transcript, and message controls. Device
 messages run through the xiaozhi voice session and replies play on its onboard
-speaker. Browser speech plays in the selected agent's tab using its persona
-voice. Other MCP agents only get a speech option when they advertise a `.speak`
+speaker. Browser speech plays wherever the agent runs (its panel or window) using its
+persona voice. Other MCP agents only get a speech option when they advertise a `.speak`
 tool accepting `text` with no other required arguments; their voice remains
 externally managed.
 

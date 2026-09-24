@@ -140,7 +140,8 @@ def make_conversation_router(store: RegistryStore, config: dict[str, Any]) -> AP
             "Talk using the device’s onboard microphone. Replies play on its speaker. "
             "If disconnected, wake the device before sending."
             if device
-            else "Use Listen in the agent tab. Its microphone and speaker stay in that tab."
+            else "Talk with Listen where the agent runs, in its side panel or its own window. "
+            "Its microphone and speaker stay there."
             if agent.kind == AgentKind.PAGE.value
             else "MCP tools determine this agent’s capabilities. Its microphone and voice, if any, "
             "are managed by the agent."

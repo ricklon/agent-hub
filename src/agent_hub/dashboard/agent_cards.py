@@ -6,6 +6,7 @@ import html
 from urllib.parse import quote
 
 from agent_hub.dashboard._timefmt import fmt_ts
+from agent_hub.dashboard.page_run import launch_links
 from agent_hub.registry.models import Agent, AgentKind, Persona
 from agent_hub.registry.page_identity import page_agent_launch_url
 from agent_hub.server import mcp_bridge, session_state
@@ -82,12 +83,15 @@ def is_agent_connected(agent: Agent) -> bool:
     return bool(bridge and bridge.connected)
 
 
-def interaction_link(agent: Agent, persona: Persona | None, connected: bool) -> str:
+def interaction_link(
+    agent: Agent, persona: Persona | None, connected: bool, *, primary: bool = True
+) -> str:
     """The link that opens the conversation panel beside the current page."""
     device_url = html.escape(quote(agent.device_id, safe=""))
     label = "Interact" if connected and not (persona and persona.transcription) else "Conversation"
+    css = "action-link primary" if primary else "action-link"
     return (
-        f'<a class="action-link primary" href="/dashboard/agents/{device_url}/conversation" '
+        f'<a class="{css}" href="/dashboard/agents/{device_url}/conversation" '
         f'hx-get="/dashboard/agents/{device_url}/conversation" '
         f'hx-target="#conversation-host" hx-swap="innerHTML" '
         f"data-conversation-open>{label}</a>"
@@ -95,14 +99,19 @@ def interaction_link(agent: Agent, persona: Persona | None, connected: bool) -> 
 
 
 def launch_link(agent: Agent, connected: bool, launcher: str | None) -> str:
-    """Launch for a stopped page agent the viewer owns: opens it in a new tab."""
+    """Launch and Own window for a stopped page agent the viewer owns."""
     url = page_agent_launch_url(agent, launcher) if launcher is not None else None
     if connected or url is None:
         return ""
-    return (
-        f'<a class="action-link" href="{html.escape(url)}" target="_blank" rel="noopener" '
-        f'title="Open this agent in a new browser tab">Launch</a>'
-    )
+    return launch_links(agent.label or "")
+
+
+def agent_actions(
+    agent: Agent, persona: Persona | None, connected: bool, launcher: str | None
+) -> str:
+    """Launch first for a stopped agent the viewer can run, else Interact/Conversation."""
+    launch = launch_link(agent, connected, launcher)
+    return launch + interaction_link(agent, persona, connected, primary=not launch)
 
 
 def _owner_group(
@@ -166,7 +175,7 @@ def _agent_card(
         and any("camera" in tool or "photo" in tool for tool in tools)
         else ""
     )
-    interact = interaction_link(agent, persona, connected) + launch_link(agent, connected, launcher)
+    interact = agent_actions(agent, persona, connected, launcher)
     state = session_state.get_state(agent.device_id)
     timing = (
         f'<div class="agent-transport">Last response prepared in '
