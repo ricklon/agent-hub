@@ -77,8 +77,8 @@ class OpenRouterTTSProvider(TTSProvider):
             (pcm_bytes, sample_rate) as reported by the endpoint.
 
         Raises:
-            ValueError: The model rejected the requested voice (the caller
-                retries with the default voice).
+            ValueError: A request with an explicit voice was refused (400/422);
+                the caller retries with the default voice.
             RuntimeError: No API key, or the endpoint returned an error.
         """
         if not self._api_key:
@@ -106,7 +106,11 @@ class OpenRouterTTSProvider(TTSProvider):
             )
         if resp.status_code != 200:
             message = _error_message(resp)
-            if voice and resp.status_code in (400, 422) and "voice" in message.lower():
+            # OpenRouter reports a voice the model does not have as a bare
+            # "Provider returned 400", so any 400/422 on an explicit voice is
+            # treated as a rejected voice; the default-voice retry surfaces a
+            # different cause as a RuntimeError.
+            if voice and resp.status_code in (400, 422):
                 raise ValueError(message)
             raise RuntimeError(f"OpenRouter TTS {resp.status_code}: {message}")
         match = _RATE_RE.search(resp.headers.get("content-type", ""))
