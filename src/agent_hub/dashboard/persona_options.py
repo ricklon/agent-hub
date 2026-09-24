@@ -85,6 +85,41 @@ VOICES_BY_PROVIDER: dict[str, tuple[str, ...]] = {
 }
 FIXED_VOICE_PROVIDERS: frozenset[str] = frozenset({"kitten"})
 
+# Models a persona can pick within each voice system (blank = the hub's
+# configured default). OpenRouter takes any TTS model id it serves; these are
+# the suggestions. Kitten models are downloaded on first use, so only the
+# known ones are accepted. Edge has no model choice.
+TTS_MODELS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    "openrouter": ("google/gemini-3.8-flash-lite-tts", "google/gemini-3.8-flash-tts"),
+    "kitten": (
+        "KittenML/kitten-tts-nano-0.8",
+        "KittenML/kitten-tts-nano-0.8-int8",
+        "KittenML/kitten-tts-micro-0.8",
+        "KittenML/kitten-tts-mini-0.8",
+    ),
+}
+FIXED_MODEL_PROVIDERS: frozenset[str] = frozenset({"kitten"})
+
+
+def tts_models_for(tts_provider: str) -> tuple[str, ...]:
+    """TTS model ids to offer for one voice system (empty when it has none)."""
+    return TTS_MODELS_BY_PROVIDER.get(tts_provider, ())
+
+
+def tts_model_problem(tts_provider: str, model: str) -> str | None:
+    """Why ``model`` cannot be used with ``tts_provider``, or None if it can.
+
+    Blank always passes (it means the configured default).
+    """
+    if not model:
+        return None
+    if tts_provider not in TTS_MODELS_BY_PROVIDER:
+        return f"{tts_provider} has no model choice; leave the TTS model blank."
+    if tts_provider in FIXED_MODEL_PROVIDERS and model not in TTS_MODELS_BY_PROVIDER[tts_provider]:
+        options = ", ".join(TTS_MODELS_BY_PROVIDER[tts_provider])
+        return f"{model!r} is not a {tts_provider} model. Choose one of: {options}."
+    return None
+
 
 def voices_for(tts_provider: str) -> tuple[str, ...]:
     """Voice ids to offer for one TTS system (empty for an unknown system)."""

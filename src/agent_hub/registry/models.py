@@ -56,6 +56,9 @@ class Persona(Base):
     llm_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     tts_provider: Mapped[str] = mapped_column(String(64))
     tts_voice: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # TTS model within tts_provider (an OpenRouter or Kitten model id); NULL
+    # uses the provider's configured default. Edge has no model choice.
+    tts_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     asr_provider: Mapped[str] = mapped_column(String(64))
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     # JSON-encoded list of enabled skill names; NULL means all skills enabled

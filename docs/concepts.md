@@ -55,16 +55,20 @@ local synthesis.
 
 ## What is a persona?
 
-A persona is a named configuration bundle: which AI model to use, which
-voice, what system prompt to give the AI, and which tools to enable. Every
-device is assigned a persona. Multiple devices can share a persona, or each
-device can have its own.
+A persona is the agent's definition and its harness: which AI model to use,
+which voice (voice system, TTS model and voice), what system prompt to give
+the AI, which tools and skills to enable, and how conversations are
+remembered. An **agent** is an instance of a persona with a body: a device,
+a browser page, a robot or a connected service. Every agent runs one
+persona; several agents can run the same persona, or each can have its own.
 
 The default persona is called `hub-default`. You can create new ones from
 the dashboard and assign them to specific devices. Examples of things you
 might do with personas:
 
 - Give one device a British accent and a formal tone, another a casual tone
+- Give a storyteller the higher-fidelity Gemini Flash TTS model and a
+  quick-answer helper the faster Flash Lite model
 - Point a classroom device at a free model, a demo device at a better one
 - Restrict one device to only use time and weather tools, not web search
 

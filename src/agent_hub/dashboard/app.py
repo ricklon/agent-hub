@@ -1131,8 +1131,10 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
        style="color:#58a6ff;font-size:0.8rem">edit →</a></td></tr>
   <tr><th>model</th><td>{model_str}</td></tr>
   <tr><th>LLM provider</th><td>{provider_detail}</td></tr>
-  <tr><th>TTS provider</th><td>{persona.tts_provider}{
-                f" / {persona.tts_voice}" if persona.tts_voice else ""
+  <tr><th>TTS provider</th><td>{
+                " / ".join(
+                    x for x in (persona.tts_provider, persona.tts_model, persona.tts_voice) if x
+                )
             }</td></tr>
   <tr><th>ASR provider</th><td>{persona.asr_provider}</td></tr>
   <tr><th>system prompt</th><td style="white-space:pre-wrap;max-width:600px">{
@@ -1546,7 +1548,7 @@ named page agent when its name is reopened.">
                 llm_cell = tts_cell = memory_cell = "—"
             else:
                 llm_cell = f"{p.llm_provider} / {p.llm_model or 'default'}"
-                tts_cell = p.tts_provider + (f" / {p.tts_voice}" if p.tts_voice else "")
+                tts_cell = " / ".join(x for x in (p.tts_provider, p.tts_model, p.tts_voice) if x)
                 memory_cell = str(p.memory_window)
             return (
                 f'<tr><td><a href="/dashboard/personas/{p.name}" '
@@ -1593,6 +1595,7 @@ named page agent when its name is reopened.">
             tts_provider=base.tts_provider if base else "edge",
             tts_voice=base.tts_voice if base else None,
             asr_provider=base.asr_provider if base else "funasr_onnx",
+            tts_model=base.tts_model if base else None,
         )
         if persona is None:
             return HTMLResponse(f"<p style=\"color:#f85149\">Name '{name}' already taken.</p>")
@@ -1646,6 +1649,7 @@ named page agent when its name is reopened.">
         )
         asr_select = _select("asr_provider", persona_options.asr_providers(), persona.asr_provider)
         voice_datalist = _voice_datalist(persona.tts_provider, persona.tts_voice or "")
+        tts_model_datalist = _tts_model_datalist(persona.tts_provider, persona.tts_model or "")
         # Models the hub can actually use, offered in-form so nobody has to
         # copy ids from the Models page. Same gates as the picker.
         catalogue = await _fetch_openrouter_models(api_key)
@@ -1720,6 +1724,7 @@ named page agent when its name is reopened.">
             else ""
         )
         tts_voice_val = html.escape(persona.tts_voice or "")
+        tts_model_val = html.escape(persona.tts_model or "")
         tools_val_esc = html.escape(tools_val)
         transcription_checked = " checked" if persona.transcription else ""
         used_by = [
@@ -1786,6 +1791,13 @@ named page agent when its name is reopened.">
         <input type="text" name="tts_voice" value="{tts_voice_val}"
           list="tts-voices" style="width:300px" placeholder="blank = system default">
         {voice_datalist}</div>
+    </div>
+    <div class="field-row" data-assistant-only>
+      <div><label>TTS model (blank = hub default; Edge has none)</label>
+        <input type="text" name="tts_model" value="{tts_model_val}"
+          list="tts-models" style="width:300px" placeholder="blank = hub default">
+        {tts_model_datalist}</div>
+      <div></div>
     </div>
     <div class="field-row">
       <div><label>ASR system</label>{asr_select}</div>
@@ -1871,8 +1883,14 @@ named page agent when its name is reopened.">
 
     @router.get("/dashboard/persona-voices", response_class=HTMLResponse)
     async def persona_voices(tts_provider: str = "", current: str = "") -> HTMLResponse:
-        """The voice datalist for one TTS system (swapped in when it changes)."""
-        return HTMLResponse(_voice_datalist(tts_provider, current))
+        """The voice datalist for one TTS system (swapped in when it changes).
+
+        The model datalist rides along out of band, since models also depend
+        on the system.
+        """
+        return HTMLResponse(
+            _voice_datalist(tts_provider, current) + _tts_model_datalist(tts_provider, "", oob=True)
+        )
 
     @router.get("/dashboard/personas/{name}/_preset", response_class=HTMLResponse)
     async def persona_preset(name: str, preset: str = "") -> HTMLResponse:
@@ -1899,6 +1917,7 @@ named page agent when its name is reopened.">
         llm_model: str = Form(default=""),
         tts_provider: str = Form(default=""),
         tts_voice: str = Form(default=""),
+        tts_model: str = Form(default=""),
         asr_provider: str = Form(default=""),
         mcp_tools_allowlist: str = Form(default=""),
         memory_window: int = Form(default=20),
@@ -1943,7 +1962,18 @@ named page agent when its name is reopened.">
                 "An admin can allow paid models for you on the Operators page.</p>",
                 403,
             )
-        bad_voice = persona_options.voice_problem(tts_provider, tts_voice)
+        # A system without model choices (Edge) keeps no model, rather than
+        # refusing a save that switched to it with the old model still typed.
+        # A blank system field means "unchanged", so judge the model against
+        # the persona's current system.
+        model_system = tts_provider
+        if not model_system:
+            current_persona = await store.get_persona_by_name(name)
+            model_system = current_persona.tts_provider if current_persona else ""
+        tts_model = tts_model.strip() if persona_options.tts_models_for(model_system) else ""
+        bad_voice = persona_options.voice_problem(
+            tts_provider, tts_voice
+        ) or persona_options.tts_model_problem(model_system, tts_model)
         if bad_voice:
             return HTMLResponse(f'<p style="color:#f85149">{html.escape(bad_voice)}</p>', 400)
 
@@ -1954,6 +1984,7 @@ named page agent when its name is reopened.">
             llm_model=llm_model,
             tts_provider=tts_provider or None,
             tts_voice=tts_voice,
+            tts_model=tts_model,
             asr_provider=asr_provider or None,
             server_skills=skills_arg,
             mcp_tools_allowlist=tools_arg,
@@ -2977,6 +3008,7 @@ def _persona_status(persona: Any | None) -> dict[str, Any] | None:
         "llm_model": persona.llm_model,
         "tts_provider": persona.tts_provider,
         "tts_voice": persona.tts_voice,
+        "tts_model": persona.tts_model,
         "asr_provider": persona.asr_provider,
         "server_skills": persona.server_skills_list,
         "mcp_tools_allowlist": persona.mcp_tools_allowlist_list,
@@ -3102,6 +3134,14 @@ def _voice_datalist(tts_provider: str, current: str) -> str:
     voices = list(dict.fromkeys([*persona_options.voices_for(tts_provider), current.strip()]))
     opts = "".join(f'<option value="{html.escape(v)}"></option>' for v in voices if v)
     return f'<datalist id="tts-voices">{opts}</datalist>'
+
+
+def _tts_model_datalist(tts_provider: str, current: str, *, oob: bool = False) -> str:
+    """``<datalist id="tts-models">`` for one TTS system, keeping the current value."""
+    models = list(dict.fromkeys([*persona_options.tts_models_for(tts_provider), current.strip()]))
+    opts = "".join(f'<option value="{html.escape(m)}"></option>' for m in models if m)
+    swap = ' hx-swap-oob="true"' if oob else ""
+    return f'<datalist id="tts-models"{swap}>{opts}</datalist>'
 
 
 _VERDICT_STYLE = {

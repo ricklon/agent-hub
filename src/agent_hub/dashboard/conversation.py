@@ -281,7 +281,10 @@ def make_conversation_router(store: RegistryStore, config: dict[str, Any]) -> AP
         try:
             async with asyncio.timeout(30):
                 pcm, rate = await synthesize_persona(
-                    get_provider(persona.tts_provider, config), VOICE_TEST_TEXT, persona, device_id
+                    get_provider(persona.tts_provider, config, persona.tts_model),
+                    VOICE_TEST_TEXT,
+                    persona,
+                    device_id,
                 )
         except Exception as exc:
             raise HTTPException(502, "Voice preview failed. Check the persona provider.") from exc
