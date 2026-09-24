@@ -123,8 +123,8 @@ def get_provider(name: str, config: dict[str, Any]) -> TTSProvider:
         speed = cfg.get("speed")
         provider = OpenRouterTTSProvider(
             api_key=str(cfg.get("api_key") or llm_key),
-            model=str(cfg.get("model") or "openai/gpt-4o-mini-tts-2025-12-15"),
-            voice=str(cfg.get("voice") or "alloy"),
+            model=str(cfg.get("model") or "google/gemini-3.8-flash-lite-tts"),
+            voice=str(cfg.get("voice") or "Kore"),
             base_url=str(cfg.get("base_url") or "https://openrouter.ai/api/v1"),
             speed=float(speed) if speed not in (None, "") else None,
             price_per_million_chars=float(cfg.get("price_per_million_chars") or 0.0),

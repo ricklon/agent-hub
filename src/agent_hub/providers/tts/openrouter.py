@@ -2,7 +2,7 @@
 
 ``POST {base_url}/audio/speech`` takes the OpenAI Audio Speech request shape
 (``model``, ``input``, ``voice``, ``response_format``, ``speed``) and routes it
-to the chosen model (OpenAI, Gemini, Kokoro, Grok, ...). Asking for ``pcm``
+to the chosen model (Gemini 3.8 Flash Lite TTS by default). Asking for ``pcm``
 returns raw int16 mono audio with its rate in the Content-Type
 (``audio/pcm;rate=24000;channels=1``), so no MP3 decode is needed.
 
@@ -28,7 +28,7 @@ _RATE_RE = re.compile(r"rate=(\d+)")
 class OpenRouterTTSProvider(TTSProvider):
     """TTS via OpenRouter's OpenAI-compatible ``/audio/speech`` endpoint.
 
-    Voices depend on the model (``alloy`` for OpenAI models, for example), so
+    Voices depend on the model (``Kore``, ``Puck``, ... for Gemini TTS), so
     the voice list is not fixed; a voice the model rejects falls back to the
     configured default with a visible notice.
     """
@@ -48,7 +48,7 @@ class OpenRouterTTSProvider(TTSProvider):
 
         Args:
             api_key: OpenRouter API key.
-            model: OpenRouter TTS model id (e.g. ``openai/gpt-4o-mini-tts-2025-12-15``).
+            model: OpenRouter TTS model id (e.g. ``google/gemini-3.8-flash-lite-tts``).
             voice: Default voice for that model.
             base_url: API base; the endpoint is ``{base_url}/audio/speech``.
             speed: Playback speed; honoured only by models that support it.

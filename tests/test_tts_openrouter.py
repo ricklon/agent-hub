@@ -18,8 +18,8 @@ from agent_hub.server.persona_voice import synthesize_persona
 def _provider(handler: Any, **kwargs: Any) -> OpenRouterTTSProvider:
     return OpenRouterTTSProvider(
         api_key=kwargs.pop("api_key", "sk-or-test"),
-        model="openai/gpt-4o-mini-tts-2025-12-15",
-        voice="alloy",
+        model="google/gemini-3.8-flash-lite-tts",
+        voice="Kore",
         transport=httpx.MockTransport(handler),
         **kwargs,
     )
@@ -36,15 +36,15 @@ async def test_requests_pcm_and_reads_the_rate_from_the_content_type() -> None:
             headers={"content-type": "audio/pcm;rate=22050;channels=1"},
         )
 
-    pcm, rate = await _provider(handler, speed=1.1).synthesize_pcm("Hello there.", voice="nova")
+    pcm, rate = await _provider(handler, speed=1.1).synthesize_pcm("Hello there.", voice="Puck")
     assert (pcm, rate) == (b"\x01\x00\x02\x00", 22050)
     request = seen[0]
     assert str(request.url) == "https://openrouter.ai/api/v1/audio/speech"
     assert request.headers["authorization"] == "Bearer sk-or-test"
     assert json.loads(request.content) == {
-        "model": "openai/gpt-4o-mini-tts-2025-12-15",
+        "model": "google/gemini-3.8-flash-lite-tts",
         "input": "Hello there.",
-        "voice": "nova",
+        "voice": "Puck",
         "response_format": "pcm",
         "speed": 1.1,
     }
@@ -58,7 +58,7 @@ async def test_default_voice_and_rate() -> None:
         return httpx.Response(200, content=b"\x00\x00", headers={"content-type": "audio/pcm"})
 
     assert await _provider(handler).synthesize_pcm("Hi.") == (b"\x00\x00", 24000)
-    assert bodies[0]["voice"] == "alloy"
+    assert bodies[0]["voice"] == "Kore"
     assert "speed" not in bodies[0]
 
 
@@ -77,7 +77,7 @@ async def test_a_rejected_voice_falls_back_to_the_default_with_a_notice() -> Non
         b"\x00\x00",
         24000,
     )
-    assert voices == ["nonsense", "alloy"]
+    assert voices == ["nonsense", "Kore"]
 
 
 async def test_other_errors_are_reported_not_retried() -> None:
@@ -85,7 +85,7 @@ async def test_other_errors_are_reported_not_retried() -> None:
         return httpx.Response(402, json={"error": {"message": "Insufficient credits"}})
 
     with pytest.raises(RuntimeError, match="OpenRouter TTS 402: Insufficient credits"):
-        await _provider(handler).synthesize_pcm("Hello.", voice="nova")
+        await _provider(handler).synthesize_pcm("Hello.", voice="Puck")
 
 
 async def test_no_key_fails_before_any_request() -> None:
@@ -117,9 +117,9 @@ async def test_each_sentence_is_guarded_and_recorded_as_spend(
     await _provider(handler).synthesize_pcm("Hi.")
     assert calls == [
         ("guard", None),
-        ("record", ("openai/gpt-4o-mini-tts-2025-12-15", 0.015)),
+        ("record", ("google/gemini-3.8-flash-lite-tts", 0.015)),
         ("guard", None),
-        ("record", ("openai/gpt-4o-mini-tts-2025-12-15", None)),
+        ("record", ("google/gemini-3.8-flash-lite-tts", None)),
     ]
 
 
@@ -127,12 +127,12 @@ def test_registry_reuses_the_openrouter_llm_key(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(tts_pkg, "_cache", {})
     config = {
         "llm": {"openai": {"api_key": "sk-or-llm", "base_url": "https://openrouter.ai/api/v1"}},
-        "tts": {"openrouter": {"model": "hexgrad/kokoro-82m", "voice": "af_heart"}},
+        "tts": {"openrouter": {"model": "google/gemini-3.8-flash-tts", "voice": "Aoede"}},
     }
     provider = tts_pkg.get_provider("openrouter", config)
     assert isinstance(provider, OpenRouterTTSProvider)
     assert provider._api_key == "sk-or-llm"
-    assert provider._model == "hexgrad/kokoro-82m"
+    assert provider._model == "google/gemini-3.8-flash-tts"
 
 
 def test_registry_does_not_send_a_non_openrouter_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,3 +141,4 @@ def test_registry_does_not_send_a_non_openrouter_key(monkeypatch: pytest.MonkeyP
     provider = tts_pkg.get_provider("openrouter", config)
     assert isinstance(provider, OpenRouterTTSProvider)
     assert provider._api_key == ""
+    assert provider._model == "google/gemini-3.8-flash-lite-tts"

@@ -37,21 +37,41 @@ KITTEN_VOICES: tuple[str, ...] = (
     "Kiki",
     "Leo",
 )
-# OpenRouter voices depend on the model; these are the OpenAI speech voices the
-# default model (openai/gpt-4o-mini-tts) takes. Other models' voice ids can be
-# typed in, and a voice the model rejects falls back with a visible notice.
+# OpenRouter voices depend on the model; these are the 30 prebuilt voices of
+# Gemini 3.8 Flash Lite TTS (the default) and Flash TTS. Other models' voice
+# ids, or Gemini voice_... ids from Voice Design, can be typed in; a voice the
+# model rejects falls back to the configured one with a visible notice.
 OPENROUTER_VOICES: tuple[str, ...] = (
-    "alloy",
-    "ash",
-    "ballad",
-    "coral",
-    "echo",
-    "fable",
-    "nova",
-    "onyx",
-    "sage",
-    "shimmer",
-    "verse",
+    "Kore",
+    "Puck",
+    "Zephyr",
+    "Charon",
+    "Fenrir",
+    "Leda",
+    "Orus",
+    "Aoede",
+    "Callirrhoe",
+    "Autonoe",
+    "Enceladus",
+    "Iapetus",
+    "Umbriel",
+    "Algieba",
+    "Despina",
+    "Erinome",
+    "Algenib",
+    "Rasalgethi",
+    "Laomedeia",
+    "Achernar",
+    "Alnilam",
+    "Schedar",
+    "Gacrux",
+    "Pulcherrima",
+    "Achird",
+    "Zubenelgenubi",
+    "Vindemiatrix",
+    "Sadachbia",
+    "Sadaltager",
+    "Sulafat",
 )
 TTS_VOICE_SUGGESTIONS: tuple[str, ...] = EDGE_VOICES + KITTEN_VOICES + OPENROUTER_VOICES
 

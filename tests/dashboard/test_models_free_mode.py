@@ -139,7 +139,7 @@ async def test_free_mode_refuses_switching_a_persona_to_the_openrouter_voice(
     async with await _client(store, {"llm": {"free_only": True}}) as c:
         refused = await c.post(
             "/dashboard/personas/hub-default",
-            data={"tts_provider": "openrouter", "tts_voice": "alloy", "system_prompt": "hi"},
+            data={"tts_provider": "openrouter", "tts_voice": "Kore", "system_prompt": "hi"},
         )
     assert refused.status_code == 403
     assert "OpenRouter voice is paid" in refused.text
@@ -152,21 +152,21 @@ async def test_free_mode_refuses_switching_a_persona_to_the_openrouter_voice(
     async with await _client(store, {"llm": {"free_only": True}}) as c:
         kept = await c.post(
             "/dashboard/personas/hub-default",
-            data={"tts_provider": "openrouter", "tts_voice": "nova", "system_prompt": "edited"},
+            data={"tts_provider": "openrouter", "tts_voice": "Puck", "system_prompt": "edited"},
         )
     assert kept.status_code == 200
     persona = await store.get_persona_by_name("hub-default")
     assert persona is not None
-    assert (persona.tts_voice, persona.system_prompt) == ("nova", "edited")
+    assert (persona.tts_voice, persona.system_prompt) == ("Puck", "edited")
 
 
 async def test_without_free_mode_the_openrouter_voice_is_selectable(store: RegistryStore) -> None:
     async with await _client(store, {}) as c:
         resp = await c.post(
             "/dashboard/personas/hub-default",
-            data={"tts_provider": "openrouter", "tts_voice": "coral", "system_prompt": "hi"},
+            data={"tts_provider": "openrouter", "tts_voice": "Aoede", "system_prompt": "hi"},
         )
     assert resp.status_code == 200
     persona = await store.get_persona_by_name("hub-default")
     assert persona is not None
-    assert (persona.tts_provider, persona.tts_voice) == ("openrouter", "coral")
+    assert (persona.tts_provider, persona.tts_voice) == ("openrouter", "Aoede")
