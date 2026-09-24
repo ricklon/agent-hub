@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from agent_hub.providers import asr as _asr
 
-TTS_PROVIDERS: tuple[str, ...] = ("edge", "kitten")
+TTS_PROVIDERS: tuple[str, ...] = ("edge", "kitten", "openrouter")
 
 # Edge exposes 400+ voices dynamically; this is a curated English shortlist for
 # the picker. Any Edge voice id still works if typed in directly.
@@ -37,12 +37,32 @@ KITTEN_VOICES: tuple[str, ...] = (
     "Kiki",
     "Leo",
 )
-TTS_VOICE_SUGGESTIONS: tuple[str, ...] = EDGE_VOICES + KITTEN_VOICES
+# OpenRouter voices depend on the model; these are the OpenAI speech voices the
+# default model (openai/gpt-4o-mini-tts) takes. Other models' voice ids can be
+# typed in, and a voice the model rejects falls back with a visible notice.
+OPENROUTER_VOICES: tuple[str, ...] = (
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "fable",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+    "verse",
+)
+TTS_VOICE_SUGGESTIONS: tuple[str, ...] = EDGE_VOICES + KITTEN_VOICES + OPENROUTER_VOICES
 
 # Which voices belong to which voice system. Edge accepts any of its 400+
 # voice ids if typed in, so its list is a suggestion; Kitten ships exactly
 # these eight, so anything else is a save-time error rather than a runtime one.
-VOICES_BY_PROVIDER: dict[str, tuple[str, ...]] = {"edge": EDGE_VOICES, "kitten": KITTEN_VOICES}
+VOICES_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    "edge": EDGE_VOICES,
+    "kitten": KITTEN_VOICES,
+    "openrouter": OPENROUTER_VOICES,
+}
 FIXED_VOICE_PROVIDERS: frozenset[str] = frozenset({"kitten"})
 
 

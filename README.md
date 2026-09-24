@@ -279,6 +279,9 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_LLM_OPENAI_BASE_URL` | OpenAI | URL of the LLM API (OpenRouter, Ollama, etc.) |
 | `AGENT_HUB_LLM_OPENAI_MODEL` | `gpt-4o-mini` | Model name to use |
 | `AGENT_HUB_TTS_EDGE_VOICE` | `en-US-AriaNeural` | Edge TTS voice name |
+| `AGENT_HUB_TTS_OPENROUTER_API_KEY` | LLM key if the LLM uses OpenRouter | Key for the `openrouter` voice system (cloud TTS, billed per character) |
+| `AGENT_HUB_TTS_OPENROUTER_MODEL` | `openai/gpt-4o-mini-tts-2025-12-15` | OpenRouter TTS model; a persona picks the voice |
+| `AGENT_HUB_TTS_OPENROUTER_PRICE_PER_MILLION_CHARS` | `0` | USD per 1M characters, so the spend ledger can show TTS cost |
 | `AGENT_HUB_SERVER_WEBSOCKET` | auto-detected LAN IP | WS URL sent to devices on check-in |
 | `AGENT_HUB_SERVER_WS_PORT` | `8000` | WebSocket / dashboard port |
 | `AGENT_HUB_SERVER_HTTP_PORT` | `8003` | Device check-in port |

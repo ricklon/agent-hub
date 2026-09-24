@@ -131,3 +131,42 @@ def test_unreadable_free_only_value_refuses_to_start(store: RegistryStore) -> No
     """A typo must not quietly decide whether paid models are allowed."""
     with pytest.raises(ValueError, match="llm.free_only"):
         dashboard_app.make_router(store, {"llm": {"free_only": "ture"}})
+
+
+async def test_free_mode_refuses_switching_a_persona_to_the_openrouter_voice(
+    store: RegistryStore,
+) -> None:
+    async with await _client(store, {"llm": {"free_only": True}}) as c:
+        refused = await c.post(
+            "/dashboard/personas/hub-default",
+            data={"tts_provider": "openrouter", "tts_voice": "alloy", "system_prompt": "hi"},
+        )
+    assert refused.status_code == 403
+    assert "OpenRouter voice is paid" in refused.text
+    persona = await store.get_persona_by_name("hub-default")
+    assert persona is not None
+    assert persona.tts_provider != "openrouter"
+
+    # A persona an admin already put on it stays editable in free mode.
+    await store.update_persona("hub-default", tts_provider="openrouter")
+    async with await _client(store, {"llm": {"free_only": True}}) as c:
+        kept = await c.post(
+            "/dashboard/personas/hub-default",
+            data={"tts_provider": "openrouter", "tts_voice": "nova", "system_prompt": "edited"},
+        )
+    assert kept.status_code == 200
+    persona = await store.get_persona_by_name("hub-default")
+    assert persona is not None
+    assert (persona.tts_voice, persona.system_prompt) == ("nova", "edited")
+
+
+async def test_without_free_mode_the_openrouter_voice_is_selectable(store: RegistryStore) -> None:
+    async with await _client(store, {}) as c:
+        resp = await c.post(
+            "/dashboard/personas/hub-default",
+            data={"tts_provider": "openrouter", "tts_voice": "coral", "system_prompt": "hi"},
+        )
+    assert resp.status_code == 200
+    persona = await store.get_persona_by_name("hub-default")
+    assert persona is not None
+    assert (persona.tts_provider, persona.tts_voice) == ("openrouter", "coral")

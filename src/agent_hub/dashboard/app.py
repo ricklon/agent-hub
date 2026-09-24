@@ -1931,6 +1931,18 @@ named page agent when its name is reopened.">
         refusal = await _reject_model(llm_model.strip(), request)
         if refusal:
             return HTMLResponse(f'<p style="color:#f85149">{html.escape(refusal)}</p>', 403)
+        if tts_provider == "openrouter" and _free_for(request):
+            current = await store.get_persona_by_name(name)
+            switching = current is None or current.tts_provider != "openrouter"
+        else:
+            switching = False
+        if switching:
+            # Cloud speech is billed per character; free mode means no new bills.
+            return HTMLResponse(
+                '<p style="color:#f85149">Free models only: the OpenRouter voice is paid. '
+                "An admin can allow paid models for you on the Operators page.</p>",
+                403,
+            )
         bad_voice = persona_options.voice_problem(tts_provider, tts_voice)
         if bad_voice:
             return HTMLResponse(f'<p style="color:#f85149">{html.escape(bad_voice)}</p>', 400)

@@ -134,6 +134,22 @@ tts:
     # Available voices: Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo
     voice: "Luna"
     speed: 1.0
+  # Cloud voices through OpenRouter's speech endpoint (OpenAI, Gemini, Kokoro,
+  # Grok, ... — see openrouter.ai/collections/text-to-speech-models). Billed
+  # per character: each sentence passes the spend guard and is recorded in the
+  # spend ledger. In free mode only operators allowed paid models can pick it.
+  openrouter:
+    # Empty reuses llm.openai.api_key when llm.openai.base_url is OpenRouter.
+    # Env: AGENT_HUB_TTS_OPENROUTER_API_KEY
+    api_key: ""
+    model: "openai/gpt-4o-mini-tts-2025-12-15"
+    # Voices depend on the model; OpenAI models take alloy, coral, nova, sage, ...
+    voice: "alloy"
+    # Honoured only by models that support it (OpenAI does); empty = model default.
+    speed: ""
+    # USD per 1M input characters, for the spend ledger. Check the model page;
+    # 0 records the call without a cost.
+    price_per_million_chars: 0
 
 asr:
   default_provider: funasr_onnx
