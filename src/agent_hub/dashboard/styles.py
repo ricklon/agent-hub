@@ -22,6 +22,7 @@ tr:hover td{background:#0f172a}
   margin:0.1rem 0.1rem 0 0;display:inline-block}
 .badge-multi{background:#1f4a2e;color:#3fb950}
 .badge-free{background:#2d1f6e;color:#a5a0ff}
+.badge-paid{background:#1f3d2b;color:#7ee2a8}
 .owner-filter{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.5rem 0;
   font-size:.85rem;color:#94a3b8}
 .owner-chip{background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:999px;

@@ -27,7 +27,7 @@ from agent_hub.conversations import (
     memory_note_for_turn,
 )
 from agent_hub.conversations import settings_for_device as conversation_settings_for_device
-from agent_hub.dashboard import cleanup, conversations_view, persona_options
+from agent_hub.dashboard import cleanup, conversations_view, model_field, persona_options
 from agent_hub.dashboard._timefmt import fmt_ts
 from agent_hub.dashboard.access_identity import OperatorIdentity
 from agent_hub.dashboard.agent_cards import (
@@ -1683,20 +1683,28 @@ named page agent when its name is reopened.">
         free_view = _free_for(request)
         usable_models = [m for m in catalogue if m["tools"] and (not free_view or m["free"])]
         effective_model = persona.llm_model or default_model
+        replacement = model_field.paid_version(effective_model, catalogue)
+        replacement_hint = (
+            f" Its paid version <code>{html.escape(replacement)}</code> is still listed"
+            + (" (paid models are off for you)." if free_view else ", under Paid.")
+            if replacement
+            else ""
+        )
         model_warning = (
             '<p class="msg" style="color:#f85149">⚠ '
             f"<code>{html.escape(effective_model)}</code> is not in OpenRouter's model list any "
             "more. It was probably removed, and every turn on it will fail. Pick another "
-            "model and test it.</p>"
+            f"model and test it.{replacement_hint}</p>"
             if catalogue
             and effective_model
             and _uses_openrouter(config, persona.llm_provider)
             and all(m["id"] != effective_model for m in catalogue)
             else ""
         )
-        model_datalist = "".join(
-            f'<option value="{html.escape(m["id"])}">{html.escape(m["name"])}</option>'
-            for m in usable_models
+        model_input = (
+            model_field.model_select(persona.llm_model or "", usable_models, default_model)
+            if usable_models and _uses_openrouter(config, persona.llm_provider)
+            else model_field.model_text_input(persona.llm_model or "", usable_models)
         )
         preset_opts = "".join(
             f'<option value="{html.escape(k)}">{html.escape(k)}</option>'
@@ -1744,12 +1752,7 @@ named page agent when its name is reopened.">
         )
 
         prompt_val = html.escape(persona.system_prompt or "")
-        llm_model_val = html.escape(persona.llm_model or "")
-        free_hint = (
-            ' <span class="badge badge-free">free mode: free models only</span>'
-            if free_view
-            else ""
-        )
+        free_hint = model_field.access_note(free_only, _may_choose_paid(request))
         tts_voice_val = html.escape(persona.tts_voice or "")
         tts_model_val = html.escape(persona.tts_model or "")
         tools_val_esc = html.escape(tools_val)
@@ -1802,10 +1805,8 @@ named page agent when its name is reopened.">
     <h3>Providers</h3>
     <div class="field-row" data-assistant-only>
       <div><label>LLM provider</label>{llm_select}</div>
-      <div><label>LLM model (blank = config default){free_hint}</label>
-        <input type="text" name="llm_model" value="{llm_model_val}" list="llm-models"
-          style="width:300px" placeholder="type to search tool-capable models">
-        <datalist id="llm-models">{model_datalist}</datalist>
+      <div><label for="llm-model">LLM model{free_hint}</label>
+        {model_input}
         <button type="button" style="background:#1a4a6e"
           hx-post="/dashboard/models/test" hx-include="[name=llm_model],[name=llm_provider]"
           hx-target="#persona-model-test" hx-swap="innerHTML"
@@ -2052,7 +2053,9 @@ named page agent when its name is reopened.">
         )
         body = f"""\
 <h2>Model Picker</h2>
-<p>Current: <strong id="current-model">{html.escape(current or "not set")}</strong>
+<p class="doc-muted">These buttons set the <strong>hub-default</strong> persona's model. To change
+another persona's model, edit it on the <a href="/dashboard/personas">Personas</a> page.</p>
+<p>Hub default: <strong id="current-model">{html.escape(current or "not set")}</strong>
   <button type="button" style="background:#1a4a6e" hx-post="/dashboard/models/test"
     hx-vals='{{"model_id": ""}}' hx-target="#model-test" hx-swap="innerHTML"
     >Test current model</button></p>
@@ -2158,7 +2161,8 @@ tool is not usable here.</p>
       hx-target="#model-list"
       hx-swap="none"
       hx-on::after-request="document.getElementById('current-model').innerText='{m["id"]}'"
-    >{"✓ active" if selected else "select"}</button>
+      title="Make this the model of the hub-default persona; other personas keep theirs"
+    >{"✓ hub default" if selected else "set hub default"}</button>
   </td>
 </tr>""")
 
