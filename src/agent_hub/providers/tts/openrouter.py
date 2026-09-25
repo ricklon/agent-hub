@@ -6,23 +6,43 @@ to the chosen model (Gemini 3.8 Flash Lite TTS by default). Asking for ``pcm``
 returns raw int16 mono audio with its rate in the Content-Type
 (``audio/pcm;rate=24000;channels=1``), so no MP3 decode is needed.
 
-Speech is billed per input character, so each call passes the hub's spend
-guard first and is recorded in the spend ledger afterwards.
+Speech is billed per token: the input text, and far more for the audio out
+(Gemini TTS makes about 32 audio tokens per second of speech). The endpoint
+reports no cost, so each call passes the hub's spend guard first, is recorded
+at once with an estimate from the catalogue's per-token prices, and is then
+settled in the background with the billed cost from
+``{base_url}/generation?id=…`` (available some seconds after the call).
 """
 
 from __future__ import annotations
 
+import asyncio
+import math
 import re
 
 import httpx
 from loguru import logger
 
 from agent_hub import spend
+from agent_hub.providers.openrouter_prices import token_prices
 from agent_hub.providers.tts import TTSProvider
 
 _TAG = "tts.openrouter"
 _DEFAULT_RATE = 24000
 _RATE_RE = re.compile(r"rate=(\d+)")
+# Gemini TTS audio tokens per second of speech (200 tokens for 6.24 s, measured).
+AUDIO_TOKENS_PER_SECOND = 32
+# Seconds to wait before each billed-cost lookup; the generation record
+# appears some seconds after the audio does.
+_SETTLE_DELAYS = (4.0, 4.0, 6.0, 10.0, 20.0)
+# Settle tasks run after the request returns; hold them so they are not collected.
+_settling: set[asyncio.Task[None]] = set()
+
+
+def estimate_tokens(text: str, pcm_bytes: int, rate: int) -> tuple[int, int]:
+    """(input, output) tokens for a speech call: ~4 characters a token in, audio out."""
+    seconds = pcm_bytes / 2 / rate if rate else 0.0
+    return math.ceil(len(text) / 4), round(seconds * AUDIO_TOKENS_PER_SECOND)
 
 
 class OpenRouterTTSProvider(TTSProvider):
@@ -40,9 +60,9 @@ class OpenRouterTTSProvider(TTSProvider):
         voice: str,
         base_url: str = "https://openrouter.ai/api/v1",
         speed: float | None = None,
-        price_per_million_chars: float = 0.0,
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        settle_delays: tuple[float, ...] = _SETTLE_DELAYS,
     ) -> None:
         """Create an OpenRouterTTSProvider.
 
@@ -52,19 +72,19 @@ class OpenRouterTTSProvider(TTSProvider):
             voice: Default voice for that model.
             base_url: API base; the endpoint is ``{base_url}/audio/speech``.
             speed: Playback speed; honoured only by models that support it.
-            price_per_million_chars: USD per 1M input characters, for the spend
-                ledger. 0 records the call without a cost (marked estimated).
             timeout: Seconds to wait for one sentence of audio.
             transport: HTTP transport override, for tests.
+            settle_delays: Waits before each billed-cost lookup (tests shorten them).
         """
         self._api_key = api_key
         self._model = model
         self._voice = voice
-        self._url = base_url.rstrip("/") + "/audio/speech"
+        self._base_url = base_url.rstrip("/")
+        self._url = self._base_url + "/audio/speech"
         self._speed = speed
-        self._price = price_per_million_chars
         self._timeout = timeout
         self._transport = transport
+        self._settle_delays = settle_delays
 
     async def synthesize_pcm(self, text: str, voice: str | None = None) -> tuple[bytes, int]:
         """Return PCM int16 bytes and their sample rate.
@@ -115,14 +135,51 @@ class OpenRouterTTSProvider(TTSProvider):
             raise RuntimeError(f"OpenRouter TTS {resp.status_code}: {message}")
         match = _RATE_RE.search(resp.headers.get("content-type", ""))
         rate = int(match.group(1)) if match else _DEFAULT_RATE
-        await spend.record(
-            self._model, 0, 0, len(text) * self._price / 1_000_000 if self._price else None
-        )
+        tokens_in, tokens_out = estimate_tokens(text, len(resp.content), rate)
+        prices = await token_prices(self._model, self._base_url, self._transport)
+        cost = tokens_in * prices[0] + tokens_out * prices[1] if prices else None
+        row_id = await spend.record(self._model, tokens_in, tokens_out, cost, estimated=True)
+        generation = resp.headers.get("x-generation-id", "")
+        if row_id is not None and generation:
+            task = asyncio.create_task(self._settle(row_id, generation))
+            _settling.add(task)
+            task.add_done_callback(_settling.discard)
         logger.bind(tag=_TAG).debug(
-            f"{self._model} {len(text)} chars → {len(resp.content)} bytes @ {rate}Hz "
-            f"({resp.headers.get('x-generation-id', 'no generation id')})"
+            f"{self._model} {len(text)} chars → {len(resp.content)} bytes @ {rate}Hz, "
+            f"est. ${cost or 0:.6f} ({generation or 'no generation id'})"
         )
         return resp.content, rate
+
+    async def _settle(self, row_id: int, generation: str) -> None:
+        """Replace the estimate with the billed cost once OpenRouter has it."""
+        async with httpx.AsyncClient(timeout=10, transport=self._transport) as client:
+            for delay in self._settle_delays:
+                await asyncio.sleep(delay)
+                try:
+                    resp = await client.get(
+                        self._base_url + "/generation",
+                        params={"id": generation},
+                        headers={"Authorization": f"Bearer {self._api_key}"},
+                    )
+                except httpx.HTTPError:
+                    continue
+                if resp.status_code == 404:
+                    continue  # not recorded yet
+                if resp.status_code != 200:
+                    break
+                data = resp.json().get("data") or {}
+                if data.get("total_cost") is None:
+                    continue
+                await spend.settle(
+                    row_id,
+                    float(data["total_cost"]),
+                    int(data.get("native_tokens_prompt") or data.get("tokens_prompt") or 0),
+                    int(data.get("native_tokens_completion") or data.get("tokens_completion") or 0),
+                )
+                return
+        logger.bind(tag=_TAG).warning(
+            f"No billed cost for {generation}; the ledger keeps the estimate"
+        )
 
     async def synthesize(self, text: str, voice: str | None = None) -> bytes:
         """Synthesize text to a WAV file.

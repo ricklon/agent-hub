@@ -961,20 +961,39 @@ class RegistryStore:
         cost_usd: float,
         cost_estimated: bool,
         device_id: str | None = None,
-    ) -> None:
-        """Append one billed LLM call to the spend ledger."""
+    ) -> int:
+        """Append one billed call to the spend ledger and return its row id."""
         async with self._sessions() as session:
-            session.add(
-                LLMSpend(
-                    device_id=device_id,
-                    model=model,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    cost_usd=cost_usd,
-                    cost_estimated=cost_estimated,
-                )
+            row = LLMSpend(
+                device_id=device_id,
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+                cost_estimated=cost_estimated,
             )
+            session.add(row)
             await session.commit()
+            return int(row.id)
+
+    async def settle_llm_spend(
+        self, row_id: int, cost_usd: float, prompt_tokens: int, completion_tokens: int
+    ) -> bool:
+        """Replace an estimated ledger row with the provider's billed figures.
+
+        Returns:
+            False when the row no longer exists (a spend reset in between).
+        """
+        async with self._sessions() as session:
+            row = await session.get(LLMSpend, row_id)
+            if row is None:
+                return False
+            row.cost_usd = cost_usd
+            row.prompt_tokens = prompt_tokens
+            row.completion_tokens = completion_tokens
+            row.cost_estimated = False
+            await session.commit()
+            return True
 
     async def llm_spend_summary(self, since: datetime | None = None) -> dict[str, float | int]:
         """Aggregate the spend ledger, optionally only rows at or after `since`.

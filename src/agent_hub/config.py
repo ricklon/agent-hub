@@ -233,6 +233,9 @@ class Settings:
         )
 
 
+_warned_missing: set[str] = set()
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
     """Load YAML config and apply environment variable overrides.
 
@@ -248,7 +251,10 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         path = Path("data/.config.yaml")
 
     if not path.exists():
-        logger.warning(f"Config file {path} not found — using defaults and env vars")
+        # Config is often env-only (the droplet); say so once, not on every load.
+        if str(path) not in _warned_missing:
+            _warned_missing.add(str(path))
+            logger.warning(f"Config file {path} not found — using defaults and env vars")
         config: dict[str, Any] = {}
     else:
         with path.open() as f:

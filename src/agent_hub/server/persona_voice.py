@@ -6,6 +6,7 @@ from typing import Protocol
 
 from loguru import logger
 
+from agent_hub import spend
 from agent_hub.registry.models import Persona
 from agent_hub.server import session_state
 from agent_hub.server.speech_text import for_speech, speech_pieces
@@ -33,6 +34,8 @@ async def synthesize_persona(
     """
     state = session_state.get_state(device_id)
     state.voice_notice = ""
+    if device_id:
+        spend.bind_device(device_id)  # a cloud voice's cost is this agent's
     text = for_speech(text)
     if not text:
         return b"", 16000

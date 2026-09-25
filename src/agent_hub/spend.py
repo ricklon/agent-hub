@@ -169,12 +169,17 @@ class SpendTracker:
         completion_tokens: int,
         cost_usd: float | None,
         device_id: str | None = None,
-    ) -> None:
-        """Append a call to the ledger, estimating cost if none was reported."""
-        estimated = cost_usd is None
-        if estimated:
+        estimated: bool = False,
+    ) -> int:
+        """Append a call to the ledger and return its row id.
+
+        With no ``cost_usd`` the local price table estimates one; ``estimated``
+        marks a caller's own estimate that a later ``settle`` will replace.
+        """
+        estimated = estimated or cost_usd is None
+        if cost_usd is None:
             cost_usd = self._config.estimate_cost(model, prompt_tokens, completion_tokens)
-        await self._store.record_llm_spend(
+        row_id = await self._store.record_llm_spend(
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -186,6 +191,15 @@ class SpendTracker:
         if self._warned_day != day_start():
             self._warned.discard("daily")
             self._warned_day = day_start()
+        return row_id
+
+    async def settle(
+        self, row_id: int, cost_usd: float, prompt_tokens: int, completion_tokens: int
+    ) -> bool:
+        """Replace an estimated row with the billed cost; False if the row is gone."""
+        return await self._store.settle_llm_spend(
+            row_id, cost_usd, prompt_tokens, completion_tokens
+        )
 
 
 def _fraction(spent: float, limit: float) -> float | None:
@@ -253,8 +267,19 @@ async def record(
     completion_tokens: int,
     cost_usd: float | None,
     device_id: str | None = None,
-) -> None:
-    """Meter one call if metering is configured; otherwise do nothing."""
-    if _tracker is not None:
-        attributed = device_id if device_id is not None else _current_device.get()
-        await _tracker.record(model, prompt_tokens, completion_tokens, cost_usd, attributed)
+    estimated: bool = False,
+) -> int | None:
+    """Meter one call if metering is configured; return its ledger row id, if any."""
+    if _tracker is None:
+        return None
+    attributed = device_id if device_id is not None else _current_device.get()
+    return await _tracker.record(
+        model, prompt_tokens, completion_tokens, cost_usd, attributed, estimated=estimated
+    )
+
+
+async def settle(row_id: int, cost_usd: float, prompt_tokens: int, completion_tokens: int) -> bool:
+    """Replace an estimated ledger row with the billed cost, if metering is on."""
+    if _tracker is None:
+        return False
+    return await _tracker.settle(row_id, cost_usd, prompt_tokens, completion_tokens)
