@@ -82,6 +82,8 @@ _CORS = {
 _VALID_ACTIVITIES = {"idle", "listening", "thinking", "speaking", "paused"}
 # A wake word heard this recently belongs to the utterance now being transcribed.
 _WAKE_SEGMENT_S = 8.0
+# A push-to-talk press shorter than this is a slip of the finger, not speech.
+_MIN_PUSH_MS = 300
 # Markdown a model writes but a voice should not read out ("**4**" as "star star").
 _MARKDOWN_RE = re.compile(r"(\*\*|__|\*|`+|^#+\s*)", re.MULTILINE)
 
@@ -773,6 +775,7 @@ def make_router(
             d
             for d in server_skills.get_definitions()
             if d["function"]["name"] not in {"page_speak", "page_see"}
+            and server_skills.is_enabled(d["function"]["name"], persona.server_skills_list)
         ]
         tools = page_tool_defs + skill_defs + linked_tool_defs(persona)
         page_tool_names = {d["function"]["name"] for d in page_tool_defs}
@@ -797,8 +800,14 @@ def make_router(
                 return await call_linked_tool(linked[0], linked[1], args)
             if name in page_tool_names:
                 timeout = 60.0 if ("camera" in name or "photo" in name) else 30.0
-                return await mcp_bridge.call_page_tool(device_id, name, args, timeout=timeout)
+                try:
+                    return await mcp_bridge.call_page_tool(device_id, name, args, timeout=timeout)
+                except Exception as exc:  # noqa: BLE001 - the model answers without the tool
+                    logger.bind(tag=_TAG).warning(f"Page tool {name!r} on {device_id!r}: {exc}")
+                    return f"The tool {name} failed: {exc}. Answer without it if you can."
             if server_skills.has_skill(name):
+                if not server_skills.is_enabled(name, persona.server_skills_list):
+                    return f"The skill {name} is not enabled for this persona."
                 result = await server_skills.run_result(name, args)
                 return result.text
             return f"unknown tool: {name!r}"
@@ -812,6 +821,11 @@ def make_router(
         woke_at = -1e9
         active_turn: asyncio.Task[None] | None = None
         interrupt = asyncio.Event()
+        # Push-to-talk: the page sends audio only while its button is held, and
+        # the utterance is exactly what was held: no VAD, no wake word. For a
+        # room where people also talk to each other (a role-play practice).
+        push_to_talk = False
+        held: bytearray | None = None
         session_state.set_pipeline_status(device_id, "listening")
 
         async def _speak_chunk(
@@ -999,6 +1013,80 @@ def make_router(
                     f"{', interrupted' if interrupt.is_set() else ''})"
                 )
 
+        async def _handle_utterance(pcm_all: bytes, segment_ms: int, pushed: bool) -> None:
+            """Transcribe one utterance and answer it if it is meant for the agent.
+
+            ``pushed`` (push-to-talk) means it is: no wake word is needed.
+            """
+            nonlocal active_turn, interrupt, asr_ms
+            session_state.begin_response(device_id)
+            wav_bytes = pcm_to_wav(pcm_all, 16000)
+            asr = get_asr(persona.asr_provider, config)
+            asr_started = time.monotonic()
+            result = await asr.transcribe(wav_bytes)
+            asr_ms = int((time.monotonic() - asr_started) * 1000)
+            heard = (result.text or "").strip()
+            if not result.is_speech or not heard:
+                logger.bind(tag=_TAG).info(
+                    f"Page voice {device_id!r}: {segment_ms} ms of speech, "
+                    f"ASR {asr_ms} ms heard nothing"
+                )
+                await websocket.send_text(
+                    json.dumps({"type": "heard", "text": "", "reason": "no words"})
+                )
+                return
+            now = time.monotonic()
+            if pushed:
+                kind, text, reason = "command", heard, "push-to-talk"
+            elif detector is not None:
+                # The model heard the phrase; the transcript only
+                # has to carry the request, and may not spell the
+                # wake word the way the model heard it.
+                in_window = now < follow_up_until
+                woke = now - woke_at < _WAKE_SEGMENT_S
+                kind = "command" if (woke or in_window) else "transcript"
+                text = strip_wake_prefix(heard, detector.name) if woke else heard
+                if kind == "command" and len(text.split()) < 1:
+                    text = heard
+                reason = "wake word" if woke else ("follow-up" if in_window else "")
+            else:
+                kind, text = classify_utterance(heard, wake_word)
+                reason = f"wake word {wake_word!r}" if wake_word else "open mic"
+            logger.bind(tag=_TAG).info(
+                f"Page voice {device_id!r}: {segment_ms} ms, ASR {asr_ms} ms "
+                f"heard {heard!r} → {kind} ({reason or 'no wake word'})"
+            )
+            if kind == "ignore":
+                await websocket.send_text(
+                    json.dumps({"type": "heard", "text": heard, "reason": "too short"})
+                )
+                return
+            if kind == "command":
+                if active_turn is not None and not active_turn.done():
+                    # Barge-in: stop the reply in progress and answer this.
+                    interrupt.set()
+                    with suppress(Exception):
+                        await active_turn
+                    logger.bind(tag=_TAG).info(
+                        f"Page voice {device_id!r}: interrupted by {text[:40]!r}"
+                    )
+                # Always a fresh flag: the old one may already be set
+                # from stopping the previous reply, which would cut
+                # this answer off before it started.
+                interrupt = asyncio.Event()
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "wake",
+                            "word": detector.name if detector else wake_word,
+                            "command": text,
+                        }
+                    )
+                )
+                active_turn = asyncio.create_task(_run_turn(text, interrupt))
+            else:
+                await websocket.send_text(json.dumps({"type": "transcript", "text": text}))
+
         try:
             while True:
                 msg = await websocket.receive()
@@ -1025,76 +1113,14 @@ def make_router(
                         await websocket.send_text(
                             json.dumps({"type": "wake", "word": detector.name, "command": ""})
                         )
+                    if push_to_talk:
+                        # Only the held audio counts; the wake word model and
+                        # the VAD are not consulted.
+                        if held is not None:
+                            held.extend(pcm)
+                        continue
                     if vad.push(pcm):
-                        segment_ms = vad.segment_ms
-                        session_state.begin_response(device_id)
-                        pcm_all = vad.take_pcm()
-                        wav_bytes = pcm_to_wav(pcm_all, 16000)
-                        asr = get_asr(persona.asr_provider, config)
-                        asr_started = time.monotonic()
-                        result = await asr.transcribe(wav_bytes)
-                        asr_ms = int((time.monotonic() - asr_started) * 1000)
-                        heard = (result.text or "").strip()
-                        if not result.is_speech or not heard:
-                            logger.bind(tag=_TAG).info(
-                                f"Page voice {device_id!r}: {segment_ms} ms of speech, "
-                                f"ASR {asr_ms} ms heard nothing"
-                            )
-                            await websocket.send_text(
-                                json.dumps({"type": "heard", "text": "", "reason": "no words"})
-                            )
-                            continue
-                        now = time.monotonic()
-                        if detector is not None:
-                            # The model heard the phrase; the transcript only
-                            # has to carry the request, and may not spell the
-                            # wake word the way the model heard it.
-                            in_window = now < follow_up_until
-                            woke = now - woke_at < _WAKE_SEGMENT_S
-                            kind = "command" if (woke or in_window) else "transcript"
-                            text = strip_wake_prefix(heard, detector.name) if woke else heard
-                            if kind == "command" and len(text.split()) < 1:
-                                text = heard
-                            reason = "wake word" if woke else ("follow-up" if in_window else "")
-                        else:
-                            kind, text = classify_utterance(heard, wake_word)
-                            reason = f"wake word {wake_word!r}" if wake_word else "open mic"
-                        logger.bind(tag=_TAG).info(
-                            f"Page voice {device_id!r}: {segment_ms} ms, ASR {asr_ms} ms "
-                            f"heard {heard!r} → {kind} ({reason or 'no wake word'})"
-                        )
-                        if kind == "ignore":
-                            await websocket.send_text(
-                                json.dumps({"type": "heard", "text": heard, "reason": "too short"})
-                            )
-                            continue
-                        if kind == "command":
-                            if active_turn is not None and not active_turn.done():
-                                # Barge-in: stop the reply in progress and answer this.
-                                interrupt.set()
-                                with suppress(Exception):
-                                    await active_turn
-                                logger.bind(tag=_TAG).info(
-                                    f"Page voice {device_id!r}: interrupted by {text[:40]!r}"
-                                )
-                            # Always a fresh flag: the old one may already be set
-                            # from stopping the previous reply, which would cut
-                            # this answer off before it started.
-                            interrupt = asyncio.Event()
-                            await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        "type": "wake",
-                                        "word": detector.name if detector else wake_word,
-                                        "command": text,
-                                    }
-                                )
-                            )
-                            active_turn = asyncio.create_task(_run_turn(text, interrupt))
-                        else:
-                            await websocket.send_text(
-                                json.dumps({"type": "transcript", "text": text})
-                            )
+                        await _handle_utterance(vad.take_pcm(), vad.segment_ms, pushed=False)
                 elif "text" in msg:
                     ctrl = json.loads(msg["text"])
                     if ctrl.get("type") == "wake_word":
@@ -1120,6 +1146,29 @@ def make_router(
                         voice_mode = requested if requested in {"hub", "browser", "off"} else "hub"
                     elif ctrl.get("type") == "stop":
                         vad.reset()
+                    elif ctrl.get("type") == "talk_mode":
+                        push_to_talk = ctrl.get("mode") == "push"
+                        held = None
+                        vad.reset()
+                        logger.bind(tag=_TAG).info(
+                            f"Page voice {device_id!r}: "
+                            + ("push-to-talk" if push_to_talk else "hands-free")
+                        )
+                    elif ctrl.get("type") == "ptt" and push_to_talk:
+                        if ctrl.get("state") == "down":
+                            held = bytearray()
+                            # Pressing to talk cuts off a reply still playing.
+                            if active_turn is not None and not active_turn.done():
+                                interrupt.set()
+                        elif ctrl.get("state") == "up" and held is not None:
+                            pushed_pcm, held = bytes(held), None
+                            held_ms = len(pushed_pcm) * 1000 // (2 * 16000)
+                            if held_ms < _MIN_PUSH_MS:
+                                await websocket.send_text(
+                                    json.dumps({"type": "heard", "text": "", "reason": "too short"})
+                                )
+                            else:
+                                await _handle_utterance(pushed_pcm, held_ms, pushed=True)
         except (WebSocketDisconnect, RuntimeError):
             pass
         except Exception as exc:

@@ -25,7 +25,8 @@ const context = vm.createContext({
   console, Uint8Array, Int16Array, Float32Array, WebSocket: Socket,
   sessionStorage: {getItem: () => 'test-page'},
   navigator: {mediaDevices: {getUserMedia: () => new Promise(resolve => { resolveMic = resolve; })}},
-  document: {getElementById: el, createElement: () => el('created'), body: el('body')},
+  document: {getElementById: el, createElement: () => el('created'), body: el('body'),
+    addEventListener() {}},
   URLSearchParams,
   window: {addEventListener() {}}, location: {protocol: 'https:', host: 'test', search: ''},
   setTimeout: (callback, ms) => { finishPlayback = {callback, ms}; return 1; },
@@ -74,5 +75,24 @@ el('voiceMode').value = 'hub';  // the page's selected default
   vm.runInContext('speakHub = async () => { throw new Error("offline"); };', context);
   await assert.rejects(vm.runInContext('speak("test", "hub")', context), /Persona voice unavailable/);
   assert.match(el('voice-notice').textContent, /choose browser built-in explicitly/);
-  console.log('PASS: sequential audio, playback state, open mic, cancellation, error recovery');
+
+  // Push-to-talk: the mode is told to the hub, and a press/release is framed
+  // by ptt messages; pressing stops a reply that is still playing.
+  el('pushToTalk').checked = true;
+  active.sent.length = 0;
+  vm.runInContext('sendTalkMode()', context);
+  assert.deepEqual(JSON.parse(active.sent.at(-1)), {type: 'talk_mode', mode: 'push'});
+  vm.runInContext('replyPlaying = true; pttDown();', context);
+  assert.deepEqual(JSON.parse(active.sent.at(-1)), {type: 'ptt', state: 'down'});
+  assert.equal(vm.runInContext('replyPlaying', context), false, 'pressing cuts the reply off');
+  assert.equal(vm.runInContext('pttHeld', context), true);
+  vm.runInContext('pttDown()', context);  // key repeat / double press: one press
+  assert.equal(active.sent.filter(m => m.includes('"ptt"')).length, 1);
+  vm.runInContext('pttUp()', context);
+  assert.deepEqual(JSON.parse(active.sent.at(-1)), {type: 'ptt', state: 'up'});
+  assert.equal(vm.runInContext('pttHeld', context), false);
+  el('pushToTalk').checked = false;
+  vm.runInContext('pttDown()', context);  // off: the button does nothing
+  assert.equal(vm.runInContext('pttHeld', context), false);
+  console.log('PASS: sequential audio, playback state, open mic, cancellation, error recovery, push-to-talk');
 })().catch(error => { console.error(error); process.exitCode = 1; });
