@@ -1714,7 +1714,7 @@ named page agent when its name is reopened.">
         for _d in _skills.get_definitions():
             _sn = _d["function"]["name"]
             _sd = _d["function"].get("description", "")
-            _ck = " checked" if enabled is None or _sn in enabled else ""
+            _ck = " checked" if _skills.is_enabled(_sn, enabled) else ""
             skill_rows.append(
                 '<label style="display:flex;gap:0.5rem;align-items:flex-start;'
                 'margin-top:0.5rem">'
@@ -1964,11 +1964,13 @@ named page agent when its name is reopened.">
         # Skills come in as repeated checkbox fields; Form(list) hits a ruff
         # B008 edge case, so read them straight off the parsed form.
         form = await request.form()
-        all_skill_names = {d["function"]["name"] for d in _skills.get_definitions()}
         selected = {str(s).strip() for s in form.getlist("server_skills") if str(s).strip()}
-        # "" tells update_persona to store NULL (= all enabled); a JSON list
-        # pins an explicit subset, and [] disables every skill.
-        skills_arg = "" if selected >= all_skill_names else _json.dumps(sorted(selected))
+        # "" tells update_persona to store NULL (= the default skills); a JSON
+        # list pins an explicit set, and [] disables every skill. Only exactly
+        # the defaults is NULL, so ticking an off-by-default skill sticks.
+        skills_arg = (
+            "" if selected == _skills.default_skill_names() else _json.dumps(sorted(selected))
+        )
 
         tool_parts = [s.strip() for s in mcp_tools_allowlist.split(",") if s.strip()]
         # "" clears the allowlist back to the safe defaults; a JSON list pins it.

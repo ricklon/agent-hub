@@ -4,6 +4,9 @@ Each skill module must define:
   DEFINITION: dict  — OpenAI function-calling schema
   execute(args: dict) -> str  — async executor (or sync, both work)
 
+and may set ``DEFAULT_ENABLED = False`` for a skill a persona only gets when
+it is ticked on the persona (``server_skills``), not by default.
+
 Skills are discovered at import time from this package directory.
 Any module starting with '_' is skipped.
 """
@@ -42,6 +45,7 @@ _ExecutorResult = Awaitable[SkillResult | str] | SkillResult | str
 _Executor = Callable[[dict[str, Any]], _ExecutorResult]
 
 _skills: dict[str, tuple[dict[str, Any], _Executor]] = {}
+_off_by_default: set[str] = set()
 
 
 def _load() -> None:
@@ -53,6 +57,8 @@ def _load() -> None:
         if hasattr(mod, "DEFINITION") and hasattr(mod, "execute"):
             name: str = mod.DEFINITION["function"]["name"]
             _skills[name] = (mod.DEFINITION, mod.execute)
+            if not getattr(mod, "DEFAULT_ENABLED", True):
+                _off_by_default.add(name)
 
 
 _load()
@@ -86,4 +92,23 @@ async def run_result(name: str, args: dict[str, Any]) -> SkillResult:
 
 
 def has_skill(name: str) -> bool:
+    """Whether a server skill of this name exists."""
     return name in _skills
+
+
+def default_skill_names() -> set[str]:
+    """Skills a persona gets when it has not picked any (``server_skills`` unset)."""
+    return set(_skills) - _off_by_default
+
+
+def is_enabled(name: str, persona_skills: list[str] | None) -> bool:
+    """Whether a persona may use a skill.
+
+    Args:
+        name: The skill.
+        persona_skills: The persona's ``server_skills_list``; None or empty
+            means the defaults (every skill not marked ``DEFAULT_ENABLED = False``).
+    """
+    if not persona_skills:
+        return name in _skills and name not in _off_by_default
+    return name in persona_skills

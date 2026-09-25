@@ -343,6 +343,16 @@ tools, and is driven by the hub over the MCP bridge the same way a xiaozhi
 device's tools are. The `page_speak` / `page_see` server skills route LLM
 tool calls to a connected page agent. See `skills/mcp-bridge/SKILL.md`.
 
+`page.site.get` runs in the browser, so most sites refuse it (CORS). For a
+persona that must quote live details — event times, say — tick the
+**fetch_page** server skill instead: the hub fetches the page itself, but only
+from `skills.fetch_allowed_domains` (default `fubarlabs.org`, `meetup.com`;
+env `AGENT_HUB_SKILLS_FETCH_ALLOWED_DOMAINS`), over https, from public
+addresses, checking every redirect. Calendar feeds come back as upcoming
+events, so a Meetup group's `https://www.meetup.com/<group>/events/ical/`
+answers "when is the next …?". Persona skill checkboxes now apply to browser
+agents and robots as well as devices.
+
 Page agents are made by known users: registering one needs a signed-in
 Cloudflare Access user, who becomes its owner. A page that registers with a
 `name` gets a stable agent (the same owner and name is the same agent, with

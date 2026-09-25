@@ -130,6 +130,7 @@ _FLAT_LEAF_KEYS: dict[str, set[str]] = {
     "tts": {"default_provider"},
     "asr": {"default_provider"},
     "vad": {"default_provider"},
+    "skills": {"fetch_allowed_domains"},
 }
 
 
