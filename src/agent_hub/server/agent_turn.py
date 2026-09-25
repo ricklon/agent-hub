@@ -39,6 +39,7 @@ from agent_hub.registry.models import Persona
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge, session_state
 from agent_hub.server.history import history_for_llm
+from agent_hub.server.speech_text import strip_reasoning_leak
 from agent_hub.server.tool_policy import is_risky_tool
 
 _TAG = "agent_turn"
@@ -247,7 +248,7 @@ async def run_turn(
     session_state.set_pipeline_status(device_id, "idle")
     session_state.record_turn(device_id, 0, llm_ms, 0)
 
-    reply = (reply or "").strip()
+    reply = strip_reasoning_leak(reply or "").strip()
     if reply:
         await store.append_history(device_id, "user", text, conversation_id=conversation.id)
         await store.append_history(

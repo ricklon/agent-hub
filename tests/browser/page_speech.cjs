@@ -93,5 +93,35 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   context.fetch = async () => ({ok: false, status: 502});
   await assert.rejects(vm.runInContext('speakHub("Hello there, this fails.")', context), /hub TTS 502/);
   assert.equal(vm.runInContext('hubAudio', context), null);
-  console.log('PASS: sentence chunks, first-sentence start, prefetch, stop, failure');
+
+  // Code is dropped before splitting, even a fence left open, and long
+  // stretches are capped so the voice engine never gets a wall of text.
+  assert.deepEqual(Array.from(vm.runInContext(
+    'speechChunks("I ran a simulation.\\n```python\\ndef f(x):\\n  return x\\n```\\nLevel four. Tail ```js\\nlet y")',
+    context)), ['I ran a simulation. Level four.', 'Tail']);
+  const long = Array.from(vm.runInContext('speechChunks("word, ".repeat(120))', context));
+  assert.ok(long.length > 1 && long.every(p => p.length <= 251), 'long text is capped');
+
+  // Once speech has started, a sentence the voice cannot say is skipped.
+  requested.length = 0;
+  clips.length = 0;
+  let calls = 0;
+  context.fetch = async (url, init) => {
+    if (url !== '/page-agent/tts') return {ok: true, json: async () => ({})};
+    calls += 1;
+    requested.push(JSON.parse(init.body).text);
+    return calls === 2 ? {ok: false, status: 502}
+      : {ok: true, headers: {get: () => ''}, blob: async () => ({text: 'audio'})};
+  };
+  await vm.runInContext(
+    'speakHub("The first sentence plays fine. The second sentence fails to say. The third sentence still plays.")',
+    context);
+  for (let i = 0; i < 20 && clips.length < 2; i++) {
+    if (clips.length) clips[clips.length - 1].end();
+    await tick();
+  }
+  assert.deepEqual(requested, ['The first sentence plays fine.',
+    'The second sentence fails to say.', 'The third sentence still plays.']);
+  assert.equal(clips.length, 2, 'the third sentence still plays after the second fails');
+  console.log('PASS: sentence chunks, first-sentence start, prefetch, stop, failure, code, skip');
 })().catch(error => { console.error(error); process.exitCode = 1; });
