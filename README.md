@@ -342,6 +342,13 @@ tools, and is driven by the hub over the MCP bridge the same way a xiaozhi
 device's tools are. The `page_speak` / `page_see` server skills route LLM
 tool calls to a connected page agent. See `skills/mcp-bridge/SKILL.md`.
 
+Talking to a page agent is hands-free by default: a wake word ("computer"),
+then follow-ups for 30 s after each reply, or open mic with the wake word
+cleared. **Hold to talk** (a checkbox next to the wake word) is for rooms where
+people also talk to each other, such as a patient role-play: only what is said
+while the button or the space bar is held reaches the agent, no wake word is
+needed, and pressing cuts off a reply still playing.
+
 `page.site.get` runs in the browser, so most sites refuse it (CORS). For a
 persona that must quote live details — event times, say — tick the
 **fetch_page** server skill instead: the hub fetches the page itself, but only

@@ -28,7 +28,8 @@ class FakeAudio {
 const context = vm.createContext({
   console, Promise, setTimeout, clearTimeout,
   sessionStorage: {getItem: () => 'test-page'},
-  document: {getElementById: el, createElement: () => el('created'), body: el('body')},
+  document: {getElementById: el, createElement: () => el('created'), body: el('body'),
+    addEventListener() {}},
   URLSearchParams,
   window: {addEventListener() {}}, location: {protocol: 'https:', host: 'test', search: ''},
   navigator: {mediaDevices: {getUserMedia: () => new Promise(() => {})}}, WebSocket: class { static OPEN = 1; },

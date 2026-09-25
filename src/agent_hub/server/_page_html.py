@@ -107,8 +107,17 @@ Text reply voice: <select id="voiceMode" title="How replies and page.audio_speak
 <button id="listen">Listen</button>
 <label style="display:inline-flex;align-items:center;gap:.2rem;font-size:.8rem">
 Wake word: <input id="wakeWord" value="computer" style="width:8rem"></label>
-<span style="font-size:.75rem;color:#8b949e">a name with a model installed
+<span id="wakehelp" style="font-size:.75rem;color:#8b949e">a name with a model installed
   (e.g. computer) is detected by sound; clear it for open mic</span>
+<label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.8rem"
+  title="Only what you say while holding the button (or the space bar) is heard. For rooms where people also talk to each other.">
+<input type="checkbox" id="pushToTalk" style="width:auto"> Hold to talk</label>
+</div>
+<div class="row" id="pttrow" hidden>
+<button id="ptt" type="button" style="min-width:12rem;padding:.8rem 1.2rem;font-size:1rem;touch-action:none"
+  aria-describedby="ptthelp">Hold to talk</button>
+<span id="ptthelp" style="font-size:.75rem;color:#8b949e">hold the button or the space bar
+  while you speak; release to send</span>
 </div>
 <div class="row"><div id="voicestate" role="status" aria-live="polite">
   <span id="voicedot"></span>
@@ -767,11 +776,15 @@ const VOICE_STATES = {
   starting:  {label: "starting…",     color: "#d29922", live: false,
               hint: () => "allow microphone access when prompted"},
   listening: {label: "listening",     color: "#3fb950", live: true,
-              hint: () => { const w = currentWakeWord();
+              hint: () => { if (pushToTalk()) return "hold to talk — release to send";
+                const w = currentWakeWord();
                 return w ? "say “" + w + "”, then your question"
                          : "open mic — everything you say is sent"; }},
+  holding:   {label: "listening to you", color: "#3fb950", live: true,
+              hint: () => "release to send"},
   ignored:   {label: "heard you",     color: "#d29922", live: true,
-              hint: () => { const w = currentWakeWord();
+              hint: () => { if (pushToTalk()) return "didn’t catch that — hold and speak again";
+                const w = currentWakeWord();
                 return w ? "ignored — start with “" + w + "”"
                          : "ignored — no speech recognised"; }},
   thinking:  {label: "thinking…",     color: "#d29922", live: false,
@@ -837,6 +850,69 @@ document.getElementById("wakeWord").addEventListener("input", () => {
   }
   if (listening && !replyPlaying) setVoiceState("listening");
 });
+
+// ── Push-to-talk ────────────────────────────────────────────────────────
+// Only audio captured while the button (or space bar) is held reaches the
+// hub, and the hub answers it without a wake word. For a room where people
+// also talk to each other, which open mic would answer too.
+const PTT_KEY = "agenthub.pageAgent.pushToTalk";
+let pttHeld = false;
+function pushToTalk() { return document.getElementById("pushToTalk").checked; }
+function sendTalkMode() {
+  if (voiceWs && voiceWs.readyState === WebSocket.OPEN) {
+    voiceWs.send(JSON.stringify({type: "talk_mode", mode: pushToTalk() ? "push" : "hands_free"}));
+  }
+}
+function showTalkMode() {
+  const push = pushToTalk();
+  document.getElementById("pttrow").hidden = !push;
+  document.getElementById("wakeWord").disabled = push;
+  document.getElementById("wakehelp").hidden = push;
+  if (listening && !replyPlaying) setVoiceState("listening");
+}
+function pttDown() {
+  if (pttHeld || !pushToTalk()) return;
+  pttHeld = true;
+  document.getElementById("ptt").textContent = "Listening… release to send";
+  if (!listening) { if (!starting) startListening(); return; }
+  stopPlayback();  // talking over a reply cuts it off
+  voiceWs.send(JSON.stringify({type: "ptt", state: "down"}));
+  setVoiceState("holding");
+}
+function pttUp() {
+  if (!pttHeld) return;
+  pttHeld = false;
+  document.getElementById("ptt").textContent = "Hold to talk";
+  if (listening && voiceWs && voiceWs.readyState === WebSocket.OPEN) {
+    voiceWs.send(JSON.stringify({type: "ptt", state: "up"}));
+    setVoiceState("thinking");
+  }
+}
+// Even naming localStorage can throw where site data is blocked.
+function localStore() { try { return localStorage; } catch (e) { return null; } }
+document.getElementById("pushToTalk").checked = storeGet(localStore(), PTT_KEY) === "1";
+document.getElementById("pushToTalk").addEventListener("change", () => {
+  storeSet(localStore(), PTT_KEY, pushToTalk() ? "1" : "");
+  if (pttHeld) pttUp();
+  sendTalkMode();
+  showTalkMode();
+});
+const pttButton = document.getElementById("ptt");
+pttButton.addEventListener("pointerdown", (e) => { e.preventDefault(); pttButton.setPointerCapture(e.pointerId); pttDown(); });
+pttButton.addEventListener("pointerup", pttUp);
+pttButton.addEventListener("pointercancel", pttUp);
+// The space bar, unless typing somewhere.
+function typing(e) { const t = e.target; return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable); }
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || e.repeat || !pushToTalk() || typing(e)) return;
+  e.preventDefault(); pttDown();
+});
+document.addEventListener("keyup", (e) => {
+  if (e.code !== "Space" || !pushToTalk() || typing(e)) return;
+  e.preventDefault(); pttUp();
+});
+// Letting go outside the page (switching tabs mid-press) still sends.
+window.addEventListener("blur", pttUp);
 
 // ── Voice WebSocket: hands-free with wake word ──────────────────────────
 let voiceWs = null;
@@ -920,6 +996,7 @@ async function startListening() {
     // sending it left the hub on its default "computer".
     voiceWs.send(JSON.stringify({type: "wake_word", word: wakeWord}));
     voiceWs.send(JSON.stringify({type: "voice_mode", mode: voiceMode()}));
+    sendTalkMode();
     try {
       // Ask for the mic with the browser's own cleanup on. autoGainControl in
       // particular is what makes a laptop mic loud enough for the wake word.
@@ -981,9 +1058,14 @@ async function startListening() {
         s = Math.max(-32768, Math.min(32767, s));
         pcm[i] = s;
       }
-      // Drop microphone audio while replying (unless barge-in is possible),
-      // and bound queued capture to 250ms.
-      if ((bargeIn || !replyPlaying) && !hubAudio && voiceWs.bufferedAmount < 8000) voiceWs.send(pcm.buffer);
+      // Push-to-talk sends only while held (pressing already stopped any reply).
+      // Otherwise drop microphone audio while replying (unless barge-in is
+      // possible). Either way, bound queued capture to 250ms.
+      if (pushToTalk()) {
+        if (pttHeld && voiceWs.bufferedAmount < 8000) voiceWs.send(pcm.buffer);
+      } else if ((bargeIn || !replyPlaying) && !hubAudio && voiceWs.bufferedAmount < 8000) {
+        voiceWs.send(pcm.buffer);
+      }
     };
     micSource.connect(processor);
     processor.connect(audioCtx.destination);
@@ -991,6 +1073,11 @@ async function startListening() {
     listening = true;
     document.getElementById("listen").textContent = "Stop";
     setVoiceState("listening");
+    // The button was pressed before the mic was ready: start this press now.
+    if (pttHeld && pushToTalk()) {
+      voiceWs.send(JSON.stringify({type: "ptt", state: "down"}));
+      setVoiceState("holding");
+    }
     startMeter();
     voiceLog("listening" + (wakeWord ? " for wake word '" + wakeWord + "'" : ""), "#3fb950");
   };
@@ -1085,6 +1172,8 @@ async function startListening() {
 function stopListening() {
   starting = false;
   listening = false;
+  pttHeld = false;
+  document.getElementById("ptt").textContent = "Hold to talk";
   replyPlaying = false;
   playAt = 0;
   bargeIn = false;
@@ -1102,6 +1191,7 @@ function stopListening() {
 document.getElementById("listen").onclick = () => {
   if (listening || starting) stopListening(); else startListening();
 };
+showTalkMode();
 
 start();
 </script>
