@@ -135,3 +135,45 @@ async def test_ask_routes_a_borrowed_tool_call_to_the_linked_agent(
     assert resp.json()["reply"] == "The arm is home."
     # The borrowed tool ran on the robot and its result reached the model.
     assert llm.results == ["pose 0,0,0"]
+
+
+async def test_a_failing_page_tool_is_reported_to_the_model_not_fatal(
+    store: RegistryStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = install_scripted_llm(
+        monkeypatch,
+        ScriptedLLM(
+            tool_calls=[("page.site.get", {"url": "https://example.org/"})],
+            reply="Open hack is Tuesday at 7.",
+        ),
+    )
+    tools = [{"name": "page.site.get", "description": "fetch", "inputSchema": {}}]
+    async with await _client(store) as client:
+        reg = await client.post(
+            "/page-agent/register", json={"device_id": "page-a", "tools": tools}
+        )
+        device_id, token = reg.json()["device_id"], reg.json()["token"]
+        handle = mcp_bridge.get_page_agent(device_id)
+        assert handle is not None
+        handle.connected = True
+
+        async def _fail_fetch() -> None:
+            req = await asyncio.wait_for(handle.outbound.get(), timeout=3.0)
+            fut = handle.pending.pop(req["id"])
+            error = {"content": [{"type": "text", "text": "TypeError: Failed to fetch"}]}
+            fut.set_result({**error, "isError": True})
+
+        responder = asyncio.create_task(_fail_fetch())
+        try:
+            resp = await client.post(
+                "/page-agent/ask",
+                json={"device_id": device_id, "token": token, "text": "when is open hack?"},
+            )
+            await asyncio.wait_for(responder, timeout=3.0)
+        finally:
+            responder.cancel()
+            mcp_bridge.unregister_page_agent(device_id)
+
+    assert resp.status_code == 200
+    assert resp.json()["reply"] == "Open hack is Tuesday at 7."
+    assert llm.results and "The tool page.site.get failed" in llm.results[0]

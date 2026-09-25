@@ -197,9 +197,15 @@ async def run_turn(
         if linked is not None:
             return await call_linked_tool(linked[0], linked[1], args)
         if name in own_tool_names:
-            result = await mcp_bridge.call_page_tool(
-                device_id, name, args, timeout=tool_timeout(name)
-            )
+            try:
+                result = await mcp_bridge.call_page_tool(
+                    device_id, name, args, timeout=tool_timeout(name)
+                )
+            except Exception as exc:  # noqa: BLE001 - the model answers without the tool
+                # A tool the page could not run (a blocked fetch, no camera) is
+                # something to tell the model, not a reason to lose the turn.
+                logger.bind(tag=_TAG).warning(f"Page tool {name!r} on {device_id!r}: {exc}")
+                return f"The tool {name} failed: {exc}. Answer without it if you can."
             if isinstance(result, str) and result.startswith("data:image"):
                 images.append(result)
             return result
