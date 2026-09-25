@@ -131,7 +131,6 @@ def get_provider(name: str, config: dict[str, Any], model: str | None = None) ->
             voice=str(cfg.get("voice") or "Kore"),
             base_url=str(cfg.get("base_url") or "https://openrouter.ai/api/v1"),
             speed=float(speed) if speed not in (None, "") else None,
-            price_per_million_chars=float(cfg.get("price_per_million_chars") or 0.0),
         )
     else:
         raise ValueError(f"Unknown TTS provider: {name!r}")

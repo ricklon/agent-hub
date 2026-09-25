@@ -152,9 +152,8 @@ tts:
     voice: "Kore"
     # Honoured only by models that support it; empty = model default.
     speed: ""
-    # USD per 1M input characters, for the spend ledger. Check the model page;
-    # 0 records the call without a cost.
-    price_per_million_chars: 0
+    # Cost needs no setting: each call is metered from OpenRouter's per-token
+    # prices, then settled with the billed cost, and counts toward llm.spend caps.
 
 asr:
   default_provider: funasr_onnx
