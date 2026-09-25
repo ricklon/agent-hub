@@ -19,6 +19,15 @@ _THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
 # Tool calls a model wrote as text instead of calling the tool; never speak them.
 _TOOL_CALL_RE = re.compile(r"<tool_call>.*?</tool_call>|\[TOOL_CALLS\]\s*\[.*?\]", re.DOTALL)
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+# A fence the model opened and never closed (or one cut off mid-reply): the
+# rest is code, not speech.
+_OPEN_FENCE_RE = re.compile(r"```.*\Z", re.DOTALL)
+# Gemma-style reasoning leaks a bare "thought" line ahead of the answer.
+_THOUGHT_LEAK_RE = re.compile(r"\A\s*thought\s*\n", re.IGNORECASE)
+# Longest piece handed to a TTS engine at once. KittenTTS fails ("invalid
+# expand shape") on a long stretch with no sentence punctuation, e.g. code.
+MAX_SPEECH_PIECE = 250
+_PIECE_BREAK_RE = re.compile(r"(?<=[.!?;:])\s+|\n+")
 _CODE_SPAN_RE = re.compile(r"`([^`]+)`")
 _EMPHASIS_RE = re.compile(r"(\*{1,3}|_{2})([^*_\n]+)\1")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
@@ -84,6 +93,41 @@ def _time(match: re.Match[str]) -> str:
     return f"{hour % 12 or 12}{spoken_minute} {period}"
 
 
+def strip_reasoning_leak(text: str) -> str:
+    """Drop a leaked reasoning marker (a bare leading "thought" line) from a reply."""
+    return _THOUGHT_LEAK_RE.sub("", text, count=1)
+
+
+def speech_pieces(text: str, limit: int = MAX_SPEECH_PIECE) -> list[str]:
+    """Split speech into pieces a TTS engine takes in one go, at natural breaks.
+
+    Text that fits is returned unchanged. Longer text breaks at line ends and
+    sentence ends first, then at commas, then at spaces; a piece longer than
+    ``limit`` only survives if it has no space.
+    """
+    if len(text) <= limit:
+        return [text] if text.strip() else []
+    pieces: list[str] = []
+    for part in _PIECE_BREAK_RE.split(text):
+        part = part.strip()
+        while len(part) > limit:
+            cut = part.rfind(", ", 0, limit)
+            cut = cut + 1 if cut > limit // 3 else part.rfind(" ", 0, limit)
+            if cut <= 0:
+                break
+            pieces.append(part[:cut].strip())
+            part = part[cut:].strip()
+        if part:
+            pieces.append(part)
+    merged: list[str] = []
+    for piece in pieces:
+        if merged and len(merged[-1]) + len(piece) + 1 <= limit:
+            merged[-1] = f"{merged[-1]}\n{piece}"
+        else:
+            merged.append(piece)
+    return merged
+
+
 def for_speech(text: str) -> str:
     """Return ``text`` as a voice should read it.
 
@@ -97,10 +141,12 @@ def for_speech(text: str) -> str:
     """
     if not text:
         return ""
+    text = strip_reasoning_leak(text)
     text = _THINK_BLOCK_RE.sub("", text)
     text = _THINK_TAG_RE.sub("", text)
     text = _TOOL_CALL_RE.sub("", text)
     text = _CODE_FENCE_RE.sub("", text)
+    text = _OPEN_FENCE_RE.sub("", text)
     text = _CODE_SPAN_RE.sub(r"\1", text)
     text = _LINK_RE.sub(r"\1", text)
     text = _EMPHASIS_RE.sub(r"\2", text)

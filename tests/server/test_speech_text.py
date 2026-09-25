@@ -6,7 +6,12 @@ import pytest
 
 from agent_hub.registry.models import Persona
 from agent_hub.server.persona_voice import synthesize_persona
-from agent_hub.server.speech_text import for_speech
+from agent_hub.server.speech_text import (
+    MAX_SPEECH_PIECE,
+    for_speech,
+    speech_pieces,
+    strip_reasoning_leak,
+)
 
 
 @pytest.mark.parametrize(
@@ -60,3 +65,33 @@ async def test_nothing_speakable_synthesizes_nothing() -> None:
     persona = Persona(name="p", tts_provider="edge")
     assert await synthesize_persona(tts, "```\ncode only\n```", persona) == (b"", 16000)
     assert tts.texts == []
+
+
+def test_code_is_not_spoken_even_when_the_fence_is_left_open() -> None:
+    assert for_speech("Here it is:\n```python\nx = 1\n```\nDone.") == "Here it is:\n\nDone."
+    assert for_speech("Level 4.8 toast. ```python\ndef f(x):\n  return x") == "Level 4.8 toast."
+
+
+def test_a_leaked_thought_marker_is_dropped() -> None:
+    assert strip_reasoning_leak("thought\nIt is Friday.") == "It is Friday."
+    assert strip_reasoning_leak("I thought so.\nYes.") == "I thought so.\nYes."
+    assert for_speech("thought\nIt is Friday.") == "It is Friday."
+
+
+def test_long_speech_is_split_at_natural_breaks() -> None:
+    lines = "\n".join(f"line {i} of a long list with no full stops" for i in range(20))
+    pieces = speech_pieces(lines)
+    assert len(pieces) > 1
+    assert all(len(p) <= MAX_SPEECH_PIECE for p in pieces)
+    assert speech_pieces("Short. Also short.") == ["Short. Also short."]
+    run_on = "word, " * 100
+    assert all(len(p) <= MAX_SPEECH_PIECE for p in speech_pieces(run_on))
+
+
+async def test_long_replies_are_synthesized_in_pieces_and_joined() -> None:
+    tts = _RecordingTTS()
+    persona = Persona(name="p", tts_provider="kitten")
+    text = "\n".join(f"setting {i} is a number the toaster reads aloud" for i in range(12))
+    pcm, rate = await synthesize_persona(tts, text, persona)
+    assert len(tts.texts) > 1 and all(len(t) <= MAX_SPEECH_PIECE for t in tts.texts)
+    assert pcm == b"\x01\x00" * len(tts.texts) and rate == 24000

@@ -417,9 +417,15 @@ function speakBuiltin(text) {
 // starts speaking after its first sentence rather than after all of it.
 // Very short pieces ("Sure.") ride with the next: a request each costs more
 // than the audio they carry.
+// Longest piece sent to the hub voice at once; code and run-on text are
+// broken up rather than sent whole (KittenTTS fails on long unpunctuated runs).
+const MAX_SPEECH_CHARS = 250;
 function speechChunks(text) {
+  // Code is not speech: drop fenced blocks (and a fence left open) before
+  // splitting, so a block cannot straddle two sentences and slip through.
+  text = text.replace(/```[\\s\\S]*?(```|$)/g, " ");
   const parts = [];
-  const re = /([.!?]+)(["')\\]]*)(\\s+|$)/g;
+  const re = /([.!?]+)(["')\\]]*)(\\s+|$)|\\n+/g;
   let start = 0, m;
   while ((m = re.exec(text)) !== null) {
     const end = m.index + m[0].length;
@@ -435,7 +441,18 @@ function speechChunks(text) {
     if (merged.length && merged[merged.length - 1].length < 24) merged[merged.length - 1] += " " + part;
     else merged.push(part);
   }
-  return merged;
+  const capped = [];
+  for (let piece of merged) {
+    while (piece.length > MAX_SPEECH_CHARS) {
+      let cut = piece.lastIndexOf(", ", MAX_SPEECH_CHARS);
+      cut = cut > MAX_SPEECH_CHARS / 3 ? cut + 1 : piece.lastIndexOf(" ", MAX_SPEECH_CHARS);
+      if (cut <= 0) break;
+      capped.push(piece.slice(0, cut).trim());
+      piece = piece.slice(cut).trim();
+    }
+    if (piece) capped.push(piece);
+  }
+  return capped;
 }
 
 async function fetchSpeech(text) {
@@ -482,9 +499,18 @@ async function speakHub(text) {
     let next = fetchSpeech(parts[0]);
     try {
       for (let i = 0; i < parts.length && !speech.stopped; i++) {
-        const url = await next;
+        let url;
+        try { url = await next; }
+        catch (error) {
+          // Nothing said yet: the voice is not working, so say so. Once speech
+          // has started, one sentence it could not say is skipped, not the rest.
+          if (!started) throw error;
+          voiceLog("skipped a sentence the voice could not say: " + error, "#d29922");
+          url = null;
+        }
         next = i + 1 < parts.length ? fetchSpeech(parts[i + 1]) : null;
         if (next) next.catch(() => {});  // awaited next round; silenced if we stop first
+        if (!url) continue;
         if (speech.stopped) { URL.revokeObjectURL(url); break; }
         await playClip(url);
       }
