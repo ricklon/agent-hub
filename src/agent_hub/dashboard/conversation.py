@@ -96,7 +96,7 @@ def make_conversation_router(store: RegistryStore, config: dict[str, Any]) -> AP
         """Open an agent without navigating away from the fleet."""
         agent, persona = await lookup(device_id)
         url = f"/dashboard/agents/{quote(device_id, safe='')}"
-        label = html.escape(agent.label or device_id)
+        label = html.escape(agent.shown_name)
         viewer = getattr(request.state, "operator_role", "admin") == "viewer"
         transcriber = bool(persona and persona.transcription)
         device = agent.kind == AgentKind.XIAOZHI.value

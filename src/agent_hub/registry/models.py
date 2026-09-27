@@ -231,6 +231,9 @@ class Agent(Base):
     kind: Mapped[str] = mapped_column(String(32))  # AgentKind value
     device_id: Mapped[str] = mapped_column(String(64), unique=True)
     label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # A name set from the dashboard. `label` is whatever the agent reports and
+    # is rewritten on every check-in; this is the hub's own and never is.
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default=AgentStatus.DISCOVERED.value)
     persona_id: Mapped[int] = mapped_column(ForeignKey("personas.id"))
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -264,6 +267,11 @@ class Agent(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     persona: Mapped[Persona] = relationship(back_populates="agents")
+
+    @property
+    def shown_name(self) -> str:
+        """The name to show a person: the dashboard's, else the reported one, else the id."""
+        return self.display_name or self.label or self.device_id
 
     @property
     def reported_mcp_tools_list(self) -> list[str]:

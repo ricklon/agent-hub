@@ -141,7 +141,7 @@ def _agent_card(
     heartbeat_timeout_seconds: int,
     launcher: str | None = None,
 ) -> str:
-    label = html.escape(agent.label or agent.device_id)
+    label = html.escape(agent.shown_name)
     device_id = html.escape(agent.device_id)
     device_url = html.escape(quote(agent.device_id, safe=""))
     health = session_state.get_device_health(
@@ -153,7 +153,11 @@ def _agent_card(
     persona_name = html.escape(persona.name) if persona else "No persona"
     model = html.escape(persona.llm_model or persona.llm_provider or "") if persona else ""
     model_line = f'<span class="agent-model">{model}</span>' if model else ""
-    identity_line = f'<span class="agent-device-id">{device_id}</span>' if agent.label else ""
+    identity_line = (
+        f'<span class="agent-device-id">{device_id}</span>'
+        if agent.shown_name != agent.device_id
+        else ""
+    )
     kept = (
         '<span class="badge badge-kind" title="Long-term: never pruned">kept</span>'
         if agent.pinned

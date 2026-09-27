@@ -194,6 +194,39 @@ async def test_owners_survive_a_store_round_trip(store: RegistryStore) -> None:
     assert agent is not None and agent.owner is not None and len(agent.owner) == 64
 
 
+async def test_rename_shows_everywhere_and_clearing_falls_back(store: RegistryStore) -> None:
+    await store.get_or_create_agent("robot-01", kind=AgentKind.MCP, label="rick bot")
+    async with await _client(store) as c:
+        saved = await c.post("/dashboard/agents/robot-01/name", data={"display_name": " Rover "})
+        detail = await c.get("/dashboard/agents/robot-01")
+        fleet = await c.get("/dashboard/agents")
+        cleared = await c.post("/dashboard/agents/robot-01/name", data={"display_name": ""})
+        after = await c.get("/dashboard/agents")
+        missing = await c.post("/dashboard/agents/nope/name", data={"display_name": "x"})
+    assert saved.status_code == 200 and "renamed" in saved.text
+    # The page title updates in place without a reload.
+    assert 'id="agent-name" hx-swap-oob="true">Rover<' in saved.text
+    assert '<span id="agent-name">Rover</span>' in detail.text
+    assert "Rover" in fleet.text and "rick bot" not in fleet.text
+    assert cleared.status_code == 200 and "cleared" in cleared.text
+    assert "rick bot" in after.text and "Rover" not in after.text
+    assert missing.status_code == 404
+
+
+async def test_a_check_in_does_not_undo_a_rename(store: RegistryStore) -> None:
+    await store.get_or_create_agent("robot-01", kind=AgentKind.MCP, label="rick bot")
+    await store.set_agent_display_name("robot-01", "Rover")
+    # The robot re-registers with its own name, which updates the label only.
+    await store.get_or_create_agent("robot-01", kind=AgentKind.MCP, label="rick bot v2")
+    agent = await store.get_agent("robot-01")
+    assert agent is not None
+    assert agent.label == "rick bot v2" and agent.shown_name == "Rover"
+    # Over-long names are trimmed rather than rejected.
+    await store.set_agent_display_name("robot-01", "x" * 300)
+    agent = await store.get_agent("robot-01")
+    assert agent is not None and agent.display_name == "x" * 128
+
+
 def teardown_module() -> None:
     """Drop any bridge handles a failing test left behind."""
     for device_id in ("robot-01", "robot-02"):

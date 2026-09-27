@@ -119,7 +119,7 @@ def _attention_panel(
 
 
 def _attention_row(agent: Agent, health: session_state.DeviceHealth) -> str:
-    label = html.escape(agent.label or agent.device_id)
+    label = html.escape(agent.shown_name)
     device_id = html.escape(quote(agent.device_id, safe=""))
     if health == "degraded":
         detail = html.escape(agent.health_fault or "Device reported a fault")
