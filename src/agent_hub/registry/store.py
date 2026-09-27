@@ -148,6 +148,7 @@ class RegistryStore:
             "ALTER TABLE conversations ADD COLUMN wrap_up_attempts INTEGER DEFAULT 0 NOT NULL",
             "ALTER TABLE dashboard_operators ADD COLUMN paid_models BOOLEAN DEFAULT 0 NOT NULL",
             "ALTER TABLE personas ADD COLUMN tts_model VARCHAR(128)",
+            "ALTER TABLE agents ADD COLUMN display_name VARCHAR(128)",
         ]
         async with self._engine.begin() as conn:
             for stmt in new_columns:
@@ -833,6 +834,23 @@ class RegistryStore:
             if agent is None:
                 return False
             agent.owner = (owner or "").strip()[:64] or None
+            await session.commit()
+            return True
+
+    async def set_agent_display_name(self, device_id: str, name: str | None) -> bool:
+        """Rename an agent on the dashboard, or clear the name with None/empty.
+
+        Check-ins never touch this, so the name sticks across reconnects.
+
+        Returns:
+            True when the agent exists.
+        """
+        async with self._sessions() as session:
+            result = await session.execute(select(Agent).where(Agent.device_id == device_id))
+            agent = result.scalar_one_or_none()
+            if agent is None:
+                return False
+            agent.display_name = (name or "").strip()[:128] or None
             await session.commit()
             return True
 

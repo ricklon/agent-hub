@@ -298,7 +298,7 @@ def make_router(
                 f'<p class="doc-muted">No stale agents ({stale_policy.describe()}).</p></section>'
             )
         rows = "".join(
-            f"<li>{html.escape(a.label or a.device_id)} "
+            f"<li>{html.escape(a.shown_name)} "
             f'<span class="badge badge-kind">{html.escape(a.kind)}</span> '
             f'<span class="doc-muted">last seen {fmt_ts(a.last_seen, display_tz)}</span></li>'
             for a in stale[:20]
@@ -393,6 +393,19 @@ def make_router(
             f'<span class="msg">✓ {html.escape(name)}</span>'
             if name
             else '<span class="msg">✓ owner cleared</span>'
+        )
+
+    @router.post("/dashboard/agents/{device_id}/name", response_class=HTMLResponse)
+    async def agent_name(device_id: str, display_name: str = Form(default="")) -> HTMLResponse:
+        """Rename an agent, or clear the name to fall back to what it reports."""
+        if not await store.set_agent_display_name(device_id, display_name):
+            return HTMLResponse("<p>Agent not found.</p>", status_code=404)
+        agent = await store.get_agent(device_id)
+        assert agent is not None
+        msg = "✓ renamed" if agent.display_name else "✓ name cleared"
+        return HTMLResponse(
+            f'<span class="msg">{msg}</span>'
+            f'<span id="agent-name" hx-swap-oob="true">{html.escape(agent.shown_name)}</span>'
         )
 
     @router.post("/dashboard/agents/{device_id}/call_tool", response_class=HTMLResponse)
@@ -776,7 +789,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             conversation,
             await store.conversation_messages(conversation.id),
             display_tz,
-            agent_label=(agent.label or device_id) if agent else device_id,
+            agent_label=agent.shown_name if agent else device_id,
             device_id=device_id,
             markdown=suffix == "md",
         )
@@ -804,7 +817,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             messages,
             device_id,
             display_tz,
-            agent_label=(agent.label or device_id) if agent else device_id,
+            agent_label=agent.shown_name if agent else device_id,
         )
         return HTMLResponse(_render_page(request, body))
 
@@ -818,7 +831,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
             [],
             device_id,
             display_tz,
-            agent_label=(agent.label or device_id) if agent else device_id,
+            agent_label=agent.shown_name if agent else device_id,
         )
         start = rendered.index('<div id="conversation-actions"')
         end = rendered.index("</div>", rendered.index("Delete</button>")) + len("</div>")
@@ -896,7 +909,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
                 turns = await store.export_history(device_id)
                 scope = "all history"
         header = (
-            f"Transcript — {agent.label or device_id}\n"
+            f"Transcript — {agent.shown_name}\n"
             f"Device {device_id}\n"
             f"Scope: {scope}\n"
             f"Exported {fmt_ts(datetime.now(UTC), display_tz, '%Y-%m-%d %H:%M:%S %Z')}\n"
@@ -1266,6 +1279,7 @@ identity and action metadata only—not prompts, transcripts, tokens, or form va
 </form>"""
         )
         pin_form = _pin_form(device_id, agent.pinned)
+        name_form = _name_form(agent)
         owner_form = (
             "<h3>Owner</h3>"
             '<p style="color:#8b949e;font-size:0.85rem">Whose agent this is. Used to filter '
@@ -1348,6 +1362,7 @@ named page agent when its name is reopened.">
 {camera_btn}
 {pin_form}
 {remove_btn}
+{name_form}
 {owner_form}
 <span id="interaction"></span>
 {console_html}
@@ -1393,7 +1408,7 @@ named page agent when its name is reopened.">
         )
         body = f"""\
 <p><a href="/dashboard/" style="color:#58a6ff">← agents</a></p>
-<h2>{html.escape(agent.label or device_id)}
+<h2><span id="agent-name">{html.escape(agent.shown_name)}</span>
   <span class="badge badge-kind">{html.escape(agent.kind)}</span></h2>
 <p style="color:#8b949e;margin-top:-0.5rem">
   Device ID: {html.escape(device_id)} &nbsp;·&nbsp;
@@ -2716,7 +2731,7 @@ def _group_agents(
             rows,
             key=lambda r: (
                 _KIND_ORDER.get(r[0].kind, 1),
-                (r[0].label or r[0].device_id).casefold(),
+                r[0].shown_name.casefold(),
             ),
         )
 
@@ -2765,7 +2780,7 @@ def _persona_used_by(rows: list[tuple[Agent, Persona | None]], viewer_subject: s
     for title, group in _group_agents(rows, viewer_subject):
         items = "".join(
             f'<li><a href="/dashboard/agents/{html.escape(quote(a.device_id, safe=""))}" '
-            f'style="color:#58a6ff">{html.escape(a.label or a.device_id)}</a> '
+            f'style="color:#58a6ff">{html.escape(a.shown_name)}</a> '
             f'<span class="badge badge-kind">{html.escape(a.kind)}</span></li>'
             for a, _p in group
         )
@@ -2882,7 +2897,7 @@ def _render_agent_rows_data(
     rows = []
     for agent, persona in rows_data:
         device_id = html.escape(agent.device_id)
-        label = html.escape(agent.label or agent.device_id)
+        label = html.escape(agent.shown_name)
         kind_badge = (
             f'<span class="badge badge-kind">{html.escape(agent.kind)}</span> '
             if agent.kind != "xiaozhi"
@@ -2895,7 +2910,7 @@ def _render_agent_rows_data(
             device_cell += (
                 ' <span class="badge badge-kind" title="long-term: never pruned">kept</span>'
             )
-        if agent.label:
+        if agent.shown_name != agent.device_id:
             device_cell += f'<span class="model">{device_id}</span>'
         last_seen = fmt_ts(agent.last_seen, fmt="%H:%M:%S")
         dev = session_state.get_state(agent.device_id)
@@ -3143,6 +3158,24 @@ def _claim_panel(
 <div id="claim-panel" style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">
   <span>{state}</span>{actions}
 </div>{hint}"""
+
+
+def _name_form(agent: Agent) -> str:
+    """Rename box; blank falls back to the name the agent reports about itself."""
+    device_id = html.escape(quote(agent.device_id, safe=""))
+    current = html.escape(agent.display_name or "")
+    reported = html.escape(agent.label or agent.device_id)
+    return f"""\
+<h3>Name</h3>
+<p style="color:#8b949e;font-size:0.85rem">Shown on the dashboard in place of the name the
+agent reports (<code>{reported}</code>). Check-ins don't change it; leave it blank to go back.</p>
+<form hx-post="/dashboard/agents/{device_id}/name" hx-target="#name-result" hx-swap="innerHTML"
+      style="display:flex;gap:0.5rem;align-items:center">
+  <input type="text" name="display_name" value="{current}" placeholder="{reported}"
+         maxlength="128" aria-label="Display name" style="width:280px">
+  <button type="submit">Rename</button>
+  <span id="name-result" role="status" aria-live="polite"></span>
+</form>"""
 
 
 def _pin_form(device_id: str, pinned: bool) -> str:
