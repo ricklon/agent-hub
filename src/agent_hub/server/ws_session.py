@@ -1127,6 +1127,15 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 )
                 await websocket.close(code=1008, reason="device not registered")
                 return
+            if mcp_client and mcp_client.ready:
+                unknown = tool_policy.unknown_allowlist_tools(
+                    list(mcp_client.tools), persona.mcp_tools_allowlist_list
+                )
+                if unknown:
+                    logger.bind(tag=_TAG).warning(
+                        f"{device_id!r} persona {persona.name!r} allows tools the device "
+                        f"doesn't list: {unknown} (renamed or removed in firmware?)"
+                    )
 
             websocket.state.voice_persona = lambda: store.get_persona_for_device(device_id)
             await store.set_agent_status(device_id, AgentStatus.ACTIVE)

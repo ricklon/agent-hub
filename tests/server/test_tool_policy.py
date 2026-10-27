@@ -107,3 +107,14 @@ class TestAnnotationAwareRisk:
     def test_empty_annotations_fall_back_to_keywords(self):
         assert tool_policy.is_risky_tool("firmware_update", {}) is True
         assert tool_policy.is_risky_tool("get_pose", {}) is False
+
+
+class TestUnknownAllowlistTools:
+    def test_reports_names_the_device_did_not_list(self):
+        device = ["self_coglet_state", "self_coglet_calibrate"]
+        allowlist = ["self_coglet_state", "self_coglet_builder"]
+        assert tool_policy.unknown_allowlist_tools(device, allowlist) == ["self_coglet_builder"]
+
+    def test_no_explicit_allowlist_has_nothing_unknown(self):
+        assert tool_policy.unknown_allowlist_tools(["self_coglet_state"], None) == []
+        assert tool_policy.unknown_allowlist_tools(["self_coglet_state"], []) == []

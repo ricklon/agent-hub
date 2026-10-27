@@ -129,6 +129,16 @@ def allowed_device_tools(
     return [n for n in tool_names if not is_risky_tool(n)]
 
 
+def unknown_allowlist_tools(tool_names: list[str], allowlist: list[str] | None) -> list[str]:
+    """Allowlisted tool names the device didn't list, sorted.
+
+    Usually a tool renamed in firmware (Coglet's ``self_coglet_builder`` became
+    ``self_coglet_calibrate``). Such an entry allows nothing, and it stops
+    persona matching by tools from choosing that persona for the device.
+    """
+    return sorted(set(allowlist or []) - set(tool_names))
+
+
 def is_tool_allowed(name: str, allowlist: list[str] | None) -> bool:
     """True if a persona may execute the device tool ``name``.
 
