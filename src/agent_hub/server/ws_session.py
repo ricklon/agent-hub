@@ -126,6 +126,55 @@ class _DelayedTurnCue:
             logger.bind(tag=_TAG).warning(f"Slow-turn cue failed: {exc}")
 
 
+_DEFAULT_KEEPALIVE_S = 60.0
+
+
+class _SendClock:
+    """When the hub last sent this device a frame, text or binary.
+
+    Wraps the socket's send methods in place, so every sender (replies, MCP,
+    dashboard pushes) counts without each one having to report it.
+    """
+
+    def __init__(self, websocket: WebSocket) -> None:
+        self.last = time.monotonic()
+        send_text, send_bytes = websocket.send_text, websocket.send_bytes
+
+        async def _send_text(data: str) -> None:
+            await send_text(data)
+            self.last = time.monotonic()
+
+        async def _send_bytes(data: bytes) -> None:
+            await send_bytes(data)
+            self.last = time.monotonic()
+
+        websocket.send_text = _send_text  # type: ignore[method-assign]
+        websocket.send_bytes = _send_bytes  # type: ignore[method-assign]
+
+
+async def _keep_alive(
+    websocket: WebSocket, clock: _SendClock, session_id: str, interval_s: float
+) -> None:
+    """Send a no-op frame whenever the hub has said nothing for ``interval_s``.
+
+    xiaozhi firmware drops a session after 120 s with no incoming text or binary
+    frame (WebSocket pings don't count), then reconnects and redoes the MCP
+    handshake. A Coglet S3 waiting for its wake word sits idle that long. Both
+    firmwares ignore message types they don't know.
+    """
+    while True:
+        idle = time.monotonic() - clock.last
+        if idle >= interval_s:
+            try:
+                await websocket.send_text(
+                    json.dumps({"type": "keepalive", "session_id": session_id})
+                )
+            except Exception:
+                return  # the session is closing; its own handler reports why
+            idle = 0.0
+        await asyncio.sleep(interval_s - idle)
+
+
 def _parse_ctrl(text: str) -> JsonDict:
     """Parse a WebSocket text control message, repairing known firmware JSON bugs.
 
@@ -984,11 +1033,16 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         active_pipeline: asyncio.Task[None] | None = None
         # The spoken turn in progress, if any: what a device ``abort`` cancels.
         current_turn: asyncio.Future[Any] | None = None
+        keepalive: asyncio.Task[None] | None = None
+        keepalive_s = float(
+            (config.get("server") or {}).get("keepalive_seconds", _DEFAULT_KEEPALIVE_S)
+        )
 
         try:
             # 1. Hello / welcome handshake
             raw = await websocket.receive_text()
             hello = ClientHello.from_json(json.loads(raw))
+            send_clock = _SendClock(websocket)
             logger.bind(tag=_TAG).debug(
                 f"{device_id!r} hello: format={hello.audio_params.format} "
                 f"rate={hello.audio_params.sample_rate} "
@@ -997,6 +1051,10 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                 f"transcription_only={hello.transcription_only}"
             )
             await websocket.send_text(json.dumps(ServerWelcome(session_id=session_id).to_json()))
+            if keepalive_s > 0:
+                keepalive = asyncio.create_task(
+                    _keep_alive(websocket, send_clock, session_id, keepalive_s)
+                )
 
             # 2. MCP registration — complete before persona assignment so the
             #    server knows the device's exact capabilities when picking a persona.
@@ -1410,6 +1468,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         finally:
             if active_pipeline and not active_pipeline.done():
                 active_pipeline.cancel()
+            if keepalive is not None:
+                keepalive.cancel()
             if mcp_client is not None:
                 mcp_client.cancel_pending()
             session_state.set_pipeline_status(device_id, "idle")

@@ -296,6 +296,7 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_SERVER_MCP_BRIDGE_PORT` | `8001` | Page-agent MCP bridge (SSE-down / POST-up); defaults to the dashboard port for same-origin pages, set to `8004` to isolate |
 | `AGENT_HUB_SERVER_HEARTBEAT_INTERVAL_SECONDS` | `60` | Requested device heartbeat cadence |
 | `AGENT_HUB_SERVER_HEARTBEAT_TIMEOUT_SECONDS` | `180` | Time without heartbeat before offline |
+| `AGENT_HUB_SERVER_KEEPALIVE_SECONDS` | `60` | Hub silence before it sends an open voice session `{"type":"keepalive"}`, so firmware's 120 s no-traffic timeout doesn't drop an idle device; `0` turns it off |
 | `AGENT_HUB_SERVER_TIMEZONE` | unset | IANA timezone used for DST-aware device clock offset |
 | `AGENT_HUB_SERVER_TIMEZONE_OFFSET` | `-8` | Fallback fixed UTC offset in hours |
 | `AGENT_HUB_SERVER_DASHBOARD_USERNAME` | `admin` | Dashboard Basic auth username |
