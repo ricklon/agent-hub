@@ -108,6 +108,12 @@ class _DelayedTurnCue:
         """Stop the cue task before leaving the turn."""
         await self.settle_before_reply()
 
+    def cancel(self) -> None:
+        """Stop the cue at once, even mid-sentence, because the turn was aborted."""
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
     async def _run(self) -> None:
         await asyncio.sleep(self._delay_s)
         if self._handled:
@@ -244,8 +250,12 @@ async def _speak_segment(
 
     if rate_ctrl._queue:
         rate_ctrl.start(websocket.send_bytes)
-        await rate_ctrl.wait_until_done()
-        rate_ctrl.stop()
+        try:
+            await rate_ctrl.wait_until_done()
+        finally:
+            # On an aborted turn too: the sender task would otherwise keep
+            # streaming the rest of the sentence.
+            rate_ctrl.stop()
 
     if send_stop:
         await websocket.send_text(
@@ -342,7 +352,8 @@ async def _stream_reply_to_speech(
             await queue.put(buffer.strip())
         await queue.put(None)
         await worker
-    except Exception:
+    except BaseException:
+        # BaseException so an aborted turn (CancelledError) stops speaking too.
         worker.cancel()
         with suppress(asyncio.CancelledError):
             await worker
@@ -629,6 +640,10 @@ async def _run_llm_turn(
         session_state.set_pipeline_status(device_id, "idle", transcript)
         history.pop()
         return 0, 0, 0, ""
+    except asyncio.CancelledError:
+        # The device aborted the reply: don't let a started cue finish speaking.
+        slow_cue.cancel()
+        raise
     finally:
         await slow_cue.close()
     # Do not overwrite llm_ms here with elapsed-since-t1: that is the whole
@@ -967,6 +982,8 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
         pipeline_lock = asyncio.Lock()
         mcp_client: MCPClient | None = None
         active_pipeline: asyncio.Task[None] | None = None
+        # The spoken turn in progress, if any: what a device ``abort`` cancels.
+        current_turn: asyncio.Future[Any] | None = None
 
         try:
             # 1. Hello / welcome handshake
@@ -1092,6 +1109,27 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     f"{device_id!r} resumed {len(conversation)} messages from history"
                 )
 
+            async def _run_abortable[T](turn: Awaitable[T]) -> T | None:
+                """Run one spoken turn so the device's ``abort`` can cancel it.
+
+                Returns None when the device aborted the turn; the caller then
+                saves history and resets status as usual. Cancelling the
+                session itself still propagates.
+                """
+                nonlocal current_turn
+                task = asyncio.ensure_future(turn)
+                current_turn = task
+                try:
+                    return await task
+                except asyncio.CancelledError:
+                    me = asyncio.current_task()
+                    if me is not None and me.cancelling():
+                        raise
+                    return None
+                finally:
+                    if current_turn is task:
+                        current_turn = None
+
             async def _dispatch_pipeline(frames: list[bytes]) -> None:
                 if pipeline_lock.locked():
                     logger.bind(tag=_TAG).debug(
@@ -1135,21 +1173,23 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                                 device_id,
                             )
                         else:
-                            await _run_voice_turn(
-                                websocket,
-                                frames,
-                                session_id,
-                                hello.audio_params.sample_rate,
-                                hello.audio_params.frame_duration,
-                                persona,
-                                conversation,
-                                config,
-                                mcp_client,
-                                device_id,
-                                supports_emoji=hello.supports_emoji,
-                                memory_window=settings.memory_window,
-                                memory_note=note,
-                                store=store,
+                            await _run_abortable(
+                                _run_voice_turn(
+                                    websocket,
+                                    frames,
+                                    session_id,
+                                    hello.audio_params.sample_rate,
+                                    hello.audio_params.frame_duration,
+                                    persona,
+                                    conversation,
+                                    config,
+                                    mcp_client,
+                                    device_id,
+                                    supports_emoji=hello.supports_emoji,
+                                    memory_window=settings.memory_window,
+                                    memory_note=note,
+                                    store=store,
+                                )
                             )
                     except Exception as exc:
                         import traceback as _tb
@@ -1194,6 +1234,32 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     return
                 active_pipeline = asyncio.create_task(_dispatch_pipeline(frames))
 
+            async def _after_listen_stop(
+                frames: list[bytes], previous: asyncio.Task[None] | None
+            ) -> None:
+                """Finish the turn the device ended with ``listen`` ``stop``."""
+                if previous is not None and not previous.done():
+                    await asyncio.wait([previous])
+                if frames:
+                    await _dispatch_pipeline(frames)
+                else:
+                    session_state.set_pipeline_status(device_id, "idle")
+                if transcription_mode:
+                    session_state.set_pipeline_status(device_id, "idle")
+                    ending = session_state.current_transcription_session(device_id)
+                    session_state.end_transcription_session(device_id)
+                    if ending:
+                        await store.end_transcript_conversation(ending)
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "transcription",
+                                "session_id": session_id,
+                                "state": "stopped",
+                            }
+                        )
+                    )
+
             async def _speak_direct(text: str) -> None:
                 if pipeline_lock.locked():
                     raise RuntimeError("Agent is busy. Wait for the current reply.")
@@ -1201,7 +1267,7 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     session_state.begin_response(device_id)
                     session_state.set_pipeline_status(device_id, "speaking", text)
                     try:
-                        await _speak(websocket, text, persona, config, session_id)
+                        await _run_abortable(_speak(websocket, text, persona, config, session_id))
                     finally:
                         session_state.set_pipeline_status(device_id, "listening")
 
@@ -1225,19 +1291,24 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                     )
                     prev_len = len(conversation)
                     try:
-                        reply = await _run_text_turn(
-                            websocket,
-                            transcript,
-                            session_id,
-                            persona,
-                            conversation,
-                            config,
-                            mcp_client,
-                            device_id,
-                            supports_emoji=hello.supports_emoji,
-                            memory_window=settings.memory_window,
-                            memory_note=note,
-                            store=store,
+                        reply = (
+                            await _run_abortable(
+                                _run_text_turn(
+                                    websocket,
+                                    transcript,
+                                    session_id,
+                                    persona,
+                                    conversation,
+                                    config,
+                                    mcp_client,
+                                    device_id,
+                                    supports_emoji=hello.supports_emoji,
+                                    memory_window=settings.memory_window,
+                                    memory_note=note,
+                                    store=store,
+                                )
+                            )
+                            or ""
                         )
                     except Exception as exc:
                         import traceback as _tb
@@ -1314,28 +1385,15 @@ def make_router(store: RegistryStore, config: dict[str, Any]) -> APIRouter:
                                 # existing one.
                                 session_state.ensure_transcription_session(device_id)
                         elif ctrl.get("state") == "stop":
-                            frames = vad.take()
-                            if active_pipeline and not active_pipeline.done():
-                                await active_pipeline
-                            if frames:
-                                await _dispatch_pipeline(frames)
-                            else:
-                                session_state.set_pipeline_status(device_id, "idle")
-                            if transcription_mode:
-                                session_state.set_pipeline_status(device_id, "idle")
-                                ending = session_state.current_transcription_session(device_id)
-                                session_state.end_transcription_session(device_id)
-                                if ending:
-                                    await store.end_transcript_conversation(ending)
-                                await websocket.send_text(
-                                    json.dumps(
-                                        {
-                                            "type": "transcription",
-                                            "session_id": session_id,
-                                            "state": "stopped",
-                                        }
-                                    )
-                                )
+                            # In a task, not inline: the loop must keep reading
+                            # so an abort, or a device tool reply, gets through.
+                            active_pipeline = asyncio.create_task(
+                                _after_listen_stop(vad.take(), active_pipeline)
+                            )
+                    elif ctrl_type == "abort":
+                        if current_turn is not None and not current_turn.done():
+                            logger.bind(tag=_TAG).info(f"{device_id!r} aborted the reply")
+                            current_turn.cancel()
                     elif ctrl_type == "mcp" and mcp_client is not None:
                         payload = ctrl.get("payload", {})
                         asyncio.create_task(mcp_client.handle_message(payload))

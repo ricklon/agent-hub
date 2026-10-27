@@ -121,6 +121,11 @@ class MCPClient:
         except TimeoutError as exc:
             self._pending.pop(call_id, None)
             raise TimeoutError(f"MCP tool {tool_name!r} timed out after {timeout}s") from exc
+        except asyncio.CancelledError:
+            # The turn was aborted. The device still runs the call; its reply
+            # finds nothing pending and is dropped.
+            self._pending.pop(call_id, None)
+            raise
 
         if isinstance(raw, dict):
             if raw.get("isError"):
