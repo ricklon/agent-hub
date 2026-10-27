@@ -112,6 +112,40 @@ Tools from *other* people's robots can be borrowed by your persona too, if
 their owner marked them safe. That is the **Linked agents** section of the
 persona editor.
 
+## Coglet and other xiaozhi robots
+
+[Coglet](https://github.com/ricklon/coglet) doesn't use `robot_agent.py`. It
+speaks the xiaozhi device protocol: it checks in at `/xiaozhi/ota/`, opens a
+voice session, and the hub lists its tools over MCP inside that session.
+Nothing to install on a laptop; flash it and point it at the hub.
+
+- **Board ids at check-in:** `coglet-c3`; `coglet` (S3, wake word
+  "Computer"); `coglet-phrase` (S3, a typed wake phrase, "hey coglet" to
+  start).
+- **The session stays open** in quiet mode, calibration mode, and while the
+  S3 waits for its wake word. The hub sends an idle session a small
+  `keepalive` frame every 60 s (`server.keepalive_seconds`) so the firmware's
+  two-minute timeout doesn't drop it. The S3's serial log prints
+  `Unknown message type: keepalive` for it; that's expected.
+- **Its button stops a reply.** The robot sends `abort`; the hub stops
+  speaking and the session carries on.
+- **Some tools hang up on purpose.** `self.voice.restart`, `self.hub.set_server`,
+  `self.reboot`, and `self.voice.wake_word` (when it changes something) reply,
+  then the robot reboots or reconnects about a second later. That disconnect
+  isn't a fault.
+- **`self.coglet.builder` is now `self.coglet.calibrate`.** A persona whose tool
+  allowlist still names `self_coglet_builder` won't be picked for the robot by
+  its tools; the hub log says `allows tools the device doesn't list`. Edit the
+  persona's allowlist.
+- **Driving it from a laptop's MCP client:** `scripts/device_mcp_proxy.py`
+  exposes the robot's read and stop tools by default (`--all-tools` for the
+  rest). See the script's header.
+- **Camera photos** go to the address the hub gave the robot at check-in. If
+  the robot holds a voice session, uploads reach the same hub. Set
+  `server.websocket` to the hub's LAN or public address when it runs in
+  Docker on a bridge network or under WSL, or the robot gets an internal
+  address it can't reach and won't connect at all.
+
 ## Troubleshooting
 
 | What you see | What it means |
