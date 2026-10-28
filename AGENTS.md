@@ -69,7 +69,7 @@ agent-hub/
 │   │   └── emotion.py
 │   ├── providers/
 │   │   ├── llm/             ← openai_provider (OpenAI-compatible, incl. OpenRouter)
-│   │   ├── tts/             ← edge, kitten
+│   │   ├── tts/             ← edge, kitten, piper, openrouter
 │   │   └── asr/             ← funasr, funasr_onnx, openai_whisper
 │   ├── registry/
 │   │   ├── models.py        ← Agent, Device, Persona, AgentKind enum

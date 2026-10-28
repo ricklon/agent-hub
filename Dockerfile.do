@@ -45,8 +45,10 @@ RUN uv sync --frozen --no-dev \
 # a download. models/ is deliberately NOT a bind mount in
 # docker-compose.do.yml — mounting it would shadow the Moonshine/Silero files.
 # KittenTTS caches under ~/.cache/huggingface, which is not mounted either.
+# Only Piper's default voice is baked; others download on first use.
 RUN uv run python scripts/download_moonshine.py \
     && uv run python scripts/download_kittentts.py \
+    && uv run python scripts/download_piper.py \
     && uv run python scripts/download_wake_word.py
 
 EXPOSE 8000 8001 8003

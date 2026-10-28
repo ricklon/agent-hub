@@ -287,6 +287,8 @@ All settings can be set via environment variables using the pattern
 | `AGENT_HUB_LLM_OPENAI_BASE_URL` | OpenAI | URL of the LLM API (OpenRouter, Ollama, etc.) |
 | `AGENT_HUB_LLM_OPENAI_MODEL` | `gpt-4o-mini` | Model name to use |
 | `AGENT_HUB_TTS_EDGE_VOICE` | `en-US-AriaNeural` | Edge TTS voice name |
+| `AGENT_HUB_TTS_PIPER_VOICE` | `en_US-lessac-medium` | Default voice for the `piper` voice system (local; downloaded on first use) |
+| `AGENT_HUB_TTS_PIPER_DATA_DIR` | `models/piper` | Where Piper voices are stored and downloaded to |
 | `AGENT_HUB_TTS_OPENROUTER_API_KEY` | LLM key if the LLM uses OpenRouter | Key for the `openrouter` voice system (cloud TTS, billed per token; metered automatically) |
 | `AGENT_HUB_TTS_OPENROUTER_MODEL` | `google/gemini-3.8-flash-lite-tts` | OpenRouter TTS model; a persona picks the voice |
 | `AGENT_HUB_SERVER_WEBSOCKET` | auto-detected LAN IP | WS URL sent to devices on check-in |

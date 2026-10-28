@@ -89,7 +89,7 @@ def get_provider(name: str, config: dict[str, Any], model: str | None = None) ->
     Raises:
         ValueError: If the provider name is unknown.
     """
-    model = model if name != "edge" else None
+    model = model if name not in ("edge", "piper") else None
     cache_key = f"{name}:{model}" if model else name
     if cache_key in _cache:
         return _cache[cache_key]
@@ -111,6 +111,15 @@ def get_provider(name: str, config: dict[str, Any], model: str | None = None) ->
         provider = KittenTTSProvider(
             model=model or cfg.get("model", "KittenML/kitten-tts-nano-0.8"),
             voice=cfg.get("voice", "Luna"),
+            speed=float(cfg.get("speed", 1.0)),
+        )
+    elif name == "piper":
+        from agent_hub.providers.tts.piper import DEFAULT_VOICE, PiperTTSProvider
+
+        cfg = tts_cfg.get("piper", {})
+        provider = PiperTTSProvider(
+            voice=str(cfg.get("voice") or DEFAULT_VOICE),
+            data_dir=str(cfg.get("data_dir") or "models/piper"),
             speed=float(cfg.get("speed", 1.0)),
         )
     elif name == "openrouter":

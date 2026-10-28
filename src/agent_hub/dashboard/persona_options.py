@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from agent_hub.providers import asr as _asr
 
-TTS_PROVIDERS: tuple[str, ...] = ("edge", "kitten", "openrouter")
+TTS_PROVIDERS: tuple[str, ...] = ("edge", "kitten", "piper", "openrouter")
 
 # Edge exposes 400+ voices dynamically; this is a curated English shortlist for
 # the picker. Any Edge voice id still works if typed in directly.
@@ -36,6 +36,42 @@ KITTEN_VOICES: tuple[str, ...] = (
     "Hugo",
     "Kiki",
     "Leo",
+)
+# Piper's English voices in rhasspy/piper-voices (medium and high quality).
+# Each is downloaded the first time a persona speaks with it. Any other
+# published voice id (other languages, low quality) can be typed in.
+PIPER_VOICES: tuple[str, ...] = (
+    "en_US-lessac-medium",
+    "en_US-lessac-high",
+    "en_US-amy-medium",
+    "en_US-arctic-medium",
+    "en_US-bryce-medium",
+    "en_US-hfc_female-medium",
+    "en_US-hfc_male-medium",
+    "en_US-joe-medium",
+    "en_US-john-medium",
+    "en_US-kristin-medium",
+    "en_US-kusal-medium",
+    "en_US-l2arctic-medium",
+    "en_US-libritts-high",
+    "en_US-libritts_r-medium",
+    "en_US-ljspeech-medium",
+    "en_US-ljspeech-high",
+    "en_US-mike-medium",
+    "en_US-norman-medium",
+    "en_US-reza_ibrahim-medium",
+    "en_US-ryan-medium",
+    "en_US-ryan-high",
+    "en_US-sam-medium",
+    "en_GB-alan-medium",
+    "en_GB-alba-medium",
+    "en_GB-aru-medium",
+    "en_GB-cori-medium",
+    "en_GB-cori-high",
+    "en_GB-jenny_dioco-medium",
+    "en_GB-northern_english_male-medium",
+    "en_GB-semaine-medium",
+    "en_GB-vctk-medium",
 )
 # OpenRouter voices depend on the model; these are the 30 prebuilt voices of
 # Gemini 3.8 Flash Lite TTS (the default) and Flash TTS. Other models' voice
@@ -73,7 +109,9 @@ OPENROUTER_VOICES: tuple[str, ...] = (
     "Sadaltager",
     "Sulafat",
 )
-TTS_VOICE_SUGGESTIONS: tuple[str, ...] = EDGE_VOICES + KITTEN_VOICES + OPENROUTER_VOICES
+TTS_VOICE_SUGGESTIONS: tuple[str, ...] = (
+    EDGE_VOICES + KITTEN_VOICES + PIPER_VOICES + OPENROUTER_VOICES
+)
 
 # Which voices belong to which voice system. Edge accepts any of its 400+
 # voice ids if typed in, so its list is a suggestion; Kitten ships exactly
@@ -81,6 +119,7 @@ TTS_VOICE_SUGGESTIONS: tuple[str, ...] = EDGE_VOICES + KITTEN_VOICES + OPENROUTE
 VOICES_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     "edge": EDGE_VOICES,
     "kitten": KITTEN_VOICES,
+    "piper": PIPER_VOICES,
     "openrouter": OPENROUTER_VOICES,
 }
 FIXED_VOICE_PROVIDERS: frozenset[str] = frozenset({"kitten"})
@@ -129,10 +168,15 @@ def voices_for(tts_provider: str) -> tuple[str, ...]:
 def voice_problem(tts_provider: str, voice: str) -> str | None:
     """Why ``voice`` cannot be used with ``tts_provider``, or None if it can.
 
-    Only systems with a fixed voice set are checked. A blank voice always
-    passes (it means "the system default").
+    Systems with a fixed voice set are checked against it; Piper ids are
+    checked for shape, since any published voice downloads on first use. A
+    blank voice always passes (it means "the system default").
     """
     voice = voice.strip()
+    if voice and tts_provider == "piper":
+        from agent_hub.providers.tts.piper import voice_id_problem
+
+        return voice_id_problem(voice)
     if not voice or tts_provider not in FIXED_VOICE_PROVIDERS:
         return None
     if voice in VOICES_BY_PROVIDER.get(tts_provider, ()):
