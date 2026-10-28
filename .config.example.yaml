@@ -139,6 +139,15 @@ tts:
     # Available voices: Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo
     voice: "Luna"
     speed: 1.0
+  # Piper: local ONNX voices (github.com/OHF-Voice/piper1-gpl), CPU-only.
+  # Each voice is its own model, named language_REGION-name-quality; the
+  # persona editor lists the English ones. A voice missing from data_dir is
+  # downloaded from huggingface.co/rhasspy/piper-voices the first time a
+  # persona speaks with it (~60 MB for a medium voice).
+  piper:
+    voice: "en_US-lessac-medium"
+    data_dir: "models/piper"
+    speed: 1.0  # >1 speaks faster
   # Cloud voices through OpenRouter's speech endpoint (see
   # openrouter.ai/collections/text-to-speech-models). Billed
   # per character: each sentence passes the spend guard and is recorded in the
