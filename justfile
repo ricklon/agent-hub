@@ -26,7 +26,7 @@ lint:
     uv run --extra dev ruff check src/ tests/ && uv run --extra dev ruff format --check src/ tests/
 
 format:
-    ruff format src/ tests/
+    uv run --extra dev ruff format src/ tests/
 
 typecheck:
     uv run --extra dev mypy --strict src/agent_hub/
