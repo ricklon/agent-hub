@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from agent_hub.registry.store import RegistryStore
+from sqlalchemy import text
+
+from agent_hub.registry.store import RegistryStore, hash_token
 
 _DEVICE = "AA:BB:CC:DD:EE:FF"
 _OTHER = "11:22:33:44:55:66"
@@ -142,3 +144,75 @@ class TestTokenPersistence:
             assert await second.validate_websocket_token(_DEVICE, token) is True
         finally:
             await second._engine.dispose()
+
+
+async def _stored_token(store: RegistryStore, device_id: str) -> str | None:
+    agent = await store.get_agent(device_id)
+    assert agent is not None
+    return agent.websocket_token
+
+
+class TestTokensAreStoredHashed:
+    async def test_database_never_holds_the_token(self, store):
+        await store.get_or_create_agent(_DEVICE)
+        token = await store.issue_websocket_token(_DEVICE)
+
+        stored = await _stored_token(store, _DEVICE)
+        assert stored == hash_token(token)
+        assert token not in (stored or "")
+
+    async def test_the_stored_hash_is_not_a_valid_token(self, store):
+        await store.get_or_create_agent(_DEVICE)
+        await store.issue_websocket_token(_DEVICE)
+        stored = await _stored_token(store, _DEVICE)
+        assert stored
+
+        # Someone who copied the database can't present what they found.
+        assert await store.validate_websocket_token(_DEVICE, stored) is False
+        assert (
+            await store.record_authenticated_heartbeat(_DEVICE, stored, None, "idle", []) is False
+        )
+        assert await store.mark_agent_offline(_DEVICE, stored) is False
+
+    async def test_heartbeat_and_offline_accept_the_issued_token(self, store):
+        await store.get_or_create_agent(_DEVICE)
+        token = await store.issue_websocket_token(_DEVICE)
+
+        assert await store.record_authenticated_heartbeat(_DEVICE, token, None, "idle", []) is True
+        assert await store.mark_agent_offline(_DEVICE, token) is True
+
+
+class TestLegacyPlainTextTokens:
+    async def _plant_legacy_token(self, store: RegistryStore, token: str) -> None:
+        """Write a token the way stores did before hashing."""
+        await store.get_or_create_agent(_DEVICE)
+        async with store._sessions() as session:
+            await session.execute(
+                text("UPDATE agents SET websocket_token = :t WHERE device_id = :d"),
+                {"t": token, "d": _DEVICE},
+            )
+            await session.commit()
+
+    async def test_startup_hashes_them_and_the_agent_keeps_working(self, tmp_path):
+        store = RegistryStore(db_path=tmp_path / "legacy.db")
+        await store.initialize()
+        await self._plant_legacy_token(store, "legacy-token")
+        await store._engine.dispose()
+
+        restarted = RegistryStore(db_path=tmp_path / "legacy.db")
+        await restarted.initialize()
+        try:
+            assert await _stored_token(restarted, _DEVICE) == hash_token("legacy-token")
+            assert await restarted.validate_websocket_token(_DEVICE, "legacy-token") is True
+        finally:
+            await restarted._engine.dispose()
+
+    async def test_hashing_twice_changes_nothing(self, store):
+        await self._plant_legacy_token(store, "legacy-token")
+
+        await store._hash_legacy_tokens()
+        once = await _stored_token(store, _DEVICE)
+        await store._hash_legacy_tokens()
+
+        assert await _stored_token(store, _DEVICE) == once
+        assert await store.validate_websocket_token(_DEVICE, "legacy-token") is True
