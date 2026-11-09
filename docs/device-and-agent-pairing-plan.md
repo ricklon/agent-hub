@@ -208,10 +208,11 @@ until the operator chooses to drop it.
 
 ## Hard limits we accept
 
-- **A board's token is stored in plain text in its flash.** Physical access to
-  the board means access to its identity until someone revokes it in the
-  dashboard. Fixing that needs firmware that holds a key it can't export
-  (see [Step 6](#step-6--boards-that-sign-esp32-s3-digital-signature)).
+- **Until Step 6, a board's credential is a token stored in plain text in its
+  flash.** Physical access to the board means access to its identity until
+  someone revokes it in the dashboard. Step 6 Level A removes the token from
+  the network. Level B also stops someone with the board from copying its
+  identity (see [Step 6](#step-6--boards-that-sign-esp32-s3)).
 - **HMAC activation is used only when the hub has been given that board's
   key**, which is a vendor-provisioning step hobbyists don't do.
 
@@ -291,62 +292,112 @@ dashboard warning, and update `docs/deployment.md`. That includes replacing the
 enrollment token, and ticking off the per-device credentials and rate limiting
 in *Remaining Work Before Public Internet*.
 
-### Step 6 — boards that sign (ESP32-S3 Digital Signature)
+### Step 6 — boards that sign (ESP32-S3)
 
 Most boards in use are ESP32-S3 variants, and the S3 is the chip with wake
-word and the other features we need, so this generation uses what the S3
-offers: the **Digital Signature (DS) peripheral**, which signs with **RSA**.
-The S3 has neither Ed25519 nor eFuse-held ECDSA. A future S3 successor with
-ECDSA in hardware would only need another key type, not a redesign
-(see [Key types](#key-types)).
+word and the other features we need. Everything below uses what is already
+built into the S3. **No extra chip is needed.**
 
-**How DS works.** An HMAC key is burned into an eFuse key block marked for
-digital-signature use, so software can never read it. The RSA private key is
-stored in flash **encrypted** with a key derived from that HMAC key. Only the
-DS hardware can decrypt it, and only while signing. A flash dump yields
-ciphertext that works on no other board.
+The goal is to stop the board's credential being a bearer token. Instead
+the board holds a **private key**, the hub keeps only its **public key**, and
+the board proves who it is by signing a fresh challenge each session. Only
+signatures cross the network, so there is nothing worth sniffing or replaying.
 
-**Provisioning on the board itself, once.** A small firmware fork does it on
-first boot, when the user agrees:
+There are two levels. **Level A is the default.** Level B is an opt-in
+upgrade for each board.
 
-1. Generate a random HMAC key and an RSA key pair in RAM.
-2. Compute the encrypted DS parameters and write them to flash.
-3. Burn the HMAC key into a free eFuse key block, read-protected.
-4. Wipe both keys from RAM. Keep only the public key.
+| | Token (Steps 1–2) | **Level A: key in flash (default)** | **Level B: DS key ("Lock this board")** |
+| --- | --- | --- | --- |
+| Someone sniffing Wi-Fi can impersonate the board | Yes, on plain `ws://` | No | No |
+| Stealing the hub database lets someone impersonate boards | No, after Step 1 hashes tokens | No, the hub holds public keys only | No |
+| Someone holding the board can copy its identity to another device | Yes | Yes, the key can be read from flash | **No**, the key only unlocks inside this chip |
+| Anything permanent burned into the chip | No | **No** | **Yes, one eFuse key slot** |
 
-The private key never leaves the board, and no provisioning PC ever sees it.
-Espressif's usual tooling (`esp_secure_cert_mgr`, `configure_ds.py`) instead
-generates keys on a host computer. That's acceptable for a vendor, but it
-means trusting that machine, so it isn't the default here.
+#### Level A — a key in flash (default)
 
-**Pairing is unchanged for the user.** The board still says a code and the
-person types it. The difference is what the code approves: the board sends its
-RSA public key with the activation, the approval binds that key in
-`agent_keys`, and from then on the board signs a challenge for each session.
-A bearer token is no longer the credential.
+1. On first boot the firmware fork generates an **RSA-3072** key pair using
+   mbedTLS (built into ESP-IDF, with the S3's RSA hardware speeding it up).
+   That takes a few seconds once, then never again.
+2. The private key goes into its own NVS namespace. Normal reflashing leaves
+   it alone, but `erase-flash` wipes it.
+3. Pairing is unchanged for the person doing it: the board says a code and
+   they type it in. The board sends its **public key** with the activation
+   request, and the approval binds that key in `agent_keys`.
+4. Each voice session starts with the hub sending a challenge and the board
+   signing it (RSA-PSS). No reusable token is involved.
 
-**Rules for the fork:**
+**If the key is lost** (through `erase-flash`, a corrupted NVS, or a dead
+board), you pair again with a spoken code. Nothing is permanent and nothing
+gets stuck.
 
-- **Burning eFuse can't be undone.** The fork asks once ("Hold the button to
-  make this board's permanent identity") and never burns silently. Re-pairing
-  a signing board reuses its key. It never burns a second block.
-- **Don't use `HMAC_KEY0`.** Stock firmware's activation HMAC uses it, so DS
-  takes a different free block, and the fork checks the block's purpose
-  before burning.
-- **Don't touch flash encryption or secure boot.** They're separate,
-  higher-risk features, and DS doesn't need them.
-- **RSA-3072 is the default** (a signature takes tens of milliseconds, and the
-  board signs once per session). Check the S3 technical reference manual
-  before settling the size: the S3's DS supports up to 4096 bits.
-- **Boards that don't sign keep working.** They pair with a spoken code and a
-  pinned token as in Steps 1–2. A signing board is an upgrade, not a
-  requirement.
+**Why RSA, when software could use Ed25519 or P-256:** Level B can only
+use RSA, because the S3's Digital Signature hardware only does RSA. Starting
+with RSA means upgrading to Level B **keeps the same key**, so the board keeps
+its public key and stays paired (see below). It also means the hub verifies
+one signature scheme for every board.
 
-**Before building:** prototype provisioning on one sacrificial XIAO
-ESP32-S3, and confirm against the S3 technical reference manual and the
-ESP-IDF `esp_ds` API (eFuse key purpose `HMAC_DOWN_DIGITAL_SIGNATURE`, DS
-parameter encryption, supported key sizes). The details above are from
-Espressif's documentation as remembered, not yet tested.
+#### Level B — "Lock this board" (opt-in)
+
+The S3's **Digital Signature (DS) peripheral** works like a safe built into
+the chip:
+
+- A secret **safe key** is burned into an **eFuse** key slot, marked for
+  digital-signature use only. Software, including our own firmware, can
+  never read it back.
+- The RSA private key is kept in flash **locked** (encrypted) with that safe
+  key. Only the DS hardware can unlock it, and only internally while signing.
+- A copy of the flash is useless anywhere else, because the locked key only
+  unlocks in this one chip.
+
+**Upgrading from Level A**, when someone presses **Lock this board** in the
+dashboard and confirms it on the board by holding the button:
+
+1. Generate a random safe key in RAM.
+2. Lock the board's **existing** RSA key with it, and write the locked copy to
+   its own flash partition.
+3. Burn the safe key into a free eFuse key slot, read-protected.
+4. Delete the plain-text private key from NVS, and wipe the safe key from RAM.
+5. Upload the **locked** key to the hub as a backup. It is safe to store
+   anywhere, because it only unlocks in this chip.
+
+The public key doesn't change, so the board stays paired and nothing needs
+re-pairing. The hub records that the board is locked.
+
+**What is permanent, and what isn't:**
+
+- **Permanent:** one of the S3's six eFuse key slots is used up for good, and
+  the board's identity is tied to that chip for the rest of its life.
+- **Not permanent:** pairing. To give a board away, unpair it from your hub
+  and the new owner pairs it on theirs. The key stays the same, and each hub
+  decides whether to trust it.
+- **After `erase-flash`:** the eFuse safe key survives, but the locked key in
+  flash is gone. The board downloads its backup from the hub (still signed
+  in with its public key, since the hub knows which board it is) and carries
+  on with the same identity. **Without the hub backup**, it would have to use
+  another eFuse slot, which is why the backup is part of the design and not
+  an extra.
+- **If the board dies,** its identity dies with it. Pair the replacement as a
+  new device.
+
+**Rules for the firmware fork:**
+
+- Never burn eFuse silently. Locking needs a dashboard request **and** a
+  button hold on the board, and the firmware says plainly that it is
+  permanent.
+- Don't use `HMAC_KEY0`, which stock firmware's activation HMAC uses. Pick a
+  free slot and check its purpose before burning.
+- Don't touch flash encryption or secure boot. They are separate, riskier
+  features, and DS doesn't need them.
+- A locked board never burns a second slot unless an operator approves it
+  after the backup restore has failed.
+
+**Before building Level B:** prototype on one XIAO ESP32-S3 you're willing to
+lose, and confirm against the S3 technical reference manual and the ESP-IDF
+`esp_ds` API: the eFuse key purpose `HMAC_DOWN_DIGITAL_SIGNATURE`, how DS
+parameters are encrypted on the board, RSA-3072 support, and whether an
+existing private key can be locked (the upgrade path depends on it). These
+details come from Espressif's documentation as remembered, and none of
+them has been tested yet.
 
 ### Key types
 
@@ -356,14 +407,16 @@ pairing:
 | Key type | Used by | Notes |
 | --- | --- | --- |
 | `ssh-ed25519` | robots, scripts, people's SSH keys | The default for software. |
-| `rsa-3072` / `rsa-4096` (RSA-PSS) | ESP32-S3 boards via DS | This generation's boards. |
+| `rsa-3072` (RSA-PSS) | ESP32-S3 boards, both Level A (key in flash) and Level B (DS) | This generation's boards. A locked board keeps the same key. |
 | `ecdsa-p256` | ATECC608 secure element, browsers (WebCrypto), future chips with ECDSA in eFuse | Add when the first such board or page appears. |
 
 ## Data model (needs sign-off, per AGENTS.md)
 
 - `pairing_attempts` — as above.
 - `agent_keys` — `agent_id`, `key_type`, `public_key` (OpenSSH format),
-  `fingerprint`, `created_by`, `created_at`, `revoked_at`.
+  `fingerprint`, `locked` (Level B), `locked_key_backup` (the locked DS
+  key, which is useless off its own chip), `created_by`, `created_at`,
+  `revoked_at`.
 - `operator_passkeys` — `operator_id`, `credential_id`, `public_key`,
   `sign_count`, `created_at`, `last_used_at`.
 - `Agent` — `websocket_token` becomes `websocket_token_hash`; adds
