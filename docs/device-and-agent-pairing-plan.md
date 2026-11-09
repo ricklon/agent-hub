@@ -247,6 +247,10 @@ Record:
 - What the board does right after 200: does it check in again, and when?
 - How it behaves on 410, or another error, and on a hub restart while it is
   waiting.
+- For Step 1b: does check-in carry the stored token (`Authorization`
+  header)? When a check-in response leaves out `websocket.token`, does the
+  board keep its stored token? When it sends `"token": ""`, does the board
+  wipe its stored token?
 - Whether `wss://` with a public CA certificate works, and whether a
   self-signed certificate is rejected.
 - Baseline check-in and a voice session on v2.5.2. `lessons-learned.md`
@@ -256,9 +260,18 @@ Write the results into `docs/lessons-learned.md`.
 
 ### Step 1 — hash and pin tokens (no UX change)
 
-Store token hashes instead of tokens, hashing existing ones in a migration.
-Stop re-issuing a token to a board that already has one unless the old token
-is presented. Includes regression tests for the takeover.
+**1a, hashing (#126):** store `sha256:<hex>` instead of the token, and hash
+existing plain-text tokens at startup. This needs no schema change and
+changes nothing on the wire.
+
+**1b, pinning (after Step 0):** stop issuing a new token to a board that
+already has one, unless it presents the old token. Includes regression tests
+for the takeover. This has to wait for the hardware check. With only a hash
+stored, the hub can't resend a board's current token, so a paired board's
+check-in returns no token. Stock firmware copies every `websocket` key into
+NVS, so `"token": ""` might wipe the board's own token, and Step 0 must show
+whether leaving the key out is safe. Step 0 should also record whether the
+firmware sends its token on check-in at all, because pinning relies on that.
 
 ### Step 2 — board pairing
 
