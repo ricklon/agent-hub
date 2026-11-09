@@ -371,9 +371,12 @@ re-pairing. The hub records that the board is locked.
   and the new owner pairs it on theirs. The key stays the same, and each hub
   decides whether to trust it.
 - **After `erase-flash`:** the eFuse safe key survives, but the locked key in
-  flash is gone. The board downloads its backup from the hub (still signed
-  in with its public key, since the hub knows which board it is) and carries
-  on with the same identity. **Without the hub backup**, it would have to use
+  flash is gone. The board asks the hub for its backup by MAC address. The
+  MAC survives an erase, because it's in eFuse too. The hub can hand the
+  backup to anyone who asks, because it only unlocks inside the real chip.
+  The board then signs a fresh challenge with the restored key, and only a
+  correct signature puts it back in service with the same identity. A
+  different board asking for the backup gets a key it can't unlock. **Without the hub backup**, it would have to use
   another eFuse slot, which is why the backup is part of the design and not
   an extra.
 - **If the board dies,** its identity dies with it. Pair the replacement as a
