@@ -162,6 +162,50 @@ Wi-Fi still works. The plain `ws://` risk is that anyone sniffing the Wi-Fi can
 capture a token and replay it. Step 0 also checks whether the firmware
 validates server certificates.
 
+## Public hubs (the DigitalOcean droplet)
+
+A droplet has no LAN boundary: the device hostname is reachable by anyone
+from the moment it starts (see `docs/deployment.md` → *DigitalOcean
+Droplet*). Pairing is what makes that safe. It also delivers the first two
+items of *Remaining Work Before Public Internet*: per-device credentials and
+rate limiting.
+
+**What changes for users.** Today a public hub needs Rick's forked firmware,
+because only the fork can send `enrollment_token` and stock firmware gets a
+401. With pairing, a beginner can flash **stock** firmware, point it at
+`https://hub.<domain>/xiaozhi/ota/`, and type the code the board says.
+
+**What the plan adds for public hubs:**
+
+- **Rate limits are required here, not optional.** Limit new pairing attempts
+  per IP (a few per minute) and cap the number of live attempts per hub, so
+  strangers can't flood **Add device**. Old attempts are dropped first.
+  Limit wrong codes per operator, as on a LAN.
+- **Waiting boards are quiet in the dashboard.** **Add device** lists only
+  attempts made in the last 10 minutes, and newest first, so a person pairing
+  the board in front of them isn't hunting through strangers' attempts.
+- **`enrollment_token` is still allowed, as an optional filter.** When it is
+  set, a check-in without it gets a 401 before any pairing attempt is created.
+  That suits hubs that only ever serve the fork. It never replaces pairing:
+  having the token still doesn't pair a board.
+- **`wss://` is the default whenever `AGENT_HUB_PUBLIC_HOST` is set.** Caddy
+  already terminates TLS for the device hostname, so check-in hands out a
+  `wss://` URL. A paired board that still connects over plain `ws://` on a
+  public hub shows a warning in the dashboard.
+- **Caddy routes.** `/xiaozhi/ota/activate` and `/checkin/activate` are
+  already covered by the existing `/xiaozhi/ota/*` and `/checkin/*` blocks.
+  Every new device-facing path must get a block in `deploy/caddy/Caddyfile`,
+  and every operator path must not get one. The Caddyfile's 404 default does
+  the rest.
+- **Approving stays behind Access.** **Add device** is a dashboard page, so on
+  the droplet it lives on the Cloudflare Access hostname, never on the device
+  hostname.
+
+**Upgrading the shared droplet.** Devices already enrolled with the fork's
+enrollment token are carried over as *paired*, the same as Step 2's
+upgrade path, so they keep working. The cloud-init enrollment token stays set
+until the operator chooses to drop it.
+
 ## Hard limits we accept
 
 - **A board's token is stored in plain text in its flash.** Physical access to
@@ -178,8 +222,23 @@ Each step is its own PR, and each one leaves the hub working.
 ### Step 0 — hardware check
 
 Flash stock `v2.5.2` to a Waveshare ESP32-S3 Touch AMOLED 1.8, point
-`CONFIG_OTA_URL` at a hub on a spike branch that returns a fixed activation
-block, and record:
+`CONFIG_OTA_URL` at a hub running `spike/pairing-activation`
+(`AGENT_HUB_PAIRING_SPIKE=1`), and record the results below.
+
+Run it twice:
+
+1. **Throwaway droplet first.** Provision a fresh droplet with cloud-init,
+   not the shared one, and with `AGENT_HUB_PUBLIC_HOST` set so Caddy serves
+   `wss://`. Stock firmware can't send the enrollment token, so clear it for
+   the length of the test. That leaves the droplet open to anyone, so destroy
+   it straight after the test. The spike's `/pairing-spike/*` endpoints aren't
+   in the Caddyfile and return 404 from outside. Approve codes over SSH:
+   `ssh root@<droplet> curl -s localhost:8003/pairing-spike/approve?code=…`.
+   Set an `llm.spend` cap anyway.
+2. **LAN second**, over plain `ws://`, for class night. On a WSL host this
+   needs mirrored networking or port forwarding to reach the hub.
+
+Record:
 
 - That the code is spoken and shown, and exactly which characters are displayed.
 - Whether the board reads `websocket.token` from the response that carried
@@ -205,7 +264,8 @@ is presented. Includes regression tests for the takeover.
 Add the pairing-attempts table, the activation block in check-in (with a
 fixture in `tests/server/test_protocol.py`), `/activate` (served under both
 `/checkin/` and `/xiaozhi/ota/`), the **Add device** page, **Re-pair**, and
-rate limits: per user on wrong codes, and per IP on new attempts.
+rate limits: per user on wrong codes, and per IP and per hub on new attempts
+(see [Public hubs](#public-hubs-the-digitalocean-droplet)).
 
 **Upgrading:** boards in the registry before this release are marked
 *paired (carried over)* and pinned on their next check-in, so a running
@@ -225,8 +285,11 @@ WebAuthn registration and login, the first-run setup link, and invite links.
 
 ### Step 5 — wss guidance
 
-Pick `wss://` automatically when the hub has a public URL, show the dashboard
-warning, and update `docs/deployment.md`.
+Pick `wss://` automatically when `AGENT_HUB_PUBLIC_HOST` is set, show the
+dashboard warning, and update `docs/deployment.md`. That includes replacing the
+*Before pointing devices at it* steps on configuring each device with the
+enrollment token, and ticking off the per-device credentials and rate limiting
+in *Remaining Work Before Public Internet*.
 
 ## Data model (needs sign-off, per AGENTS.md)
 
