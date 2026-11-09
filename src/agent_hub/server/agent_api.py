@@ -31,6 +31,7 @@ from loguru import logger
 
 from agent_hub.config import Settings
 from agent_hub.registry.models import AgentKind
+from agent_hub.registry.pairing import PairingRegistry
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge, session_state
 from agent_hub.server.client_ip import parse_trusted_proxies, resolve_client_ip
@@ -74,6 +75,7 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
     router = APIRouter()
     enrollment_token = settings.server.enrollment_token
     trusted_proxies = parse_trusted_proxies(settings.server.trusted_proxies)
+    pairing = PairingRegistry(store.session_factory)
 
     def _authorized(payload: dict[str, Any], request: Request) -> bool:
         """True when registration may proceed (open hub, or correct token)."""
@@ -127,6 +129,20 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
 
         agent_id = str(payload.get("agent_id") or payload.get("device_id") or "").strip()
         agent_id = agent_id or _new_agent_id(kind.value)
+        if await pairing.active_key(agent_id) is not None:
+            # A keyed agent signs in by signature. Re-registering would hand a
+            # fresh token to whoever knows its id, which is the takeover keys
+            # exist to prevent.
+            logger.bind(tag=_TAG).warning(
+                f"Refused token registration for keyed agent {agent_id!r}"
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "message": "this agent signs in with its key; use /agent/session",
+                },
+                status_code=409,
+            )
         label = str(payload.get("label") or "").strip() or None
         owner = str(payload.get("owner") or "").strip() or None
         raw_tools = payload.get("tools")

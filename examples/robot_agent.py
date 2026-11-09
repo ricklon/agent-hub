@@ -14,6 +14,12 @@ Run it:
 Only `--hub` is required on an open LAN hub. The enrollment token is required
 on a hub that is reachable from the internet; ask whoever runs it.
 
+Add `--pair` to sign in with a key instead of a token (recommended). The first
+run prints a 6-digit code; type it into **Add device** on the dashboard. After
+that the robot signs in by itself, and nobody else can take over its identity.
+`--pair` needs `agent_pair.py` (from the hub's `scripts/`) next to this file,
+and `pip install cryptography`.
+
 Adding a tool is two steps: write a function, add an entry to TOOLS. A tool
 receives the arguments the model (or a person in the dashboard console) sent
 and returns a string, which is what the model sees. Raise an exception to
@@ -117,8 +123,10 @@ class RobotAgent:
         agent_id: str = "",
         persona: str = "",
         enrollment_token: str = "",
+        pair: bool = False,
     ) -> None:
         self.hub = hub.rstrip("/")
+        self.pair = pair
         self.name = name
         self.owner = owner
         self.agent_id = agent_id
@@ -131,6 +139,9 @@ class RobotAgent:
 
     async def register(self) -> None:
         """Announce the robot and its tools; store the token we get back."""
+        if self.pair:
+            await self._sign_in_with_key()
+            return
         body = {
             "agent_id": self.agent_id or None,
             "label": self.name,
@@ -156,6 +167,33 @@ class RobotAgent:
         self.token = data["token"]
         self.heartbeat_seconds = int(data.get("heartbeat_interval_seconds") or 30)
         print(f"registered as {self.agent_id} with {len(TOOLS)} tools", flush=True)
+
+    async def _sign_in_with_key(self) -> None:
+        """Pair a key the first time (prints a code), then sign in with it."""
+        try:
+            from agent_pair import HubError, connect
+        except ImportError as exc:
+            raise SystemExit(
+                "--pair needs agent_pair.py next to this file and `pip install cryptography`."
+            ) from exc
+        tools = [{k: v for k, v in t.items() if k != "handler"} for t in TOOLS]
+        options = {"agent_id": self.agent_id, "owner": self.owner, "persona": self.persona}
+        if self.enrollment_token:
+            options["enrollment_token"] = self.enrollment_token
+        try:
+            data = await asyncio.to_thread(
+                connect,
+                self.hub,
+                self.name,
+                tools=tools,
+                **{k: v for k, v in options.items() if v},
+            )
+        except HubError as exc:
+            raise SystemExit(f"The hub refused: {exc}") from exc
+        self.agent_id = data["agent_id"]
+        self.token = data["token"]
+        self.heartbeat_seconds = int(data.get("heartbeat_interval_seconds") or 30)
+        print(f"signed in as {self.agent_id} with {len(TOOLS)} tools", flush=True)
 
     async def heartbeat_forever(self) -> None:
         """Tell the hub we are alive, so the dashboard shows us healthy."""
@@ -255,6 +293,9 @@ def main() -> None:
     parser.add_argument("--id", default="", help="stable agent id (defaults to a new one)")
     parser.add_argument("--persona", default="", help="persona to bind, e.g. hero-robot")
     parser.add_argument("--token", default="", help="enrollment token, if the hub needs one")
+    parser.add_argument(
+        "--pair", action="store_true", help="sign in with a key, pairing with a code the first time"
+    )
     args = parser.parse_args()
 
     agent = RobotAgent(
@@ -264,6 +305,7 @@ def main() -> None:
         agent_id=args.id,
         persona=args.persona,
         enrollment_token=args.token,
+        pair=args.pair,
     )
     try:
         asyncio.run(agent.run())

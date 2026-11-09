@@ -48,6 +48,7 @@ from agent_hub.registry.page_identity import (
     is_named_page_agent,
     named_page_device_id,
 )
+from agent_hub.registry.pairing import PairingRegistry
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge, session_state
 from agent_hub.server._page_html import PAGE_HTML as _PAGE_AGENT_HTML
@@ -463,6 +464,11 @@ def make_router(
             [t for t in raw_tools if isinstance(t, dict)] if isinstance(raw_tools, list) else []
         )
 
+        if await PairingRegistry(store.session_factory).active_key(device_id) is not None:
+            return JSONResponse(
+                {"ok": False, "message": "that id belongs to an agent that signs in with a key"},
+                status_code=409,
+            )
         client_host = request.client.host if request.client else None
         await store.get_or_create_agent(
             device_id=device_id,

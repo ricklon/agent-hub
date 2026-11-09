@@ -181,6 +181,11 @@ class RegistryStore:
                 with suppress(Exception):
                     await conn.execute(text(stmt))
 
+    @property
+    def session_factory(self) -> async_sessionmaker[AsyncSession]:
+        """The session factory, for registries that share this database."""
+        return self._sessions
+
     async def _hash_legacy_tokens(self) -> None:
         """Replace tokens stored in plain text before hashing with their hash.
 

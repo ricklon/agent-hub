@@ -85,6 +85,32 @@ run — fine for a first try, annoying by the third.
 
 Leave it running. It reconnects on its own if the wifi drops.
 
+### Sign in with a key instead (recommended)
+
+Copy [`scripts/agent_pair.py`](../scripts/agent_pair.py) next to
+`robot_agent.py`, `pip install cryptography`, and add `--pair`:
+
+```bash
+python robot_agent.py --hub http://HUB_ADDRESS:8003 --name "your robot" --pair
+```
+
+The first run makes a key for your robot and prints a code:
+
+```
+  Pair code: 472 913
+
+  Open the hub dashboard → Add device, and type it in.
+```
+
+Type it into **Add device** on the dashboard. You're now the robot's owner,
+and from then on it signs in by itself: there's no token to copy, and nobody
+who learns your robot's name can take it over. The key lives in
+`~/.config/agent-hub/`. Delete it, or press **Revoke** on Add device, and the
+next run pairs again.
+
+`--id` is optional with `--pair`, because the robot keeps the identity it
+paired with.
+
 ## 4. Drive it from the dashboard
 
 Open the dashboard, find your robot (filter by your name with the **Show:**
@@ -151,6 +177,8 @@ Nothing to install on a laptop; flash it and point it at the hub.
 | What you see | What it means |
 | --- | --- |
 | `it needs an enrollment token` | The hub is not open to anyone; ask for the token and pass `--token`. |
+| `this agent signs in with its key` | That id was paired with a key. Run with `--pair`, or pick another `--id`. |
+| `That code doesn't match anything waiting` | Check the digits, or the code expired (10 minutes). Run the robot again for a new one. |
 | `stream dropped; reconnecting` | Network hiccup. It retries by itself; if it repeats, check you can reach the hub address. |
 | Robot shows **not connected** on the dashboard | The script is not running, or it cannot reach the hub. Its own terminal says which. |
 | `does not expose a tool called …` | The name in the console does not match a `name` in your `TOOLS`. |
@@ -163,6 +191,9 @@ Robots register on the **device** port (`http_port`, 8003 by default), not
 the dashboard port — a headless robot cannot get through Cloudflare Access.
 Behind Caddy, `/agent/*` and `/mcp/v1/*` are proxied to that port.
 
+- **Prefer `--pair`.** A paired robot holds a key the hub never sees, so a
+  leaked token or a guessed id can't impersonate it. Anyone with the operator
+  role approves codes on **Add device**, and **Revoke** there signs a robot out.
 - **Set `server.enrollment_token`** on any hub reachable from the internet.
   Without it, registration is open to anyone who can reach the port, which is
   the right default only on a trusted LAN. Hand the token out at the start of
