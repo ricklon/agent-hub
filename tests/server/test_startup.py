@@ -18,12 +18,10 @@ async def test_startup_retains_provider_prewarm_task(monkeypatch, tmp_path):
     monkeypatch.setattr(server_main, "_prewarm_providers", fake_prewarm)
 
     app = server_main.build_app()
-    for handler in app.router.on_startup:
-        await handler()
-
-    task = server_main.prewarm_task(app)
-    assert task is not None
-    assert not task.done()
+    async with app.router.lifespan_context(app):
+        task = server_main.prewarm_task(app)
+        assert task is not None
+        assert not task.done()
 
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
