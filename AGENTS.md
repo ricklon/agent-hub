@@ -181,8 +181,12 @@ Two recipes are currently broken; fix them before relying on them:
    The whole point of this project is avoiding the full-module stack.
 3. **Do not break the `/xiaozhi/ota/` URL alias.** Already-flashed devices
    in the field depend on it. New code must continue to serve that path.
-4. **Do not add an activation gate to check-in.** First-contact devices
-   must work immediately with the `hub-default` persona.
+4. **Do not add a cloud or account activation gate to check-in.** Local
+   pairing is the one allowed gate: the board speaks a code and a person
+   types it into the hub, on by default (see
+   `docs/device-and-agent-pairing-plan.md`). Nothing beyond that code may
+   stand between a paired device and the `hub-default` persona. Until
+   pairing ships, first-contact devices still work immediately.
 5. **Do not edit `data/.config.yaml`** — it holds API keys. Edit
    `.config.example.yaml` instead and document the change in `README.md`.
 6. **Do not introduce a frontend build step (webpack/vite) for v1.**
