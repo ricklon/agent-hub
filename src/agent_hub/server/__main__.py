@@ -10,6 +10,8 @@ All routes share a single process and SQLite registry, served on three ports:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import uvicorn
@@ -104,11 +106,10 @@ def _warn_if_dashboard_exposed(settings: Settings) -> None:
 
 
 def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any]) -> FastAPI:
-    """Create an app shell with the shared startup hook attached."""
-    app = FastAPI(title="agent-hub", version="0.1.0")
+    """Create an app shell whose lifespan runs the shared startup work."""
 
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Safe to run per app: initialize() is guarded by a lock and a
         # done-flag, so only the first app to start does the work.
         await store.initialize()
@@ -123,8 +124,9 @@ def _new_app(store: RegistryStore, settings: Settings, raw_config: dict[str, Any
         app.state.prewarm_task = asyncio.create_task(_prewarm_providers(raw_config))
         app.state.prune_task = asyncio.create_task(_prune_page_agents(store, raw_config))
         app.state.conversation_task = asyncio.create_task(_sweep_conversations(store, raw_config))
+        yield
 
-    return app
+    return FastAPI(title="agent-hub", version="0.1.0", lifespan=_lifespan)
 
 
 async def _prune_page_agents(store: RegistryStore, config: dict[str, Any]) -> None:
@@ -337,8 +339,8 @@ if __name__ == "__main__":
     servers = [_make_server(apps[p], host, p) for p in ports]
 
     async def _serve() -> None:
-        # Suppress the "Started server process" duplicate lines from each server
-        # by sharing a single lifespan; uvicorn handles startup hooks on first serve.
+        # Each server runs its app's lifespan; the startup work is guarded so
+        # only the first one to start initializes the store and the sweepers.
         await asyncio.gather(*(s.serve() for s in servers))
 
     logger.info(f"Binding on ports {ports}")
