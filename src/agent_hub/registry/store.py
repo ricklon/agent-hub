@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import secrets
@@ -32,6 +33,31 @@ from agent_hub.registry.models import (
     Persona,
 )
 from agent_hub.registry.page_identity import is_named_page_agent
+
+# Agent tokens are stored as a SHA-256 hash, never as the token itself, so a
+# copy of the database can't be used to impersonate an agent. A fast hash is
+# enough: tokens are 256 random bits, so there is nothing to brute-force.
+_TOKEN_HASH_PREFIX = "sha256:"
+
+
+def hash_token(token: str) -> str:
+    """Return the stored form of an agent token.
+
+    Args:
+        token: Token as issued to the agent.
+
+    Returns:
+        ``sha256:`` followed by the hex digest.
+    """
+    return _TOKEN_HASH_PREFIX + hashlib.sha256(token.encode()).hexdigest()
+
+
+def _token_matches(stored: str | None, presented: str) -> bool:
+    """Compare a presented token against a stored hash in constant time."""
+    if not stored or not presented:
+        return False
+    return secrets.compare_digest(stored, hash_token(presented))
+
 
 _DEFAULT_PERSONA_NAME = "hub-default"
 # Idle gap used to split history written before conversations existed.
@@ -108,6 +134,7 @@ class RegistryStore:
             async with self._engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
             await self._migrate()
+            await self._hash_legacy_tokens()
             async with self._sessions() as session:
                 await self._ensure_default_persona(session)
                 await self._ensure_transcriber_persona(session)
@@ -153,6 +180,27 @@ class RegistryStore:
             for stmt in new_columns:
                 with suppress(Exception):
                     await conn.execute(text(stmt))
+
+    async def _hash_legacy_tokens(self) -> None:
+        """Replace tokens stored in plain text before hashing with their hash.
+
+        Idempotent: hashed values carry the ``sha256:`` prefix and are skipped.
+        Agents keep working, because the token they hold still matches.
+        """
+        async with self._sessions() as session:
+            result = await session.execute(
+                select(Agent).where(
+                    Agent.websocket_token.is_not(None),
+                    Agent.websocket_token.not_like(f"{_TOKEN_HASH_PREFIX}%"),
+                )
+            )
+            legacy = list(result.scalars())
+            for agent in legacy:
+                if agent.websocket_token:
+                    agent.websocket_token = hash_token(agent.websocket_token)
+            if legacy:
+                await session.commit()
+                logger.info(f"Hashed {len(legacy)} agent token(s) stored in plain text")
 
     async def _backfill_conversations(self) -> None:
         """Group history written before conversations existed into conversations.
@@ -652,9 +700,7 @@ class RegistryStore:
         async with self._sessions() as session:
             result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             agent = result.scalar_one_or_none()
-            if agent is None or not agent.websocket_token:
-                return False
-            if not secrets.compare_digest(agent.websocket_token, token):
+            if agent is None or not _token_matches(agent.websocket_token, token):
                 return False
             now = datetime.now(UTC)
             agent.last_heartbeat = now
@@ -668,6 +714,9 @@ class RegistryStore:
     async def issue_websocket_token(self, device_id: str) -> str:
         """Create or replace the WebSocket bearer token for device_id.
 
+        Only the token's hash is stored, so the token returned here is the one
+        chance to hand it to the agent.
+
         Args:
             device_id: Registered device receiving the token.
 
@@ -680,7 +729,7 @@ class RegistryStore:
             agent = result.scalar_one_or_none()
             if agent is None:
                 return ""
-            agent.websocket_token = token
+            agent.websocket_token = hash_token(token)
             agent.last_seen = datetime.now(UTC)
             await session.commit()
             return token
@@ -700,9 +749,9 @@ class RegistryStore:
         async with self._sessions() as session:
             result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             agent = result.scalar_one_or_none()
-            if agent is None or not agent.websocket_token:
+            if agent is None:
                 return False
-            return secrets.compare_digest(agent.websocket_token, token)
+            return _token_matches(agent.websocket_token, token)
 
     async def set_agent_status(self, device_id: str, status: AgentStatus) -> None:
         """Update the lifecycle status of an agent.
@@ -737,9 +786,7 @@ class RegistryStore:
         async with self._sessions() as session:
             result = await session.execute(select(Agent).where(Agent.device_id == device_id))
             agent = result.scalar_one_or_none()
-            if agent is None or not agent.websocket_token:
-                return False
-            if not secrets.compare_digest(agent.websocket_token, token):
+            if agent is None or not _token_matches(agent.websocket_token, token):
                 return False
             agent.status = AgentStatus.OFFLINE.value
             agent.last_heartbeat = None
