@@ -210,8 +210,8 @@ until the operator chooses to drop it.
 
 - **A board's token is stored in plain text in its flash.** Physical access to
   the board means access to its identity until someone revokes it in the
-  dashboard. Fixing that needs firmware that holds a non-exportable key
-  (see [Later](#later)).
+  dashboard. Fixing that needs firmware that holds a key it can't export
+  (see [Step 6](#step-6--boards-that-sign-esp32-s3-digital-signature)).
 - **HMAC activation is used only when the hub has been given that board's
   key**, which is a vendor-provisioning step hobbyists don't do.
 
@@ -291,11 +291,79 @@ dashboard warning, and update `docs/deployment.md`. That includes replacing the
 enrollment token, and ticking off the per-device credentials and rate limiting
 in *Remaining Work Before Public Internet*.
 
+### Step 6 — boards that sign (ESP32-S3 Digital Signature)
+
+Most boards in use are ESP32-S3 variants, and the S3 is the chip with wake
+word and the other features we need, so this generation uses what the S3
+offers: the **Digital Signature (DS) peripheral**, which signs with **RSA**.
+The S3 has neither Ed25519 nor eFuse-held ECDSA. A future S3 successor with
+ECDSA in hardware would only need another key type, not a redesign
+(see [Key types](#key-types)).
+
+**How DS works.** An HMAC key is burned into an eFuse key block marked for
+digital-signature use, so software can never read it. The RSA private key is
+stored in flash **encrypted** with a key derived from that HMAC key. Only the
+DS hardware can decrypt it, and only while signing. A flash dump yields
+ciphertext that works on no other board.
+
+**Provisioning on the board itself, once.** A small firmware fork does it on
+first boot, when the user agrees:
+
+1. Generate a random HMAC key and an RSA key pair in RAM.
+2. Compute the encrypted DS parameters and write them to flash.
+3. Burn the HMAC key into a free eFuse key block, read-protected.
+4. Wipe both keys from RAM. Keep only the public key.
+
+The private key never leaves the board, and no provisioning PC ever sees it.
+Espressif's usual tooling (`esp_secure_cert_mgr`, `configure_ds.py`) instead
+generates keys on a host computer. That's acceptable for a vendor, but it
+means trusting that machine, so it isn't the default here.
+
+**Pairing is unchanged for the user.** The board still says a code and the
+person types it. The difference is what the code approves: the board sends its
+RSA public key with the activation, the approval binds that key in
+`agent_keys`, and from then on the board signs a challenge for each session.
+A bearer token is no longer the credential.
+
+**Rules for the fork:**
+
+- **Burning eFuse can't be undone.** The fork asks once ("Hold the button to
+  make this board's permanent identity") and never burns silently. Re-pairing
+  a signing board reuses its key. It never burns a second block.
+- **Don't use `HMAC_KEY0`.** Stock firmware's activation HMAC uses it, so DS
+  takes a different free block, and the fork checks the block's purpose
+  before burning.
+- **Don't touch flash encryption or secure boot.** They're separate,
+  higher-risk features, and DS doesn't need them.
+- **RSA-3072 is the default** (a signature takes tens of milliseconds, and the
+  board signs once per session). Check the S3 technical reference manual
+  before settling the size: the S3's DS supports up to 4096 bits.
+- **Boards that don't sign keep working.** They pair with a spoken code and a
+  pinned token as in Steps 1–2. A signing board is an upgrade, not a
+  requirement.
+
+**Before building:** prototype provisioning on one sacrificial XIAO
+ESP32-S3, and confirm against the S3 technical reference manual and the
+ESP-IDF `esp_ds` API (eFuse key purpose `HMAC_DOWN_DIGITAL_SIGNATURE`, DS
+parameter encryption, supported key sizes). The details above are from
+Espressif's documentation as remembered, not yet tested.
+
+### Key types
+
+`agent_keys.key_type` keeps the signing scheme separate from the rest of
+pairing:
+
+| Key type | Used by | Notes |
+| --- | --- | --- |
+| `ssh-ed25519` | robots, scripts, people's SSH keys | The default for software. |
+| `rsa-3072` / `rsa-4096` (RSA-PSS) | ESP32-S3 boards via DS | This generation's boards. |
+| `ecdsa-p256` | ATECC608 secure element, browsers (WebCrypto), future chips with ECDSA in eFuse | Add when the first such board or page appears. |
+
 ## Data model (needs sign-off, per AGENTS.md)
 
 - `pairing_attempts` — as above.
-- `agent_keys` — `agent_id`, `public_key` (OpenSSH format), `fingerprint`,
-  `created_by`, `created_at`, `revoked_at`.
+- `agent_keys` — `agent_id`, `key_type`, `public_key` (OpenSSH format),
+  `fingerprint`, `created_by`, `created_at`, `revoked_at`.
 - `operator_passkeys` — `operator_id`, `credential_id`, `public_key`,
   `sign_count`, `created_at`, `last_used_at`.
 - `Agent` — `websocket_token` becomes `websocket_token_hash`; adds
@@ -303,8 +371,8 @@ in *Remaining Work Before Public Internet*.
 
 ## Dependencies
 
-- Ed25519 and OpenSSH key parsing: `cryptography`, already installed through
-  `pyjwt[crypto]`. No new dependency.
+- Ed25519, RSA-PSS, ECDSA, and OpenSSH key parsing: `cryptography`, already
+  installed through `pyjwt[crypto]`. No new dependency.
 - WebAuthn: probably `webauthn` (py_webauthn). This is a new dependency, so it
   needs approval at Step 4.
 
@@ -320,9 +388,8 @@ in *Remaining Work Before Public Internet*.
 
 ## Later
 
-- A firmware fork that keeps an Ed25519 key on the board, through the
-  ESP32-S3 Digital Signature peripheral or a key protected by flash
-  encryption. The board would then sign challenges the way robots do, and
-  `agent_keys` already has room for that.
+- A successor to the ESP32-S3 that keeps wake word and adds ECDSA in eFuse:
+  add `ecdsa-p256` boards alongside RSA ones.
+- An ATECC608 secure element on a custom board, for any ESP32.
 - The hub as an SSH certificate authority, issuing short-lived user
   certificates that carry roles, so revocation is just waiting for expiry.
