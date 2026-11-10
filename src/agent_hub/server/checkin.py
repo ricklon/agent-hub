@@ -25,6 +25,7 @@ from loguru import logger
 
 from agent_hub.config import Settings
 from agent_hub.registry.models import AgentKind
+from agent_hub.registry.pairing import PairingRegistry
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server.client_ip import parse_trusted_proxies, resolve_client_ip
 from agent_hub.server.protocol import CheckinRequest, CheckinResponse
@@ -104,6 +105,7 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
     """
     router = APIRouter()
     trusted_proxies = parse_trusted_proxies(settings.server.trusted_proxies)
+    pairing = PairingRegistry(store.session_factory)
 
     @router.get("/checkin/")
     @router.get("/xiaozhi/ota/")
@@ -174,8 +176,17 @@ def make_router(store: RegistryStore, settings: Settings) -> APIRouter:
             ip_address=req.ip_address,
             firmware_version=req.application_version,
         )
+        # An agent that paired a key signs in by signature (/agent/session).
+        # The shared enrollment token must not mint it a bridge token here.
+        keyed = await pairing.active_key(req.device_id) is not None
+        if keyed:
+            logger.bind(tag=_TAG).warning(
+                f"No token issued at check-in for keyed agent {req.device_id!r}"
+            )
         websocket_token = (
-            await store.issue_websocket_token(req.device_id) if enrollment_token else ""
+            await store.issue_websocket_token(req.device_id)
+            if enrollment_token and not keyed
+            else ""
         )
         persona = await store.get_persona_for_device(req.device_id)
         mode = "transcription" if persona and persona.transcription else "assistant"

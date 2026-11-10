@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from loguru import logger
 
 from agent_hub.dashboard.authorization import DashboardAuthorization
-from agent_hub.registry.models import AgentKind, OperatorRole
+from agent_hub.registry.models import AgentKind, OperatorRole, PairingAttempt
 from agent_hub.registry.pairing import PairingRegistry, attempt_details
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import mcp_bridge
@@ -39,6 +39,14 @@ PAIRING_CSS = """
 .pair-table td,.pair-table th{padding:.35rem .5rem;border-bottom:1px solid #30363d;text-align:left}
 .pair-table code{font-size:.75rem}
 """
+
+
+def _fingerprint(attempt: PairingAttempt) -> str:
+    """The fingerprint of the key an attempt carries, or a dash."""
+    try:
+        return parse_public_key(attempt.public_key).fingerprint if attempt.public_key else "—"
+    except InvalidAgentKey:
+        return "—"
 
 
 class _WrongCodes:
@@ -91,15 +99,20 @@ def make_router(
             if message
             else ""
         )
+        keyed_ids = {k.agent_id for k in keys}
+        replaces = " <strong>(replaces its current key)</strong>"
         waiting_rows = (
             "".join(
-                f"<tr><td>{html.escape(a.agent_id)}</td>"
+                f"<tr><td>{html.escape(a.agent_id)}"
+                f"{replaces if a.agent_id in keyed_ids else ''}"
+                f"</td>"
+                f"<td><code>{html.escape(_fingerprint(a))}</code></td>"
                 f"<td>{html.escape(attempt_details(a).get('label', '') or '—')}</td>"
                 f"<td>{html.escape(a.kind)}</td><td>{html.escape(a.ip_address or '—')}</td>"
                 f"<td>{int((now - a.created_at).total_seconds() // 60)} min ago</td></tr>"
                 for a in waiting
             )
-            or '<tr><td colspan="5">Nothing is waiting.</td></tr>'
+            or '<tr><td colspan="6">Nothing is waiting.</td></tr>'
         )
         key_rows = (
             "".join(
@@ -126,7 +139,7 @@ def make_router(
   <button>Pair</button>
 </form>
 <h3>Waiting to pair</h3>
-<table class="pair-table"><tr><th>Agent</th><th>Label</th><th>Kind</th><th>From</th>
+<table class="pair-table"><tr><th>Agent</th><th>Key</th><th>Label</th><th>Kind</th><th>From</th>
 <th>Asked</th></tr>{waiting_rows}</table>
 <h3>Paired keys</h3>
 <table class="pair-table"><tr><th>Agent</th><th>Fingerprint</th><th>Paired by</th>
@@ -164,6 +177,19 @@ def make_router(
         except InvalidAgentKey:
             return await _page(request, "That request carried a key the hub can't use.", False)
         identity = getattr(request.state, "operator_identity", None)
+        role = str(getattr(request.state, "operator_role", OperatorRole.ADMIN.value))
+        existing = await store.get_agent(attempt.agent_id)
+        if (
+            existing is not None
+            and existing.owner_subject
+            and (identity is None or existing.owner_subject != identity.subject)
+            and role != OperatorRole.ADMIN.value
+        ):
+            # Approving would bind a new key (and the claim) to someone else's agent.
+            logger.bind(tag=_TAG).warning(
+                f"{who} refused pairing over {attempt.agent_id!r}, owned by another person"
+            )
+            return await _page(request, "That agent belongs to someone else.", False)
         await store.get_or_create_agent(
             device_id=attempt.agent_id,
             kind=AgentKind(attempt.kind),

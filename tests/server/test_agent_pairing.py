@@ -295,3 +295,58 @@ async def test_an_expired_code_cannot_be_approved(store: RegistryStore, monkeypa
         poll = await c.post("/agent/pair/poll", json={"attempt_id": started["attempt_id"]})
     assert approve.status_code == 400
     assert poll.status_code == 410
+
+
+async def test_checkin_does_not_mint_a_token_for_a_keyed_agent(store: RegistryStore) -> None:
+    from agent_hub.server.checkin import make_router as make_checkin_router
+
+    key = Ed25519PrivateKey.generate()
+    async with _app(store) as c:
+        await _pair(c, key, agent_id="robot-10")
+    settings = Settings.from_dict({"server": {"enrollment_token": "enroll-secret"}})
+    app = FastAPI()
+    app.include_router(make_checkin_router(store, settings))
+    headers = {
+        "Device-Id": "robot-10",
+        "Client-Id": "c",
+        "X-Agent-Hub-Enrollment-Token": "enroll-secret",
+    }
+    other = {**headers, "Device-Id": "aa:bb:cc:dd:ee:01"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        keyed = await c.post("/checkin/", headers=headers, json={})
+        unkeyed = await c.post("/checkin/", headers=other, json={})
+    assert keyed.status_code == 200
+    assert not keyed.json()["websocket"]["token"]
+    assert unkeyed.json()["websocket"]["token"]  # devices without keys are unaffected
+    assert (
+        await store.validate_websocket_token("robot-10", keyed.json()["websocket"]["token"])
+        is False
+    )
+
+
+async def test_a_code_cannot_pair_over_someone_elses_agent(store: RegistryStore) -> None:
+    mine, theirs = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    async with _app(store, identity=_RICK) as c:
+        await _pair(c, mine, agent_id="robot-11")
+    pairing = PairingRegistry(store.session_factory)
+    async with _app(store, identity=_ADA) as c:
+        started = await c.post(
+            "/agent/pair/start", json={"public_key": _public(theirs), "agent_id": "robot-11"}
+        )
+        page = await c.get("/dashboard/add-device")
+        assert "replaces its current key" in page.text
+        approved = await c.post("/dashboard/add-device", data={"code": started.json()["code"]})
+    assert approved.status_code == 400
+    key = await pairing.active_key("robot-11")
+    assert key is not None and key.public_key == parse_public_key(_public(mine)).public_key
+    agent = await store.get_agent("robot-11")
+    assert agent is not None and agent.owner_subject == _RICK.subject
+
+
+async def test_an_admin_may_re_pair_someone_elses_agent(store: RegistryStore) -> None:
+    old, new = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    async with _app(store, identity=_RICK) as c:
+        await _pair(c, old, agent_id="robot-12")
+    async with _app(store, identity=_ADA, role=OperatorRole.ADMIN.value) as c:
+        await _pair(c, new, agent_id="robot-12")
+        assert (await c.post("/agent/session", json=_signed(new, "robot-12"))).status_code == 200
