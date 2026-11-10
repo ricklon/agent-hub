@@ -27,6 +27,7 @@ from agent_hub.dashboard.audit import DashboardAuditMiddleware
 from agent_hub.dashboard.authorization import DashboardAuthorization
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server.agent_api import make_router as make_agent_api_router
+from agent_hub.server.agent_pairing import make_router as make_agent_pairing_router
 from agent_hub.server.checkin import make_router as make_checkin_router
 from agent_hub.server.heartbeat import make_router as make_heartbeat_router
 from agent_hub.server.image_explain import make_router as make_image_router
@@ -225,6 +226,9 @@ def build_apps() -> dict[int, FastAPI]:
                 # cannot authenticate to. Registration is gated by the
                 # enrollment token when one is configured.
                 make_agent_api_router(store, settings),
+                # Key pairing and signed sign-in for robots and scripts. Same
+                # port and Caddy route (/agent/*) as registration.
+                make_agent_pairing_router(store, settings),
                 # The MCP bridge answers on the device port too, so a robot
                 # that registered here can reach its own SSE stream. Both
                 # bridge endpoints authenticate per agent with the token
@@ -310,6 +314,7 @@ def build_app() -> FastAPI:
     app.include_router(make_checkin_router(store, settings))
     app.include_router(make_heartbeat_router(store, settings))
     app.include_router(make_agent_api_router(store, settings))
+    app.include_router(make_agent_pairing_router(store, settings))
     app.include_router(make_image_router(raw_config, store))
     app.include_router(make_ws_router(store, raw_config))
     app.include_router(make_dashboard_router(store, raw_config, dashboard_auth))

@@ -288,6 +288,13 @@ operator can review them.
 
 ### Step 3 — keys for robots and scripts
 
+**Status: 3a done (#127)**, which covers pairing with a code, Ed25519 sign-in,
+**Add device**, revocation, the per-IP and per-hub limits on attempts, the limit
+on wrong codes, `scripts/agent_pair.py`, and `robot_agent.py --pair`. Still to
+do: signing the individual calls that do something, and short-lived session
+tokens. Revoking already ends a session straight away, because it clears the
+token.
+
 Add the keys table, keyed registration with pairing codes, challenge login,
 short-lived session tokens, signed calls that do something, and the pairing
 helper. `enrollment_token` becomes an optional pre-filter that stops strangers

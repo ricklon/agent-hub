@@ -277,3 +277,46 @@ class Agent(Base):
         if not isinstance(parsed, list):
             return []
         return [name for name in parsed if isinstance(name, str)]
+
+
+class PairingAttempt(Base):
+    """One request to join the hub, approved by a person typing its code.
+
+    A code belongs to this attempt, not to an agent id: someone who asks to
+    pair under another agent's id gets their own code, shown on their own
+    screen, and the person approving types the code from the thing in front
+    of them. See docs/device-and-agent-pairing-plan.md.
+    """
+
+    __tablename__ = "pairing_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    agent_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    code: Mapped[str] = mapped_column(String(16), index=True)
+    key_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    public_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What the agent asked for (label, persona, owner label), as JSON. Applied
+    # only when someone approves.
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column()
+    expires_at: Mapped[datetime] = mapped_column(index=True)
+    approved_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class AgentKey(Base):
+    """A public key an agent proves itself with. The hub never holds the private key."""
+
+    __tablename__ = "agent_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(64), index=True)
+    key_type: Mapped[str] = mapped_column(String(32))
+    public_key: Mapped[str] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(String(128), index=True)
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    created_at: Mapped[datetime] = mapped_column()
+    revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)

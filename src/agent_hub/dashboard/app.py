@@ -47,6 +47,7 @@ from agent_hub.dashboard.page_run import (
     new_agent_card,
     run_url,
 )
+from agent_hub.dashboard.pairing import make_router as make_pairing_router
 from agent_hub.dashboard.styles import DASHBOARD_CSS
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import ModelCheck, check_model
@@ -94,6 +95,7 @@ document.addEventListener("htmx:beforeSwap", (event) => {{
   <a href="/dashboard/health">Health</a>
   <a href="/dashboard/personas">Personas</a>
   <a href="/dashboard/models">Models</a>{free_badge}
+  <a href="/dashboard/add-device">Add device</a>
   {admin_nav}
   <a href="/dashboard/docs">Docs</a>
 </nav>
@@ -242,6 +244,8 @@ def make_router(
             body=body,
             conversation_script=CONVERSATION_SCRIPT,
         )
+
+    router.include_router(make_pairing_router(store, auth, _render_page))
 
     @router.get("/dashboard/", response_class=HTMLResponse)
     async def dashboard_index(

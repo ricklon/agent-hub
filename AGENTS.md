@@ -58,6 +58,8 @@ agent-hub/
 │   │   ├── audio.py         ← Opus encode/decode, VAD, rate control
 │   │   ├── session_state.py ← per-connection state
 │   │   ├── agent_api.py     ← `/agent/*` registration for robots (device port)
+│   │   ├── agent_pairing.py ← `/agent/pair/*` + `/agent/session`: key pairing, signed sign-in
+│   │   ├── agent_keys.py    ← OpenSSH key parsing, fingerprints, session signatures
 │   │   ├── agent_turn.py    ← the shared text turn (page agent, robot, console)
 │   │   ├── mcp_bridge.py    ← page-agent MCP bridge (SSE-down / POST-up JSON-RPC)
 │   │   ├── page_agent.py    ← page-agent register/heartbeat + the page route
@@ -73,6 +75,7 @@ agent-hub/
 │   │   └── asr/             ← funasr, funasr_onnx, openai_whisper
 │   ├── registry/
 │   │   ├── models.py        ← Agent, Device, Persona, AgentKind enum
+│   │   ├── pairing.py       ← pairing attempts and agent keys
 │   │   └── store.py         ← SQLite-backed persistence
 │   ├── skills/              ← server-side LLM tools (NOT the `skills/` below)
 │   │   ├── get_weather.py
