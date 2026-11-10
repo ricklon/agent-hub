@@ -41,7 +41,7 @@ from agent_hub.model_access import PaidModelNotAllowed, choose_model
 from agent_hub.providers.asr import get_provider as get_asr
 from agent_hub.providers.llm import get_provider as get_llm
 from agent_hub.providers.llm.model_check import describe_error as describe_model_error
-from agent_hub.providers.tts import get_provider as get_tts
+from agent_hub.providers.tts import get_provider_with_fallback as get_tts
 from agent_hub.registry.models import AgentStatus, Persona
 from agent_hub.registry.store import RegistryStore
 from agent_hub.server import debug_audio, session_state, tool_policy, transcript_log

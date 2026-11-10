@@ -683,7 +683,7 @@ def make_router(
         if persona is None:
             return JSONResponse({"ok": False, "message": "no persona assigned"}, status_code=500)
 
-        from agent_hub.providers.tts import get_provider as get_tts
+        from agent_hub.providers.tts import get_provider_with_fallback as get_tts
         from agent_hub.server.audio import pcm_to_wav
 
         session_state.set_pipeline_status(device_id, "speaking", text)
@@ -740,7 +740,7 @@ def make_router(
 
         from agent_hub.providers.asr import get_provider as get_asr
         from agent_hub.providers.llm import get_provider as get_llm
-        from agent_hub.providers.tts import get_provider as get_tts
+        from agent_hub.providers.tts import get_provider_with_fallback as get_tts
         from agent_hub.server.audio import PcmSileroVAD, pcm_to_wav
 
         vad_model_path = (
