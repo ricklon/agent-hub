@@ -698,7 +698,7 @@ def make_router(
         return Response(
             content=pcm_to_wav(pcm, rate),
             media_type="audio/wav",
-            headers={**_CORS, "X-Voice-Notice": session_state.get_state(device_id).voice_notice},
+            headers={**_CORS, "X-Voice-Notice": session_state.notices(device_id)},
         )
 
     # ── Voice WebSocket: browser mic → hub VAD + ASR + LLM + TTS ──────────
@@ -859,7 +859,7 @@ def make_router(
                             "type": "tts",
                             "state": "start",
                             "text": text,
-                            "voice_notice": session_state.get_state(device_id).voice_notice,
+                            "voice_notice": session_state.notices(device_id),
                         }
                     )
                 )

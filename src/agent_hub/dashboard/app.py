@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from loguru import logger
 
-from agent_hub import spend
+from agent_hub import model_access, spend
 from agent_hub.config import config_bool, resolve_timezone
 from agent_hub.conversation_wrapup import wrap_up_conversation
 from agent_hub.conversations import (
@@ -1779,6 +1779,19 @@ named page agent when its name is reopened.">
             and all(m["id"] != effective_model for m in catalogue)
             else ""
         )
+        if (
+            free_view
+            and effective_model
+            and not model_access.is_free_id(effective_model)
+            and _uses_openrouter(config, persona.llm_provider)
+        ):
+            model_warning += (
+                '<p class="msg" style="color:#d29922">⚠ '
+                f"<code>{html.escape(effective_model)}</code> is a paid model and you can use "
+                "free ones only. Agents you own run a free stand-in for this persona, or are "
+                "refused when none is set up. Pick a free model, or ask an admin to tick "
+                "<strong>paid models</strong> for you on the Operators page.</p>"
+            )
         model_input = (
             model_field.model_select(persona.llm_model or "", usable_models, default_model)
             if usable_models and _uses_openrouter(config, persona.llm_provider)

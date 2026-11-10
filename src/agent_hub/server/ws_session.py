@@ -431,6 +431,12 @@ _DEFAULT_MODEL_ERROR_NOTICE = (
 )
 
 
+_PAID_MODEL_NOTICE = (
+    "I can only use free models, and the model I'm set to use is a paid one. "
+    "Ask my operator to pick a free model or allow paid ones."
+)
+
+
 def _model_error_notice(config: dict[str, Any]) -> str:
     """What the device says when its model call fails (llm.model_error_message)."""
     configured = (config.get("llm") or {}).get("model_error_message")
@@ -499,7 +505,7 @@ async def _run_llm_turn(
             model = _persona_model(persona, config)
             logger.bind(tag=_TAG).warning(f"Voice turn refused for {device_id!r}: {exc}")
             session_state.record_llm_error(device_id, model, str(exc))
-            await _speak(websocket, _model_error_notice(config), persona, config, session_id)
+            await _speak(websocket, _PAID_MODEL_NOTICE, persona, config, session_id)
             session_state.set_pipeline_status(device_id, "idle", transcript)
             history.pop()
             return 0, 0, 0, ""
