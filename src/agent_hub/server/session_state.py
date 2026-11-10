@@ -236,6 +236,12 @@ def set_model_notice(device_id: str, notice: str) -> None:
         _get(device_id).model_notice = notice
 
 
+def notices(device_id: str) -> str:
+    """The voice and model notices for an agent, as one line people can read."""
+    state = get_state(device_id)
+    return " ".join(n for n in (state.voice_notice, state.model_notice) if n)
+
+
 def record_llm_error(device_id: str, model: str, error: str) -> None:
     """Remember why the last turn got no reply, for the dashboard."""
     _get(device_id).last_llm_error = {

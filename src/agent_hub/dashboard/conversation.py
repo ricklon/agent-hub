@@ -170,8 +170,8 @@ def make_conversation_router(store: RegistryStore, config: dict[str, Any]) -> AP
             else "No persona"
         )
         notice = (
-            f'<p class="voice-warning">{html.escape(state.voice_notice)}</p>'
-            if state.voice_notice
+            f'<p class="voice-warning">{html.escape(session_state.notices(device_id))}</p>'
+            if session_state.notices(device_id)
             else ""
         )
         first = (
@@ -293,7 +293,7 @@ def make_conversation_router(store: RegistryStore, config: dict[str, Any]) -> AP
             pcm_to_wav(pcm, rate),
             media_type="audio/wav",
             headers={
-                "X-Voice-Notice": session_state.get_state(device_id).voice_notice,
+                "X-Voice-Notice": session_state.notices(device_id),
                 "Cache-Control": "no-store",
             },
         )

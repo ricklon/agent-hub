@@ -89,14 +89,26 @@ async def test_paid_allowed_users_and_admins_run_the_paid_model(store: RegistryS
         assert session_state.get_state(device_id).model_notice == ""
 
 
-async def test_an_agent_nobody_owns_follows_the_hub_default(store: RegistryStore) -> None:
+async def test_an_agent_nobody_owns_runs_its_persona_model(store: RegistryStore) -> None:
     device_id = await _agent_on_paid_persona(store, None)
-    assert await _choice(store, device_id, _config()) == _FREE
+    assert await _choice(store, device_id, _config()) == _PAID
     assert await _choice(store, device_id, _config(free_only=False)) == _PAID
+    assert session_state.get_state(device_id).model_notice == ""
+
+
+async def test_claiming_an_agent_puts_it_under_its_owners_allowance(
+    store: RegistryStore,
+) -> None:
+    ada = await _operator(store, "ada", OperatorRole.OPERATOR)
+    device_id = await _agent_on_paid_persona(store, None)
+    assert await _choice(store, device_id, _config()) == _PAID
+    assert await store.claim_agent(device_id, ada.subject, ada.email)
+    assert await _choice(store, device_id, _config()) == _FREE
 
 
 async def test_without_a_free_substitute_the_turn_is_refused(store: RegistryStore) -> None:
-    device_id = await _agent_on_paid_persona(store, None)
+    ada = await _operator(store, "ada", OperatorRole.OPERATOR)
+    device_id = await _agent_on_paid_persona(store, ada)
     persona = await store.get_persona_for_device(device_id)
     assert persona is not None
     with pytest.raises(PaidModelNotAllowed, match="free models only"):
@@ -221,3 +233,33 @@ async def test_manage_page_says_when_a_free_model_stands_in(store: RegistryStore
     async with await _client(store, ada) as client:
         status = await client.get(f"/dashboard/agents/{device_id}/status")
     assert f"Running {_FREE} instead of {_PAID}" in status.text
+
+
+async def test_notices_join_voice_and_model_notices(store: RegistryStore) -> None:
+    ada = await _operator(store, "ada", OperatorRole.OPERATOR)
+    device_id = await _agent_on_paid_persona(store, ada)
+    await _choice(store, device_id, _config())
+    session_state.get_state(device_id).voice_notice = "voice fell back"
+    joined = session_state.notices(device_id)
+    assert "voice fell back" in joined and _FREE in joined and _PAID in joined
+
+
+async def test_the_conversation_panel_shows_the_model_notice(store: RegistryStore) -> None:
+    from agent_hub.dashboard.conversation import make_conversation_router
+
+    ada = await _operator(store, "ada", OperatorRole.OPERATOR)
+    device_id = await _agent_on_paid_persona(store, ada)
+    await _choice(store, device_id, _config())
+    app = FastAPI()
+    app.include_router(make_conversation_router(store, {}))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.get(f"/dashboard/agents/{device_id}/conversation/live")
+    assert resp.status_code == 200
+    assert "free models only" in resp.text and _FREE in resp.text
+
+
+async def test_the_voice_refusal_names_the_paid_model_not_a_generic_error() -> None:
+    from agent_hub.server import ws_session
+
+    assert "free models" in ws_session._PAID_MODEL_NOTICE
+    assert ws_session._PAID_MODEL_NOTICE != ws_session._DEFAULT_MODEL_ERROR_NOTICE

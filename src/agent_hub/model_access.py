@@ -5,7 +5,8 @@ admin has turned on paid models for them; admins always may. Personas are
 shared, so the check happens when a turn runs, against the agent's owner:
 a paid-allowed user putting a paid model on ``hub-default`` must not make
 everyone else's agents start spending. An agent nobody owns (an unclaimed
-device, a local page agent) follows the hub default, which is free.
+device, a local page agent) runs its persona's model as set: the spend caps,
+not this check, bound what such agents can cost.
 
 A turn that may not use its persona's paid model runs on a free substitute
 instead: the first ``:free`` model in ``llm.openai.fallback_models``, or the
@@ -71,13 +72,14 @@ async def owner_may_use_paid(
     """Whether an agent's turns may run paid models: its owner's allowance.
 
     Outside free mode everyone may. In free mode an agent with no verified
-    owner follows the hub default, which is free.
+    owner runs its persona's model as set, so a new device or bot works as
+    configured until someone claims it; a claimed agent follows its owner.
     """
     if not free_mode(config):
         return True
     subject = agent.owner_subject if agent is not None else None
     if not subject:
-        return False
+        return True
     return operator_may_use_paid(await store.get_dashboard_operator(subject))
 
 
