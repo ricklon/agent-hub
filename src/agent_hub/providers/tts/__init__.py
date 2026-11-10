@@ -146,3 +146,40 @@ def get_provider(name: str, config: dict[str, Any], model: str | None = None) ->
 
     _cache[cache_key] = provider
     return provider
+
+
+# Cloud voices that get a local fallback when the cloud refuses them.
+_CLOUD = frozenset({"edge", "openrouter"})
+_fallbacks: dict[str, Any] = {}
+
+
+def get_provider_with_fallback(
+    name: str, config: dict[str, Any], model: str | None = None
+) -> TTSProvider:
+    """Like ``get_provider``, but a cloud voice falls back to Piper when it fails.
+
+    Local providers (and the voice-test button, which should show real
+    failures) use plain ``get_provider``. Disable with ``tts.fallback: false``.
+
+    Args:
+        name: Provider key matching .config.yaml tts.<name>.
+        config: Full raw config dict.
+        model: A persona's model within that provider.
+
+    Returns:
+        The provider, wrapped when it is a cloud voice and a fallback applies.
+    """
+    primary = get_provider(name, config, model)
+    tts_cfg = config.get("tts") or {}
+    if name not in _CLOUD or str(tts_cfg.get("fallback", True)).lower() in ("false", "0", "no"):
+        return primary
+    cache_key = f"{name}:{model or ''}"
+    wrapper = _fallbacks.get(cache_key)
+    if wrapper is None or wrapper.primary is not primary:
+        # Rebuilt when the primary changes, so a new config isn't masked; kept
+        # otherwise, so the cooldown after a failure survives between calls.
+        from agent_hub.providers.tts.fallback import FallbackTTS
+
+        wrapper = FallbackTTS(primary, lambda: get_provider("piper", config), name)
+        _fallbacks[cache_key] = wrapper
+    return wrapper
